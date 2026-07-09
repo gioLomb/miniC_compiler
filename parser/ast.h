@@ -19,7 +19,8 @@ typedef enum {
     ND_ARRAY_ACCESS,  /* figli: [indice]; text = nome array                  */
     ND_ID,            /* foglia: text = nome identificatore                  */
     ND_NUM_INT,       /* foglia: text = valore letterale intero              */
-    ND_NUM_FLOAT      /* foglia: text = valore letterale float               */
+    ND_NUM_FLOAT,      /* foglia: text = valore letterale float               */
+    ND_ERROR
 } NodeKind;
 
 typedef struct ASTNode {

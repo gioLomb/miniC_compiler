@@ -1,104 +1,145 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../tokens.h" // Qui devi definire i tuoi TOK_*
+#include "../tokens.h"
+#include "../lexer.h"
+#include "error.h"
 #include "ast.h"
+#include "parser.h"
 
-// Prototipi dello scanner (generato da re2c)
-extern const unsigned char *cur;
-extern const unsigned char *tok;
-extern int yylex();
+/* ==================================================================
+ * Stato del parser: SOLO bookkeeping del parser stesso (token corrente
+ * e suo lessema). Nessun extern verso lo scanner: tutta la comunicazione
+ * passa dalle funzioni di lexer.h.
+ * ================================================================== */
+static int current_token;
+static char *current_lexeme = NULL;
 
-int current_token;
-char *current_lexeme = NULL;  // testo dell'ultimo token letto (per costruire l'AST)
+/* ---- prototipi interni ---- */
+static void advance(void);
+static void match(int expected);
+static void synchronize(void);
 
-// Prototipi del parser: ogni Parse* costruisce e restituisce un nodo dell'AST
-ASTNode *ParseProgram();
-ASTNode *ParseBlock();
-ASTNode *ParseStmt();
-ASTNode *ParseDeclaration();
-void     ParseParamList(ASTNode *funcNode);
-ASTNode *ParseExpr();
-ASTNode *ParseAssign();
-ASTNode *ParseLogicOr();
-ASTNode *ParseLogicAnd();
-ASTNode *ParseEquality();
-ASTNode *ParseRelational();
-ASTNode *ParseAdditive();
-ASTNode *ParseTerm();
-ASTNode *ParseUnary();
-ASTNode *ParseFactor();
-void     match(int expected);
+static ASTNode *ParseStmtInner(void);
+static ASTNode *ParseBlockInner(void);
+static ASTNode *ParseDeclaration(void);
+static void     ParseParamList(ASTNode *funcNode);
+static ASTNode *ParseExpr(void);
+static ASTNode *ParseAssign(void);
+static ASTNode *ParseLogicOr(void);
+static ASTNode *ParseLogicAnd(void);
+static ASTNode *ParseEquality(void);
+static ASTNode *ParseRelational(void);
+static ASTNode *ParseAdditive(void);
+static ASTNode *ParseTerm(void);
+static ASTNode *ParseUnary(void);
+static ASTNode *ParseFactor(void);
 
-// Copia in current_lexeme il testo [tok, cur) dell'ultimo token letto da yylex().
-// Va chiamata SUBITO dopo yylex(), prima che una chiamata successiva sovrascriva tok/cur.
-static void setLexeme(void) {
-    free(current_lexeme);
-    int len = (int)(cur - tok);
-    if (len < 0) len = 0;
-    current_lexeme = (char *)malloc(len + 1);
-    memcpy(current_lexeme, tok, len);
-    current_lexeme[len] = '\0';
-}
+/* ==================================================================
+ * Bookkeeping dei token: unica interfaccia verso lexer.h
+ * ================================================================== */
 
-// Avanza al prossimo token, aggiornando sia current_token che current_lexeme.
 static void advance(void) {
-    current_token = yylex();
-    setLexeme();
+    current_token = lexer_next_token();
+    free(current_lexeme);
+    current_lexeme = strdup(lexer_current_lexeme());
 }
 
-void match(int expected) {
+/* Consuma il token atteso, oppure segnala un errore (senza avanzare:
+   sara' synchronize(), chiamato centralmente da ParseStmt, a farlo). */
+static void match(int expected) {
     if (current_token == expected) {
         advance();
     } else {
-        fprintf(stderr, "Errore di sintassi: atteso token %d, trovato %d\n", expected, current_token);
-        exit(1);
+        reportError(lexer_current_line(), "atteso token %d, trovato '%s' (token %d)",
+                    expected, current_lexeme, current_token);
     }
 }
 
-// Program -> Stmt*
-ASTNode *ParseProgram() {
+/* Recovery "panic mode": scarta token finche' non trova un confine sicuro.
+   GARANZIA DI AVANZAMENTO: consuma sempre almeno un token (quello che ha
+   causato l'errore) prima di iniziare a cercare il punto di sincronizzazione.
+   Senza questa garanzia, un token "di confine" mai consumato in quel punto
+   (es. una '}' spuria senza blocco aperto corrispondente) farebbe entrare
+   il parser in un loop infinito, perche' ne' match() ne' synchronize()
+   avanzerebbero mai oltre quel token. */
+static void synchronize(void) {
+    advance();   /* garantisce almeno un token di progresso ad ogni chiamata */
+
+    while (current_token != TOK_EOF) {
+        if (current_token == TOK_DEL_SEMICOLON) {
+            advance();   /* il ';' stesso e' un buon punto di ripartenza: consumalo */
+            return;
+        }
+        switch (current_token) {
+            case TOK_DEL_RBRACE:
+            case TOK_KW_ELSE:
+            case TOK_KW_WHILE:
+            case TOK_KW_IF:
+            case TOK_KW_RETURN:
+            case TOK_KW_INT:
+            case TOK_KW_FLOAT:
+                return;   /* non consumarlo: e' l'inizio del prossimo costrutto */
+        }
+        advance();
+    }
+}
+
+/* ==================================================================
+ * Program -> Stmt*
+ * ================================================================== */
+ASTNode *ParseProgram(void) {
+    advance();   /* legge il primo token */
+
     ASTNode *node = newNode(ND_PROGRAM, NULL);
     while (current_token != TOK_EOF) {
-        addChild(node, ParseStmt());
+        addChild(node, ParseStmtInner());
+        if (hadAnyError()) {
+            synchronize();
+            clearError();
+        }
     }
     return node;
 }
 
-// Block -> '{' Stmt* '}'
-ASTNode *ParseBlock() {
+/* Block -> '{' Stmt* '}' */
+static ASTNode *ParseBlockInner(void) {
     match(TOK_DEL_LBRACE);
     ASTNode *node = newNode(ND_BLOCK, NULL);
-    while (current_token != TOK_DEL_RBRACE) {
-        addChild(node, ParseStmt());
+    while (current_token != TOK_DEL_RBRACE && current_token != TOK_EOF) {
+        addChild(node, ParseStmtInner());
+        if (hadAnyError()) {
+            synchronize();
+            clearError();
+        }
     }
     match(TOK_DEL_RBRACE);
     return node;
 }
 
-// Stmt -> Decl | Block | IfStmt | WhileStmt | ReturnStmt | Expr ';'
-ASTNode *ParseStmt() {
+/* Stmt -> Decl | Block | IfStmt | WhileStmt | ReturnStmt | Expr ';' */
+static ASTNode *ParseStmtInner(void) {
     switch (current_token) {
         case TOK_KW_INT:
         case TOK_KW_FLOAT:
             return ParseDeclaration();
 
         case TOK_DEL_LBRACE:
-            return ParseBlock();
+            return ParseBlockInner();
 
         case TOK_KW_IF: {
             match(TOK_KW_IF);
             match(TOK_DEL_LPAREN);
             ASTNode *cond = ParseExpr();
             match(TOK_DEL_RPAREN);
-            ASTNode *thenBranch = ParseStmt();
+            ASTNode *thenBranch = ParseStmtInner();
 
             ASTNode *node = newNode(ND_IF, NULL);
             addChild(node, cond);
             addChild(node, thenBranch);
             if (current_token == TOK_KW_ELSE) {
                 match(TOK_KW_ELSE);
-                addChild(node, ParseStmt()); // terzo figlio = ramo else, se presente
+                addChild(node, ParseStmtInner()); /* terzo figlio = ramo else, se presente */
             }
             return node;
         }
@@ -108,7 +149,7 @@ ASTNode *ParseStmt() {
             match(TOK_DEL_LPAREN);
             ASTNode *cond = ParseExpr();
             match(TOK_DEL_RPAREN);
-            ASTNode *body = ParseStmt();
+            ASTNode *body = ParseStmtInner();
 
             ASTNode *node = newNode(ND_WHILE, NULL);
             addChild(node, cond);
@@ -137,9 +178,8 @@ ASTNode *ParseStmt() {
     }
 }
 
-// ParamList -> (Type ID (',' Type ID)*)?
-// I parametri vengono aggiunti direttamente come figli del nodo funcNode.
-void ParseParamList(ASTNode *funcNode) {
+/* ParamList -> (Type ID (',' Type ID)*)? */
+static void ParseParamList(ASTNode *funcNode) {
     while (current_token == TOK_KW_INT || current_token == TOK_KW_FLOAT) {
         char type[32];
         snprintf(type, sizeof(type), "%s", current_lexeme);
@@ -161,12 +201,13 @@ void ParseParamList(ASTNode *funcNode) {
     }
 }
 
-// Decl -> Type ID '(' ParamList ')' Block            (definizione di funzione)
-//       | Type ID ( '[' NUM ']' )? ';'                (variabile / array)
-ASTNode *ParseDeclaration() {
+/* Decl -> Type ID '(' ParamList ')' Block            (definizione di funzione)
+ *       | Type ID ( '[' NUM ']' )? ';'                (variabile / array)
+ */
+static ASTNode *ParseDeclaration(void) {
     char type[32];
     snprintf(type, sizeof(type), "%s", current_lexeme);
-    match(current_token); // Consuma KW_INT o KW_FLOAT
+    match(current_token); /* consuma KW_INT o KW_FLOAT */
 
     char name[64];
     snprintf(name, sizeof(name), "%s", current_lexeme);
@@ -176,17 +217,15 @@ ASTNode *ParseDeclaration() {
     snprintf(combined, sizeof(combined), "%s %s", type, name);
 
     if (current_token == TOK_DEL_LPAREN) {
-        // Definizione di funzione
         ASTNode *node = newNode(ND_FUNC_DECL, combined);
         match(TOK_DEL_LPAREN);
         ParseParamList(node);
         match(TOK_DEL_RPAREN);
-        addChild(node, ParseBlock()); // corpo della funzione (ultimo figlio)
+        addChild(node, ParseBlockInner());
         return node;
     }
 
     if (current_token == TOK_DEL_LBRACK) {
-        // Dichiarazione di array
         match(TOK_DEL_LBRACK);
         char size[32];
         snprintf(size, sizeof(size), "%s", current_lexeme);
@@ -199,32 +238,33 @@ ASTNode *ParseDeclaration() {
         return newNode(ND_VAR_DECL, arrDecl);
     }
 
-    // Dichiarazione di variabile semplice
     match(TOK_DEL_SEMICOLON);
     return newNode(ND_VAR_DECL, combined);
 }
 
-// Gerarchia Espressioni (precedenza crescente):
-// Expr -> Assign
-// Assign -> LogicOr ( '=' Assign )?           (associativa a destra)
-// LogicOr -> LogicAnd ( '||' LogicAnd )*
-// LogicAnd -> Equality ( '&&' Equality )*
-// Equality -> Relational ( ('=='|'!=') Relational )*
-// Relational -> Additive ( ('<'|'>'|'<='|'>=') Additive )*
-// Additive -> Term ( ('+'|'-') Term )*
-// Term -> Unary ( ('*'|'/'|'%') Unary )*
-// Unary -> '!' Unary | Factor
-// Factor -> ID | NUM | '(' Expr ')' | Call | ArrayAccess
+/* ==================================================================
+ * Gerarchia Espressioni (precedenza crescente):
+ * Expr -> Assign
+ * Assign -> LogicOr ( '=' Assign )?           (associativa a destra)
+ * LogicOr -> LogicAnd ( '||' LogicAnd )*
+ * LogicAnd -> Equality ( '&&' Equality )*
+ * Equality -> Relational ( ('=='|'!=') Relational )*
+ * Relational -> Additive ( ('<'|'>'|'<='|'>=') Additive )*
+ * Additive -> Term ( ('+'|'-') Term )*
+ * Term -> Unary ( ('*'|'/'|'%') Unary )*
+ * Unary -> '!' Unary | '-' Unary | Factor
+ * Factor -> ID | NUM | '(' Expr ')' | Call | ArrayAccess
+ * ================================================================== */
 
-ASTNode *ParseExpr() {
+static ASTNode *ParseExpr(void) {
     return ParseAssign();
 }
 
-ASTNode *ParseAssign() {
+static ASTNode *ParseAssign(void) {
     ASTNode *left = ParseLogicOr();
     if (current_token == TOK_OP_ASSIGN) {
         match(TOK_OP_ASSIGN);
-        ASTNode *right = ParseAssign(); // ricorsione per l'associativita' a destra
+        ASTNode *right = ParseAssign();
         ASTNode *node = newNode(ND_ASSIGN, "=");
         addChild(node, left);
         addChild(node, right);
@@ -233,7 +273,7 @@ ASTNode *ParseAssign() {
     return left;
 }
 
-ASTNode *ParseLogicOr() {
+static ASTNode *ParseLogicOr(void) {
     ASTNode *left = ParseLogicAnd();
     while (current_token == TOK_OP_OR) {
         char *op = strdup(current_lexeme);
@@ -248,7 +288,7 @@ ASTNode *ParseLogicOr() {
     return left;
 }
 
-ASTNode *ParseLogicAnd() {
+static ASTNode *ParseLogicAnd(void) {
     ASTNode *left = ParseEquality();
     while (current_token == TOK_OP_AND) {
         char *op = strdup(current_lexeme);
@@ -263,7 +303,7 @@ ASTNode *ParseLogicAnd() {
     return left;
 }
 
-ASTNode *ParseEquality() {
+static ASTNode *ParseEquality(void) {
     ASTNode *left = ParseRelational();
     while (current_token == TOK_OP_EQ || current_token == TOK_OP_NE) {
         char *op = strdup(current_lexeme);
@@ -278,7 +318,7 @@ ASTNode *ParseEquality() {
     return left;
 }
 
-ASTNode *ParseRelational() {
+static ASTNode *ParseRelational(void) {
     ASTNode *left = ParseAdditive();
     while (current_token == TOK_OP_LT || current_token == TOK_OP_GT ||
            current_token == TOK_OP_LE || current_token == TOK_OP_GE) {
@@ -294,7 +334,7 @@ ASTNode *ParseRelational() {
     return left;
 }
 
-ASTNode *ParseAdditive() {
+static ASTNode *ParseAdditive(void) {
     ASTNode *left = ParseTerm();
     while (current_token == TOK_OP_PLUS || current_token == TOK_OP_MINUS) {
         char *op = strdup(current_lexeme);
@@ -309,7 +349,7 @@ ASTNode *ParseAdditive() {
     return left;
 }
 
-ASTNode *ParseTerm() {
+static ASTNode *ParseTerm(void) {
     ASTNode *left = ParseUnary();
     while (current_token == TOK_OP_MUL || current_token == TOK_OP_DIV || current_token == TOK_OP_MOD) {
         char *op = strdup(current_lexeme);
@@ -324,11 +364,11 @@ ASTNode *ParseTerm() {
     return left;
 }
 
-// Unary -> '!' Unary | Factor
-ASTNode *ParseUnary() {
-    if (current_token == TOK_OP_NOT) {
+/* Unary -> '!' Unary | '-' Unary | Factor */
+static ASTNode *ParseUnary(void) {
+    if (current_token == TOK_OP_NOT || current_token == TOK_OP_MINUS) {
         char *op = strdup(current_lexeme);
-        match(TOK_OP_NOT);
+        match(current_token);
         ASTNode *operand = ParseUnary();
         ASTNode *node = newNode(ND_UNARY, op);
         addChild(node, operand);
@@ -338,19 +378,27 @@ ASTNode *ParseUnary() {
     return ParseFactor();
 }
 
-// Factor -> ID | NUM | '(' Expr ')' | Call | ArrayAccess
-ASTNode *ParseFactor() {
+/* Factor -> ID ( '(' (Expr (',' Expr)*)? ')' | '[' Expr ']' )?
+ *         | NUM_INT | NUM_FLOAT | '(' Expr ')'
+ */
+static ASTNode *ParseFactor(void) {
     if (current_token == TOK_ID) {
         char *name = strdup(current_lexeme);
         match(TOK_ID);
 
         ASTNode *node;
-        if (current_token == TOK_DEL_LPAREN) { // Chiamata funzione
+        if (current_token == TOK_DEL_LPAREN) {
             match(TOK_DEL_LPAREN);
-            /* ParseArgs(); */ // TODO: argomenti non ancora supportati dalla grammatica
-            match(TOK_DEL_RPAREN);
             node = newNode(ND_CALL, name);
-        } else if (current_token == TOK_DEL_LBRACK) { // Accesso array
+            if (current_token != TOK_DEL_RPAREN) {
+                addChild(node, ParseExpr());
+                while (current_token == TOK_DEL_COMMA) {
+                    match(TOK_DEL_COMMA);
+                    addChild(node, ParseExpr());
+                }
+            }
+            match(TOK_DEL_RPAREN);
+        } else if (current_token == TOK_DEL_LBRACK) {
             match(TOK_DEL_LBRACK);
             ASTNode *index = ParseExpr();
             match(TOK_DEL_RBRACK);
@@ -379,52 +427,11 @@ ASTNode *ParseFactor() {
         return node;
     }
 
-    fprintf(stderr, "Errore di sintassi: token inatteso %d in un'espressione\n", current_token);
-    exit(1);
-}
-
-static unsigned char *readFile(const char *path, long *outLen) {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "Impossibile aprire il file %s\n", path);
-        exit(1);
-    }
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    /* +1 byte per il terminatore '\0' usato come sentinella di fine-input
-       (regola "end" nel blocco re2c sopra) */
-    unsigned char *buf = malloc(len + 1);
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
-    fclose(f);
-
-    if (outLen) *outLen = len;
-    return buf;
-}
-
-
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Uso: %s <file_sorgente.c>\n", argv[0]);
-        return 1;
-    }
-
-    // Carica il file in memoria
-    unsigned char *buffer = readFile(argv[1], NULL);
-    cur = buffer; // Inizializza il cursore dello scanner
-
-    // Avvia il parsing
-    advance();
-    ASTNode *root = ParseProgram();
-
-    printf("Parsing completato con successo!\n\n");
-    printf("=== PARSE TREE ===\n");
-    printAST(root, 0);
-
-    freeAST(root);
-    free(current_lexeme);
-    free(buffer);
-    return 0;
+    /* Nessun recovery qui dentro: si limita a segnalare l'errore (soppresso
+       se gia' segnalato per questo statement, vedi error.c) e restituire
+       un nodo <error>. Il recovery vero e proprio avviene UNA SOLA VOLTA,
+       centralmente, in ParseProgram/ParseBlockInner dopo che lo statement
+       e' stato costruito per intero - vedi il commento sopra ParseStmtInner. */
+    reportError(lexer_current_line(), "token inatteso %d in un'espressione", current_token);
+    return newNode(ND_ERROR, "<error>");
 }

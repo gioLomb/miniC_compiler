@@ -14,7 +14,7 @@ int main() {
     /* Ciclo di controllo principale
        Verifica gli operatori logici e relazionali */
     while (i <= n && fattoriale != 0) {
-        fattoriale = fattoriale * i;
+        fattoriale = fattoriale * i
         i = i + 1;
     }
 

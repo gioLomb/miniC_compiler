@@ -25,15 +25,16 @@
 
 
 /* --- "yytext" equivalente: cur punta al carattere corrente, tok
-   all'inizio del lessema in corso di riconoscimento --- */
-/* 'cur' e 'tok' NON sono static: sono variabili globali condivise con
-   parser.c. 'cur' e' inizializzata da parser.c prima di chiamare yylex();
-   'tok'/'cur' insieme delimitano il lessema dell'ultimo token restituito,
-   e parser.c le legge subito dopo ogni chiamata a yylex() per catturare
-   il testo del token (vedi advance()/setLexeme() in parser.c). */
-const unsigned char *cur;
-const unsigned char *tok;
+   all'inizio del lessema in corso di riconoscimento ---
+   'cur' e 'tok' sono STATIC: interni a questo file. Il resto del
+   programma (parser.c) non li vede mai direttamente: puo' solo usare
+   le funzioni lexer_open/lexer_next_token/lexer_current_lexeme/
+   lexer_current_line dichiarate in lexer.h. Questo evita gli 'extern'
+   che attraversavano il confine tra modulo scanner e modulo parser. */
+static const unsigned char *cur;
+static const unsigned char *tok;
 static int lineNumber = 1;
+static unsigned char *sourceBuffer = NULL;   /* buffer allocato da lexer_open */
 
 #define TOKLEN   ((int)(cur - tok))
 #define TOKTEXT  ((const char *)tok)
@@ -43,7 +44,7 @@ static int lineNumber = 1;
  * Ogni iterazione del for(;;) riconosce un token; i token da ignorare
  * (whitespace, commenti) fanno "continue" invece di "return".
  */
-int yylex(void) {
+static int yylex(void) {
     const unsigned char *YYMARKER;   /* richiesto da re2c per il backtracking
                                          tra regole con prefissi comuni, es.
                                          "<" vs "<=" */
@@ -69,45 +70,45 @@ int yylex(void) {
             /* commento a blocco: /* ... * / (nessun "* /" al suo interno) */
             blockcomment = "/*" ([^*\x00] | ("*"+ [^*/\x00]))* "*"+ "/";
 
-            "int"     { printf("TOKEN: KW_INT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_INT; }
-            "float"   { printf("TOKEN: KW_FLOAT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_FLOAT; }
-            "if"      { printf("TOKEN: KW_IF (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_IF; }
-            "else"    { printf("TOKEN: KW_ELSE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_ELSE; }
-            "while"   { printf("TOKEN: KW_WHILE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_WHILE; }
-            "for"     { printf("TOKEN: KW_FOR (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_FOR; }
-            "return"  { printf("TOKEN: KW_RETURN (%.*s)\n", TOKLEN, TOKTEXT); return TOK_KW_RETURN; }
+            "int"     { return TOK_KW_INT; }
+            "float"   { return TOK_KW_FLOAT; }
+            "if"      { return TOK_KW_IF; }
+            "else"    { return TOK_KW_ELSE; }
+            "while"   { return TOK_KW_WHILE; }
+            "for"     { return TOK_KW_FOR; }
+            "return"  { return TOK_KW_RETURN; }
 
-            id        { printf("TOKEN: ID (%.*s)\n", TOKLEN, TOKTEXT); return TOK_ID; }
+            id        { return TOK_ID; }
 
-            float_lit { printf("TOKEN: NUM_FLOAT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_NUM_FLOAT; }
-            int_lit   { printf("TOKEN: NUM_INT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_NUM_INT; }
+            float_lit { return TOK_NUM_FLOAT; }
+            int_lit   { return TOK_NUM_INT; }
 
-            "+"       { printf("TOKEN: OP_PLUS (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_PLUS; }
-            "-"       { printf("TOKEN: OP_MINUS (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_MINUS; }
-            "*"       { printf("TOKEN: OP_MUL (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_MUL; }
-            "/"       { printf("TOKEN: OP_DIV (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_DIV; }
-            "%"       { printf("TOKEN: OP_MOD (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_MOD; }
+            "+"       { return TOK_OP_PLUS; }
+            "-"       { return TOK_OP_MINUS; }
+            "*"       { return TOK_OP_MUL; }
+            "/"       { return TOK_OP_DIV; }
+            "%"       { return TOK_OP_MOD; }
 
-            "=="      { printf("TOKEN: OP_EQ (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_EQ; }
-            "!="      { printf("TOKEN: OP_NE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_NE; }
-            "<="      { printf("TOKEN: OP_LE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_LE; }
-            ">="      { printf("TOKEN: OP_GE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_GE; }
-            "<"       { printf("TOKEN: OP_LT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_LT; }
-            ">"       { printf("TOKEN: OP_GT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_GT; }
+            "=="      { return TOK_OP_EQ; }
+            "!="      { return TOK_OP_NE; }
+            "<="      { return TOK_OP_LE; }
+            ">="      { return TOK_OP_GE; }
+            "<"       { return TOK_OP_LT; }
+            ">"       { return TOK_OP_GT; }
 
-            "&&"      { printf("TOKEN: OP_AND (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_AND; }
-            "||"      { printf("TOKEN: OP_OR (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_OR; }
-            "!"       { printf("TOKEN: OP_NOT (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_NOT; }
-            "="       { printf("TOKEN: OP_ASSIGN (%.*s)\n", TOKLEN, TOKTEXT); return TOK_OP_ASSIGN; }
+            "&&"      { return TOK_OP_AND; }
+            "||"      { return TOK_OP_OR; }
+            "!"       { return TOK_OP_NOT; }
+            "="       { return TOK_OP_ASSIGN; }
 
-            "("       { printf("TOKEN: DEL_LPAREN (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_LPAREN; }
-            ")"       { printf("TOKEN: DEL_RPAREN (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_RPAREN; }
-            "["       { printf("TOKEN: DEL_LBRACK (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_LBRACK; }
-            "]"       { printf("TOKEN: DEL_RBRACK (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_RBRACK; }
-            "{"       { printf("TOKEN: DEL_LBRACE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_LBRACE; }
-            "}"       { printf("TOKEN: DEL_RBRACE (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_RBRACE; }
-            ","       { printf("TOKEN: DEL_COMMA (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_COMMA; }
-            ";"       { printf("TOKEN: DEL_SEMICOLON (%.*s)\n", TOKLEN, TOKTEXT); return TOK_DEL_SEMICOLON; }
+            "("       { return TOK_DEL_LPAREN; }
+            ")"       { return TOK_DEL_RPAREN; }
+            "["       { return TOK_DEL_LBRACK; }
+            "]"       { return TOK_DEL_RBRACK; }
+            "{"       { return TOK_DEL_LBRACE; }
+            "}"       { return TOK_DEL_RBRACE; }
+            ","       { return TOK_DEL_COMMA; }
+            ";"       { return TOK_DEL_SEMICOLON; }
 
             comment      { continue; }          /* commenti su singola riga: ignora */
             blockcomment {
@@ -132,5 +133,59 @@ int yylex(void) {
     }
 }
 
-/* --- main: legge l'intero file in un buffer null-terminated e scansiona --- */
+/* ==================================================================
+ * API PUBBLICA DEL LEXER (lexer.h) - unico punto di contatto con il
+ * resto del programma. Nessuno fuori da questo file vede piu'
+ * 'cur'/'tok'/'yylex' direttamente: niente extern nel parser.
+ * ================================================================== */
 
+#include "../../lexer.h"
+
+#define LEXEME_MAX 256
+static char lexemeBuf[LEXEME_MAX];
+
+void lexer_open(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Impossibile aprire il file %s\n", path);
+        exit(1);
+    }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    /* +1 byte per il terminatore '\0' usato come sentinella di fine-input
+       (regola "end" nel blocco re2c sopra) */
+    sourceBuffer = malloc(len + 1);
+    fread(sourceBuffer, 1, len, f);
+    sourceBuffer[len] = '\0';
+    fclose(f);
+
+    cur = sourceBuffer;
+    lineNumber = 1;
+}
+
+void lexer_close(void) {
+    free(sourceBuffer);
+    sourceBuffer = NULL;
+}
+
+int lexer_next_token(void) {
+    int token = yylex();
+
+    int len = (int)(cur - tok);
+    if (len < 0) len = 0;
+    if (len >= LEXEME_MAX) len = LEXEME_MAX - 1;
+    memcpy(lexemeBuf, tok, len);
+    lexemeBuf[len] = '\0';
+
+    return token;
+}
+
+const char *lexer_current_lexeme(void) {
+    return lexemeBuf;
+}
+
+int lexer_current_line(void) {
+    return lineNumber;
+}
