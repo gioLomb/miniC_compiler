@@ -39,7 +39,7 @@ AST2SYM_SRC     := ast_to_symtab.c
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) parser/main.c
 TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) test_pass1.c
+                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
 
 # Traduce ogni lista di sorgenti .c nei corrispondenti .o dentro build/
 # (build/ rispecchia la struttura delle cartelle sorgente)

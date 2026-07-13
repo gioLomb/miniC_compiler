@@ -14,16 +14,20 @@ int main() {
     /* Ciclo di controllo principale
        Verifica gli operatori logici e relazionali */
     while (i <= n && fattoriale != 0) {
+        int x = 0;
         fattoriale = fattoriale * i;
         i = i + 1;
     }
 
     if(fattoriale <= 2){
+        int c = 1;
         return 1;
     }
     if (fattoriale >= 5000 || tasso_variazione < soglia) {
+        int d = 2;
         return 1;
     } else {
+        int e = 3;
         return 0;
     }
 }
