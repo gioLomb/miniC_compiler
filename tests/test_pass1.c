@@ -35,17 +35,6 @@ static void printSymbol(void *key, size_t keySize, void *value, size_t valueSize
     }
 }
 
-/* Stampa ricorsivamente ogni scope figlio (Pass 2: uno per funzione,
-   uno per ogni ND_BLOCK annidato), indentato secondo la profondita'. */
-static void printScopeTreeRec(Scope *scope, int depth) {
-    for (int i = 0; i < scope->childCount; i++) {
-        Scope *child = scope->children[i];
-        printf("%*s--- scope figlio #%d ---\n", depth * 2, "", i);
-        ht_foreach(child->table, printSymbol, NULL);
-        printScopeTreeRec(child, depth + 1);
-    }
-}
-
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Uso: %s <file_sorgente.c>\n", argv[0]);
@@ -57,13 +46,11 @@ int main(int argc, char **argv) {
     printf("Parsing: %d errori.\n", totalErrorCount());
 
     Scope *global = scope_create(NULL);
-    int symErrors = symtab_populate(root, global);
-    printf("Popolamento symtab (Pass 1 + Pass 2): %d errori.\n\n", symErrors);
+    int symErrors = symtab_populate_globals(root, global);
+    printf("Pass 1 (popolamento scope globale): %d errori.\n\n", symErrors);
 
     printf("=== SCOPE GLOBALE ===\n");
     ht_foreach(global->table, printSymbol, NULL);
-
-    printScopeTreeRec(global, 1);
 
     symtab_destroy_tree(global);
     freeAST(root);

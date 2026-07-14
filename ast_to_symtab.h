@@ -1,6 +1,7 @@
 #ifndef AST_TO_SYMTAB_H
 #define AST_TO_SYMTAB_H
 
+#include <stddef.h>
 #include "parser/ast.h"
 #include "symbol_table.h"
 
@@ -14,40 +15,59 @@
 DataType symtab_type_from_string(const char *typeName);
 
 /*
- * Popola l'intero albero di scope a partire da 'program' (ND_PROGRAM) e
- * 'global' (scope radice, gia' creato dal chiamante con scope_create(NULL)).
- *
- * Internamente esegue due passate in sequenza (Pass 1 poi Pass 2), ma dal
- * punto di vista di chi chiama questa funzione la popolazione della symtab
- * e' un'unica operazione:
- *
- *   Pass 1 (firma delle dichiarazioni top-level)
- *     Per ogni figlio diretto di 'program', registra la signature in
- *     'global' senza scendere nei corpi funzione: per ND_FUNC_DECL un
- *     Symbol SYM_FUNC (tipo di ritorno + paramCount/paramTypes dai nodi
- *     ND_PARAM, tutti i figli tranne l'ultimo, che e' sempre il Block),
- *     per ND_VAR_DECL un Symbol SYM_VAR. Questo risolve le forward
- *     reference tra funzioni (una funzione puo' chiamarne un'altra
- *     dichiarata piu' avanti nel file).
- *
- *   Pass 2 (scope dei parametri + corpi funzione)
- *     Per ogni ND_FUNC_DECL gia' registrato in Pass 1, crea uno scope
- *     figlio di 'global', vi dichiara i parametri (ND_PARAM) e poi
- *     attraversa ricorsivamente il corpo (l'ultimo figlio, un ND_BLOCK)
- *     dichiarando ogni ND_VAR_DECL incontrato nello scope giusto. Apre
- *     un nuovo scope figlio solo in corrispondenza di ND_BLOCK; ND_IF e
- *     ND_WHILE ricorrono sui rami senza introdurre un proprio scope (uno
- *     statement senza graffe non e' un blocco lessicale a se'). Non fa
- *     alcun symtab_lookup sugli usi (ND_ID/ND_CALL/ND_ARRAY_ACCESS): quello
- *     e' compito di una fase successiva (analisi semantica).
- *
- * Gli scope creati restano appesi all'albero radicato in 'global' (non
- * vengono distrutti singolarmente): il chiamante libera tutto in un colpo
- * solo con symtab_destroy_tree(global) a fine compilazione.
- *
- * Restituisce il numero totale di errori di redeclaration incontrati nelle
- * due passate (0 = nessuno).
+ * Il parser (vedi ParseDeclaration/ParseParamList in parser.c) memorizza
+ * le dichiarazioni come un'unica stringa nel campo 'text' del nodo:
+ *   "int x"        -> variabile semplice
+ *   "int arr[5]"   -> array
+ *   "int somma"    -> nome di funzione (tipo di ritorno + nome)
+ * Questa funzione la spacca nelle sue parti. E' condivisa da Pass 1 (qui
+ * sotto) e dal modulo semantico (semantic.c), che la riusa per estrarre
+ * nome/tipo di ritorno di una funzione o per dichiarare variabili/
+ * parametri nel proprio scope: la logica di parsing e' unica, un solo
+ * punto dove puo' esserci un bug (es. usare l'intero 'text' invece del
+ * solo nome come chiave di lookup - errore gia' capitato in passato).
  */
-int symtab_populate(ASTNode *program, Scope *global);
+void symtab_parse_decl_text(const char *text,
+                             char *typeName, size_t typeCap,
+                             char *name, size_t nameCap,
+                             int *isArray, int *arraySize);
+
+/*
+ * Dichiara una singola variabile/parametro in 'scope', a partire dal
+ * campo 'text' cosi' come lo produce il parser ("int x", "int arr[5]").
+ * Riusata sia per ND_VAR_DECL che per ND_PARAM, sia da questo modulo
+ * (non piu', dato che la Pass 2 e' stata spostata) sia dal modulo
+ * semantico (semantic.c), che la chiama mentre attraversa i corpi
+ * funzione dichiarando variabili e risolvendo espressioni nello stesso
+ * giro (vedi semantic.h per il perche' di questa fusione).
+ *
+ * Restituisce 0 se 'name' e' gia' dichiarato in questo stesso scope
+ * (redeclaration - errore semantico da segnalare al chiamante), 1
+ * altrimenti.
+ */
+int symtab_declare_from_decl_text(Scope *scope, const char *text);
+
+/*
+ * PASS 1: popola 'global' con le signature di TUTTE le dichiarazioni
+ * top-level dell'AST (figli diretti di ND_PROGRAM), senza scendere nei
+ * Block dei corpi funzione. Serve a risolvere le forward reference tra
+ * funzioni (una funzione puo' chiamarne un'altra dichiarata piu' avanti
+ * nel file).
+ *
+ * Per ND_FUNC_DECL: registra un Symbol SYM_FUNC con dataType = tipo di
+ * ritorno, paramCount/paramTypes ricavati dai nodi ND_PARAM (tutti i
+ * figli tranne l'ultimo, che e' sempre il Block del corpo).
+ * Per ND_VAR_DECL: registra un Symbol SYM_VAR (con isArray/arraySize se
+ * e' un array).
+ *
+ * NOTA: la Pass 2 (scope dei parametri + corpi funzione) NON vive piu'
+ * qui: e' stata fusa con l'analisi semantica in semantic.c, per evitare
+ * di creare due alberi di scope paralleli (uno per la sola costruzione,
+ * uno per la risoluzione) che nessuno dei due potrebbe riusare dall'altro
+ * senza esportare puntatori fragili. Vedi semantic.h.
+ *
+ * Restituisce il numero di errori di redeclaration incontrati (0 = nessuno).
+ */
+int symtab_populate_globals(ASTNode *program, Scope *global);
 
 #endif
