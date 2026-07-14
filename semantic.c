@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "semantic.h"
 #include "ast_to_symtab.h"
@@ -30,9 +31,12 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors);
 /*
  * ND_ID / ND_ARRAY_ACCESS condividono la stessa logica di lookup: qui
  * factorizzata per non duplicarla. 'wantArray' indica quale dei due casi
- * stiamo verificando (1 = ND_ARRAY_ACCESS, 0 = ND_ID).
+ * stiamo verificando (1 = ND_ARRAY_ACCESS, 0 = ND_ID). 'outSym', se non
+ * NULL, riceve il Symbol trovato quando il lookup ha successo — serve
+ * al chiamante ND_ARRAY_ACCESS per leggere arraySize (bound-check
+ * statico) senza rifare un secondo symtab_lookup identico.
  */
-static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, int *errors) {
+static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol *outSym, int *errors) {
     Symbol sym;
     if (!symtab_lookup(scope, expr->text, &sym)) {
         fprintf(stderr, "Errore: '%s' non e' stato dichiarato\n", expr->text);
@@ -54,7 +58,32 @@ static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, int *er
         (*errors)++;
         return T_VOID;
     }
+    if (outSym) *outSym = sym;
     return sym.dataType;
+}
+
+/*
+ * Se 'expr' e' una costante intera nota GIA' in fase di compilazione
+ * (un letterale, eventualmente con uno o piu' meno unari davanti, es.
+ * "3", "-1", "- -2"), scrive il suo valore in *out e ritorna 1.
+ * Altrimenti (una variabile, una chiamata, un'espressione con operandi
+ * non costanti...) ritorna 0: quell'indice si potra' verificare solo a
+ * runtime — fuori portata di un'analisi statica, e non e' un errore in
+ * se': significa solo "qui non possiamo dire nulla in anticipo".
+ */
+static int constIntValue(ASTNode *expr, long *out) {
+    if (expr->kind == ND_NUM_INT) {
+        *out = atol(expr->text);
+        return 1;
+    }
+    if (expr->kind == ND_UNARY && strcmp(expr->text, "-") == 0) {
+        long inner;
+        if (constIntValue(expr->children[0], &inner)) {
+            *out = -inner;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /*
@@ -79,16 +108,36 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         return T_FLOAT;
 
     case ND_ID:
-        return checkNameUse(expr, scope, 0, errors);
+        return checkNameUse(expr, scope, 0, NULL, errors);
 
     case ND_ARRAY_ACCESS: {
-        DataType idxType = checkExpr(expr->children[0], scope, errors);
+        ASTNode *idx = expr->children[0];
+        DataType idxType = checkExpr(idx, scope, errors);
         if (idxType != T_VOID && idxType != T_INT) {
             fprintf(stderr, "Errore: l'indice di '%s[]' deve essere int, non %s\n",
                     expr->text, typeName(idxType));
             (*errors)++;
         }
-        return checkNameUse(expr, scope, 1, errors);
+
+        Symbol sym;
+        DataType elemType = checkNameUse(expr, scope, 1, &sym, errors);
+
+        /* Bound-check statico: solo se l'indice e' una costante intera
+           nota adesso (letterale, eventualmente con un meno unario).
+           Un indice calcolato a runtime (variabile, espressione) non
+           puo' essere verificato qui - richiederebbe un controllo nel
+           codice generato, non un'analisi statica. */
+        long constValue;
+        if (elemType != T_VOID && constIntValue(idx, &constValue)) {
+            if (constValue < 0 || constValue >= sym.arraySize) {
+                fprintf(stderr,
+                        "Errore: indice %ld fuori dai limiti di '%s' (dimensione %d)\n",
+                        constValue, expr->text, sym.arraySize);
+                (*errors)++;
+            }
+        }
+
+        return elemType;
     }
 
     case ND_CALL: {

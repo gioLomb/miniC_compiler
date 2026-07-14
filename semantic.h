@@ -29,7 +29,12 @@
  *     scope corrente o in uno degli scope antenati (symtab_lookup);
  *     un ND_ID non puo' riferirsi a un array (va usato con []) ne' a
  *     una funzione; un ND_ARRAY_ACCESS richiede che il simbolo sia
- *     davvero un array e che l'indice sia di tipo int.
+ *     davvero un array e che l'indice sia di tipo int. Se l'indice e'
+ *     una costante nota a compile-time (letterale, eventualmente con
+ *     un meno unario), viene anche verificato che sia dentro i bound
+ *     dell'array (0 <= indice < arraySize); un indice calcolato a
+ *     runtime non puo' essere verificato qui (richiederebbe un
+ *     controllo nel codice generato, fuori portata di un'analisi statica).
  *   - ND_CALL: il nome deve essere una funzione (non una variabile);
  *     il numero di argomenti deve combaciare con paramCount; ogni
  *     argomento deve essere assegnabile al tipo del parametro
