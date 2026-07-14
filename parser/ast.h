@@ -5,7 +5,10 @@
 typedef enum {
     ND_PROGRAM,       /* radice: lista di dichiarazioni/istruzioni top-level  */
     ND_BLOCK,         /* '{' Stmt* '}'                                       */
-    ND_VAR_DECL,      /* dichiarazione di variabile o array                  */
+    ND_VAR_DECL,      /* dichiarazione di variabile o array; text = "tipo
+                         nome" o "tipo nome[size]"; figli (opzionali) =
+                         inizializzatore: 1 figlio se scalare, N figli
+                         (uno per elemento tra { }) se array           */
     ND_FUNC_DECL,     /* dichiarazione/definizione di funzione               */
     ND_PARAM,         /* singolo parametro formale di una funzione           */
     ND_IF,            /* figli: [cond, then, (else)?]                       */

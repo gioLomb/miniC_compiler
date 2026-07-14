@@ -262,10 +262,53 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, int *err
 
     switch (stmt->kind) {
 
-    case ND_VAR_DECL:
+    case ND_VAR_DECL: {
         /* dichiara nello scope CORRENTE: non ne apre uno nuovo */
-        if (!symtab_declare_from_decl_text(scope, stmt->text)) (*errors)++;
+        if (!symtab_declare_from_decl_text(scope, stmt->text)) {
+            (*errors)++;
+            break;
+        }
+        if (stmt->nchildren == 0) break;   /* nessun inizializzatore */
+
+        /* Ricava tipo/isArray/arraySize dallo stesso testo appena usato
+           per dichiarare il simbolo: piu' semplice che rifare un lookup. */
+        char typeNameBuf[32], varName[SYM_MAX_NAME_LEN];
+        int isArray, arraySize;
+        symtab_parse_decl_text(stmt->text, typeNameBuf, sizeof(typeNameBuf),
+                                varName, sizeof(varName), &isArray, &arraySize);
+        DataType declType = symtab_type_from_string(typeNameBuf);
+
+        if (!isArray) {
+            /* scalare: esattamente un figlio (garantito dal parser) */
+            DataType t = checkExpr(stmt->children[0], scope, errors);
+            if (t != T_VOID && !assignCompatible(declType, t)) {
+                fprintf(stderr,
+                        "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
+                        varName, typeName(declType), typeName(t));
+                (*errors)++;
+            }
+        } else {
+            /* array: un figlio per elemento, in ordine; troppi
+               inizializzatori rispetto alla dimensione dichiarata e' un
+               bound-check statico esattamente come per ND_ARRAY_ACCESS */
+            if (stmt->nchildren > arraySize) {
+                fprintf(stderr,
+                        "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
+                        varName, stmt->nchildren, arraySize);
+                (*errors)++;
+            }
+            for (int i = 0; i < stmt->nchildren; i++) {
+                DataType t = checkExpr(stmt->children[i], scope, errors);
+                if (t != T_VOID && !assignCompatible(declType, t)) {
+                    fprintf(stderr,
+                            "Errore: elemento %d dell'inizializzatore di '%s' e' %s, atteso %s\n",
+                            i, varName, typeName(t), typeName(declType));
+                    (*errors)++;
+                }
+            }
+        }
         break;
+    }
 
     case ND_BLOCK: {
         /* l'UNICO caso che apre un nuovo scope */

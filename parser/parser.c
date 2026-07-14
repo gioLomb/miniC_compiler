@@ -201,8 +201,16 @@ static void ParseParamList(ASTNode *funcNode) {
     }
 }
 
-/* Decl -> Type ID '(' ParamList ')' Block            (definizione di funzione)
- *       | Type ID ( '[' NUM ']' )? ';'                (variabile / array)
+/* Decl -> Type ID '(' ParamList ')' Block                        (definizione di funzione)
+ *       | Type ID ( '=' Expr )? ';'                                (variabile scalare, con init. opzionale)
+ *       | Type ID '[' NUM ']' ( '=' '{' (Expr (',' Expr)*)? '}' )? ';'
+ *                                                                   (array, con init. list opzionale)
+ *
+ * L'inizializzatore, se presente, viene appeso come figlio/figli del nodo
+ * ND_VAR_DECL: un solo figlio per lo scalare, zero o piu' figli (uno per
+ * elemento) per l'array. Il testo del nodo ("tipo nome" o "tipo nome[size]")
+ * resta invariato: chi lo interpreta (symtab_parse_decl_text) non deve
+ * sapere nulla dell'inizializzatore.
  */
 static ASTNode *ParseDeclaration(void) {
     char type[32];
@@ -234,12 +242,32 @@ static ASTNode *ParseDeclaration(void) {
 
         char arrDecl[140];
         snprintf(arrDecl, sizeof(arrDecl), "%s[%s]", combined, size);
+        ASTNode *node = newNode(ND_VAR_DECL, arrDecl);
+
+        if (current_token == TOK_OP_ASSIGN) {
+            match(TOK_OP_ASSIGN);
+            match(TOK_DEL_LBRACE);
+            if (current_token != TOK_DEL_RBRACE) {
+                addChild(node, ParseExpr());
+                while (current_token == TOK_DEL_COMMA) {
+                    match(TOK_DEL_COMMA);
+                    addChild(node, ParseExpr());
+                }
+            }
+            match(TOK_DEL_RBRACE);
+        }
+
         match(TOK_DEL_SEMICOLON);
-        return newNode(ND_VAR_DECL, arrDecl);
+        return node;
     }
 
+    ASTNode *node = newNode(ND_VAR_DECL, combined);
+    if (current_token == TOK_OP_ASSIGN) {
+        match(TOK_OP_ASSIGN);
+        addChild(node, ParseExpr());
+    }
     match(TOK_DEL_SEMICOLON);
-    return newNode(ND_VAR_DECL, combined);
+    return node;
 }
 
 /* ==================================================================
