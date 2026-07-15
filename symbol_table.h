@@ -17,6 +17,12 @@
 #include <stdint.h>
 #include "hash_table.h"
 
+/* NOTA: questo valore NON e' (piu') un limite imposto da symtab_declare/
+   symtab_lookup - la hash table sottostante accetta chiavi di qualunque
+   lunghezza. Resta solo come dimensione suggerita per un eventuale
+   buffer scratch di chi stampa/manipola un nome per proprio conto (es.
+   un test); per costruire/spacchettare stringhe di lunghezza arbitraria
+   durante la compilazione si usa invece l'arena allocator (arena.h). */
 #define SYM_MAX_NAME_LEN   64
 #define SYM_MAX_PARAMS     16   /* limite imposto da paramTypes: 32 bit / 2 bit per parametro */
 

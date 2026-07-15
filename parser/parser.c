@@ -3,6 +3,7 @@
 #include <string.h>
 #include "../tokens.h"
 #include "../lexer.h"
+#include "../arena.h"
 #include "error.h"
 #include "ast.h"
 #include "parser.h"
@@ -14,6 +15,16 @@
  * ================================================================== */
 static int current_token;
 static char *current_lexeme = NULL;
+
+/* Arena "usa e getta" per le stringhe temporanee composte durante il
+   parsing (es. "tipo nome" prima di passarlo a newNode, che ne fa
+   comunque una propria copia via strdup). Vive per l'intera durata di
+   un ParseProgram(): creata all'inizio, distrutta alla fine - non serve
+   piu' oltre quel punto perche' ogni ASTNode->text e' gia' una copia
+   indipendente. Sostituisce i vecchi "char combined[100]" a dimensione
+   fissa: con arena_sprintf() non serve piu' scegliere in anticipo un
+   limite arbitrario per un identificatore. */
+static Arena *scratchArena = NULL;
 
 /* ---- prototipi interni ---- */
 static void advance(void);
@@ -89,6 +100,8 @@ static void synchronize(void) {
  * Program -> Stmt*
  * ================================================================== */
 ASTNode *ParseProgram(void) {
+    scratchArena = arena_create(0);
+
     advance();   /* legge il primo token */
 
     ASTNode *node = newNode(ND_PROGRAM, NULL);
@@ -99,6 +112,9 @@ ASTNode *ParseProgram(void) {
             clearError();
         }
     }
+
+    arena_destroy(scratchArena);
+    scratchArena = NULL;
     return node;
 }
 
@@ -181,16 +197,13 @@ static ASTNode *ParseStmtInner(void) {
 /* ParamList -> (Type ID (',' Type ID)*)? */
 static void ParseParamList(ASTNode *funcNode) {
     while (current_token == TOK_KW_INT || current_token == TOK_KW_FLOAT) {
-        char type[32];
-        snprintf(type, sizeof(type), "%s", current_lexeme);
+        char *type = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
 
-        char name[64];
-        snprintf(name, sizeof(name), "%s", current_lexeme);
+        char *name = arena_strdup(scratchArena, current_lexeme);
         match(TOK_ID);
 
-        char combined[100];
-        snprintf(combined, sizeof(combined), "%s %s", type, name);
+        char *combined = arena_sprintf(scratchArena, "%s %s", type, name);
         addChild(funcNode, newNode(ND_PARAM, combined));
 
         if (current_token == TOK_DEL_COMMA) {
@@ -213,16 +226,13 @@ static void ParseParamList(ASTNode *funcNode) {
  * sapere nulla dell'inizializzatore.
  */
 static ASTNode *ParseDeclaration(void) {
-    char type[32];
-    snprintf(type, sizeof(type), "%s", current_lexeme);
+    char *type = arena_strdup(scratchArena, current_lexeme);
     match(current_token); /* consuma KW_INT o KW_FLOAT */
 
-    char name[64];
-    snprintf(name, sizeof(name), "%s", current_lexeme);
+    char *name = arena_strdup(scratchArena, current_lexeme);
     match(TOK_ID);
 
-    char combined[100];
-    snprintf(combined, sizeof(combined), "%s %s", type, name);
+    char *combined = arena_sprintf(scratchArena, "%s %s", type, name);
 
     if (current_token == TOK_DEL_LPAREN) {
         ASTNode *node = newNode(ND_FUNC_DECL, combined);
@@ -235,13 +245,11 @@ static ASTNode *ParseDeclaration(void) {
 
     if (current_token == TOK_DEL_LBRACK) {
         match(TOK_DEL_LBRACK);
-        char size[32];
-        snprintf(size, sizeof(size), "%s", current_lexeme);
+        char *size = arena_strdup(scratchArena, current_lexeme);
         match(TOK_NUM_INT);
         match(TOK_DEL_RBRACK);
 
-        char arrDecl[140];
-        snprintf(arrDecl, sizeof(arrDecl), "%s[%s]", combined, size);
+        char *arrDecl = arena_sprintf(scratchArena, "%s[%s]", combined, size);
         ASTNode *node = newNode(ND_VAR_DECL, arrDecl);
 
         if (current_token == TOK_OP_ASSIGN) {

@@ -50,7 +50,15 @@ int symtab_declare(Scope *scope, const char *name, const Symbol *sym) {
     if (!scope || !name || !sym) return 0;
 
     size_t nameLen = strlen(name);
-    if (nameLen == 0 || nameLen >= SYM_MAX_NAME_LEN) return 0;
+    if (nameLen == 0) return 0;
+
+    /* Nessun limite superiore sulla lunghezza del nome: create_entry()
+       in hash_table.c alloca esattamente keySize byte per la chiave,
+       quindi non c'e' alcun vincolo strutturale da imporre qui. Un
+       vecchio controllo "nameLen >= SYM_MAX_NAME_LEN" e' stato rimosso:
+       confondeva silenziosamente "nome troppo lungo" con "gia'
+       dichiarato" (stesso valore di ritorno 0), dando un messaggio
+       d'errore fuorviante invece che accettare il nome com'e'. */
 
     /* Controlla SOLO lo scope corrente (non risale la catena): una
        variabile locale puo' legittimamente "nascondere" (shadow) una
@@ -68,7 +76,7 @@ int symtab_lookup(Scope *scope, const char *name, Symbol *out) {
     if (!name || !out) return 0;
 
     size_t nameLen = strlen(name);
-    if (nameLen == 0 || nameLen >= SYM_MAX_NAME_LEN) return 0;
+    if (nameLen == 0) return 0;
 
     for (Scope *s = scope; s != NULL; s = s->parent) {
         if (ht_get(s->table, (void *)name, nameLen, out, sizeof(*out))) {

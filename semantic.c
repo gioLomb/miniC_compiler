@@ -257,14 +257,14 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
  * (serve a ND_RETURN); si propaga invariato attraverso ricorsione,
  * esattamente come lo scope.
  */
-static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, int *errors) {
+static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *arena, int *errors) {
     if (!stmt) return;
 
     switch (stmt->kind) {
 
     case ND_VAR_DECL: {
         /* dichiara nello scope CORRENTE: non ne apre uno nuovo */
-        if (!symtab_declare_from_decl_text(scope, stmt->text)) {
+        if (!symtab_declare_from_decl_text(arena, scope, stmt->text)) {
             (*errors)++;
             break;
         }
@@ -272,10 +272,9 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, int *err
 
         /* Ricava tipo/isArray/arraySize dallo stesso testo appena usato
            per dichiarare il simbolo: piu' semplice che rifare un lookup. */
-        char typeNameBuf[32], varName[SYM_MAX_NAME_LEN];
+        char *typeNameBuf, *varName;
         int isArray, arraySize;
-        symtab_parse_decl_text(stmt->text, typeNameBuf, sizeof(typeNameBuf),
-                                varName, sizeof(varName), &isArray, &arraySize);
+        symtab_parse_decl_text(arena, stmt->text, &typeNameBuf, &varName, &isArray, &arraySize);
         DataType declType = symtab_type_from_string(typeNameBuf);
 
         if (!isArray) {
@@ -314,22 +313,22 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, int *err
         /* l'UNICO caso che apre un nuovo scope */
         Scope *blockScope = scope_create(scope);
         for (int i = 0; i < stmt->nchildren; i++) {
-            checkStmt(stmt->children[i], blockScope, returnType, errors);
+            checkStmt(stmt->children[i], blockScope, returnType, arena, errors);
         }
         break;
     }
 
     case ND_IF:
-        checkExpr(stmt->children[0], scope, errors);                  /* condizione */
-        checkStmt(stmt->children[1], scope, returnType, errors);      /* then */
+        checkExpr(stmt->children[0], scope, errors);                        /* condizione */
+        checkStmt(stmt->children[1], scope, returnType, arena, errors);      /* then */
         if (stmt->nchildren > 2) {
-            checkStmt(stmt->children[2], scope, returnType, errors);  /* else, se presente */
+            checkStmt(stmt->children[2], scope, returnType, arena, errors); /* else, se presente */
         }
         break;
 
     case ND_WHILE:
-        checkExpr(stmt->children[0], scope, errors);                  /* condizione */
-        checkStmt(stmt->children[1], scope, returnType, errors);      /* body */
+        checkExpr(stmt->children[0], scope, errors);                        /* condizione */
+        checkStmt(stmt->children[1], scope, returnType, arena, errors);      /* body */
         break;
 
     case ND_RETURN: {
@@ -359,11 +358,10 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, int *err
  * rileggiamo dal testo del nodo perche' e' piu' semplice che tornare a
  * cercarla nello scope globale) e attraversa il corpo con checkStmt.
  */
-static void checkFunctionBody(ASTNode *decl, Scope *global, int *errors) {
-    char typeNameBuf[32], funcName[SYM_MAX_NAME_LEN];
+static void checkFunctionBody(ASTNode *decl, Scope *global, Arena *arena, int *errors) {
+    char *typeNameBuf, *funcName;
     int isArray, arraySize;
-    symtab_parse_decl_text(decl->text, typeNameBuf, sizeof(typeNameBuf),
-                            funcName, sizeof(funcName), &isArray, &arraySize);
+    symtab_parse_decl_text(arena, decl->text, &typeNameBuf, &funcName, &isArray, &arraySize);
 
     DataType returnType = symtab_type_from_string(typeNameBuf);
 
@@ -375,21 +373,23 @@ static void checkFunctionBody(ASTNode *decl, Scope *global, int *errors) {
         /* un parametro duplicato e' una redeclaration nello stesso
            scope: symtab_declare la rifiuta gia' da sola, qui si
            controlla solo il valore di ritorno */
-        if (!symtab_declare_from_decl_text(fnScope, decl->children[p]->text)) (*errors)++;
+        if (!symtab_declare_from_decl_text(arena, fnScope, decl->children[p]->text)) (*errors)++;
     }
 
     ASTNode *body = decl->children[decl->nchildren - 1];   /* ND_BLOCK */
-    checkStmt(body, fnScope, returnType, errors);
+    checkStmt(body, fnScope, returnType, arena, errors);
 }
 
 int semantic_check(ASTNode *program, Scope *global) {
     int errors = 0;
+    Arena *arena = arena_create(0);
 
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         if (decl->kind != ND_FUNC_DECL) continue;
-        checkFunctionBody(decl, global, &errors);
+        checkFunctionBody(decl, global, arena, &errors);
     }
 
+    arena_destroy(arena);
     return errors;
 }

@@ -10,44 +10,47 @@ DataType symtab_type_from_string(const char *typeName) {
     return T_VOID;   /* fallback: copre anche "void" se/quando comparira' */
 }
 
-void symtab_parse_decl_text(const char *text,
-                             char *typeName, size_t typeCap,
-                             char *name, size_t nameCap,
+void symtab_parse_decl_text(Arena *arena, const char *text,
+                             char **outTypeName, char **outName,
                              int *isArray, int *arraySize) {
     *isArray = 0;
     *arraySize = 0;
-    typeName[0] = '\0';
-    name[0] = '\0';
+    *outTypeName = NULL;
+    *outName = NULL;
     if (!text) return;
 
-    char buf[160];
-    snprintf(buf, sizeof(buf), "%s", text);
+    /* Copia di lavoro nell'arena, esattamente della lunghezza di 'text':
+       a differenza del vecchio "char buf[160]" non c'e' piu' nessun
+       limite arbitrario da rispettare, qualunque sia la lunghezza reale
+       della dichiarazione. La spacchiamo in-place scrivendo '\0' nei
+       punti giusti (spazio, parentesi quadra), esattamente come prima -
+       cambia solo da dove viene la memoria. */
+    char *buf = arena_strdup(arena, text);
 
     char *space = strchr(buf, ' ');
     if (!space) {
-        snprintf(typeName, typeCap, "%s", buf);
+        *outTypeName = buf;
         return;
     }
     *space = '\0';
-    snprintf(typeName, typeCap, "%s", buf);
+    *outTypeName = buf;
 
     char *rest = space + 1;
     char *bracket = strchr(rest, '[');
     if (bracket) {
         *bracket = '\0';
-        snprintf(name, nameCap, "%s", rest);
+        *outName = rest;
         *isArray = 1;
         *arraySize = atoi(bracket + 1);   /* "5]" -> atoi legge "5" */
     } else {
-        snprintf(name, nameCap, "%s", rest);
+        *outName = rest;
     }
 }
 
-int symtab_declare_from_decl_text(Scope *scope, const char *text) {
-    char typeName[32], name[SYM_MAX_NAME_LEN];
+int symtab_declare_from_decl_text(Arena *arena, Scope *scope, const char *text) {
+    char *typeName, *name;
     int isArray, arraySize;
-    symtab_parse_decl_text(text, typeName, sizeof(typeName), name, sizeof(name),
-                            &isArray, &arraySize);
+    symtab_parse_decl_text(arena, text, &typeName, &name, &isArray, &arraySize);
 
     Symbol sym = {0};
     sym.kind = SYM_VAR;
@@ -69,14 +72,14 @@ int symtab_declare_from_decl_text(Scope *scope, const char *text) {
  */
 int symtab_populate_globals(ASTNode *program, Scope *global) {
     int errors = 0;
+    Arena *arena = arena_create(0);
 
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
 
-        char typeName[32], name[SYM_MAX_NAME_LEN];
+        char *typeName, *name;
         int isArray, arraySize;
-        symtab_parse_decl_text(decl->text, typeName, sizeof(typeName), name, sizeof(name),
-                                &isArray, &arraySize);
+        symtab_parse_decl_text(arena, decl->text, &typeName, &name, &isArray, &arraySize);
 
         Symbol sym = {0};
         sym.dataType = symtab_type_from_string(typeName);
@@ -96,10 +99,10 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
             sym.paramCount = paramCount;
 
             for (int p = 0; p < paramCount; p++) {
-                char ptypeName[32], pname[SYM_MAX_NAME_LEN];
+                char *ptypeName, *pname;
                 int pIsArray, pArraySize;
-                symtab_parse_decl_text(decl->children[p]->text, ptypeName, sizeof(ptypeName),
-                                        pname, sizeof(pname), &pIsArray, &pArraySize);
+                symtab_parse_decl_text(arena, decl->children[p]->text,
+                                        &ptypeName, &pname, &pIsArray, &pArraySize);
 
                 DataType pType = symtab_type_from_string(ptypeName);
                 symtab_pack_param_type(&sym.paramTypes, p, pType);
@@ -122,5 +125,6 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
         }
     }
 
+    arena_destroy(arena);
     return errors;
 }

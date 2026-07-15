@@ -2,6 +2,7 @@
 #define AST_TO_SYMTAB_H
 
 #include <stddef.h>
+#include "arena.h"
 #include "parser/ast.h"
 #include "symbol_table.h"
 
@@ -20,32 +21,34 @@ DataType symtab_type_from_string(const char *typeName);
  *   "int x"        -> variabile semplice
  *   "int arr[5]"   -> array
  *   "int somma"    -> nome di funzione (tipo di ritorno + nome)
- * Questa funzione la spacca nelle sue parti. E' condivisa da Pass 1 (qui
- * sotto) e dal modulo semantico (semantic.c), che la riusa per estrarre
- * nome/tipo di ritorno di una funzione o per dichiarare variabili/
- * parametri nel proprio scope: la logica di parsing e' unica, un solo
- * punto dove puo' esserci un bug (es. usare l'intero 'text' invece del
- * solo nome come chiave di lookup - errore gia' capitato in passato).
+ * Questa funzione la spacca nelle sue parti, scrivendo *outTypeName e
+ * *outName come stringhe allocate in 'arena' (non in buffer forniti dal
+ * chiamante): non c'e' quindi alcuna dimensione massima da rispettare,
+ * qualunque sia la lunghezza reale del nome. E' condivisa da Pass 1 e
+ * dal modulo semantico (semantic.c), che la riusa per estrarre nome/
+ * tipo di ritorno di una funzione o per dichiarare variabili/parametri
+ * nel proprio scope.
+ *
+ * 'arena' deve restare viva finche' outTypeName/outName servono: la
+ * chiamata non fa alcuna copia oltre a quella nell'arena stessa.
  */
-void symtab_parse_decl_text(const char *text,
-                             char *typeName, size_t typeCap,
-                             char *name, size_t nameCap,
+void symtab_parse_decl_text(Arena *arena, const char *text,
+                             char **outTypeName, char **outName,
                              int *isArray, int *arraySize);
 
 /*
  * Dichiara una singola variabile/parametro in 'scope', a partire dal
  * campo 'text' cosi' come lo produce il parser ("int x", "int arr[5]").
- * Riusata sia per ND_VAR_DECL che per ND_PARAM, sia da questo modulo
- * (non piu', dato che la Pass 2 e' stata spostata) sia dal modulo
- * semantico (semantic.c), che la chiama mentre attraversa i corpi
- * funzione dichiarando variabili e risolvendo espressioni nello stesso
- * giro (vedi semantic.h per il perche' di questa fusione).
+ * Usa 'arena' per il parsing intermedio (vedi symtab_parse_decl_text).
+ * Riusata sia per ND_PARAM che per ND_VAR_DECL dal modulo semantico
+ * (semantic.c), che la chiama mentre attraversa i corpi funzione
+ * dichiarando variabili e risolvendo espressioni nello stesso giro.
  *
  * Restituisce 0 se 'name' e' gia' dichiarato in questo stesso scope
  * (redeclaration - errore semantico da segnalare al chiamante), 1
  * altrimenti.
  */
-int symtab_declare_from_decl_text(Scope *scope, const char *text);
+int symtab_declare_from_decl_text(Arena *arena, Scope *scope, const char *text);
 
 /*
  * PASS 1: popola 'global' con le signature di TUTTE le dichiarazioni
@@ -60,11 +63,13 @@ int symtab_declare_from_decl_text(Scope *scope, const char *text);
  * Per ND_VAR_DECL: registra un Symbol SYM_VAR (con isArray/arraySize se
  * e' un array).
  *
+ * Crea internamente una propria arena per il parsing intermedio delle
+ * dichiarazioni, distrutta prima di ritornare: il chiamante non deve
+ * gestirne il ciclo di vita.
+ *
  * NOTA: la Pass 2 (scope dei parametri + corpi funzione) NON vive piu'
  * qui: e' stata fusa con l'analisi semantica in semantic.c, per evitare
- * di creare due alberi di scope paralleli (uno per la sola costruzione,
- * uno per la risoluzione) che nessuno dei due potrebbe riusare dall'altro
- * senza esportare puntatori fragili. Vedi semantic.h.
+ * di creare due alberi di scope paralleli. Vedi semantic.h.
  *
  * Restituisce il numero di errori di redeclaration incontrati (0 = nessuno).
  */

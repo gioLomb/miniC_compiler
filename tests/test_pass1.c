@@ -15,22 +15,25 @@ static const char *dataTypeName(DataType t) {
     return "?";
 }
 
-/* userdata per ht_foreach: stampa ogni Symbol registrato nello scope globale */
+/* userdata per ht_foreach: stampa ogni Symbol registrato nello scope globale.
+   Il nome (key/keySize) viene stampato direttamente con "%.*s": non serve
+   copiarlo in un buffer intermedio di dimensione fissa, qualunque sia la
+   sua lunghezza reale. */
 static void printSymbol(void *key, size_t keySize, void *value, size_t valueSize, void *userdata) {
-    (void)keySize; (void)valueSize; (void)userdata;
-    char name[SYM_MAX_NAME_LEN];
-    snprintf(name, sizeof(name), "%.*s", (int)keySize, (char *)key);
+    (void)valueSize; (void)userdata;
+    const char *name = (const char *)key;
+    int nameLen = (int)keySize;
 
     Symbol *sym = (Symbol *)value;
     if (sym->kind == SYM_FUNC) {
-        printf("  FUNC %s -> %s (", name, dataTypeName(sym->dataType));
+        printf("  FUNC %.*s -> %s (", nameLen, name, dataTypeName(sym->dataType));
         for (int i = 0; i < sym->paramCount; i++) {
             if (i > 0) printf(", ");
             printf("%s", dataTypeName(symtab_unpack_param_type(sym->paramTypes, i)));
         }
         printf(")\n");
     } else {
-        printf("  VAR  %s : %s%s\n", name, dataTypeName(sym->dataType),
+        printf("  VAR  %.*s : %s%s\n", nameLen, name, dataTypeName(sym->dataType),
                sym->isArray ? " (array)" : "");
     }
 }

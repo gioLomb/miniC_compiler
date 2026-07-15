@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../tokens.h"
+#include "../../arena.h"
 
 
 /* --- "yytext" equivalente: cur punta al carattere corrente, tok
@@ -1143,8 +1144,15 @@ yy83:
 
 #include "../../lexer.h"
 
-#define LEXEME_MAX 256
-static char lexemeBuf[LEXEME_MAX];
+/* Arena del lexer: possiede il testo di ogni lessema restituito da
+   lexer_current_lexeme(). Nessun limite di lunghezza fisso (a
+   differenza del vecchio "char lexemeBuf[LEXEME_MAX]"): tok/cur
+   puntano gia' dentro sourceBuffer (l'intero file, caricato una
+   volta da lexer_open), quindi la dimensione totale mai occupata
+   da questa arena e' comunque limitata dalla dimensione del file
+   sorgente stesso - non serve un cap ad hoc separato. */
+static Arena *lexerArena = NULL;
+static char *currentLexeme = NULL;
 
 void lexer_open(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -1165,11 +1173,15 @@ void lexer_open(const char *path) {
 
     cur = sourceBuffer;
     lineNumber = 1;
+    lexerArena = arena_create(0);
 }
 
 void lexer_close(void) {
     free(sourceBuffer);
     sourceBuffer = NULL;
+    arena_destroy(lexerArena);
+    lexerArena = NULL;
+    currentLexeme = NULL;
 }
 
 int lexer_next_token(void) {
@@ -1177,15 +1189,13 @@ int lexer_next_token(void) {
 
     int len = (int)(cur - tok);
     if (len < 0) len = 0;
-    if (len >= LEXEME_MAX) len = LEXEME_MAX - 1;
-    memcpy(lexemeBuf, tok, len);
-    lexemeBuf[len] = '\0';
+    currentLexeme = arena_strndup(lexerArena, (const char *)tok, (size_t)len);
 
     return token;
 }
 
 const char *lexer_current_lexeme(void) {
-    return lexemeBuf;
+    return currentLexeme;
 }
 
 int lexer_current_line(void) {
