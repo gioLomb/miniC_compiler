@@ -8,7 +8,8 @@
 #   make test_arena    -> solo unit test dell'arena allocator
 #   make test_pass1    -> lexer+parser+Pass1 (popolamento scope globale)
 #   make test_semantic -> lexer+parser+Pass1+Pass2/semantica (fuse)
-#   make check         -> esegue test_symtab e test_arena e stampa l'esito
+#   make test_optimize -> lexer+parser+Pass1+semantica+ottimizzazioni AST
+#   make check         -> esegue test_symtab, test_arena e test_optimize e stampa l'esito
 #   make clean         -> rimuove build/ e bin/
 #   make regen-scanner -> rigenera scanner_generated.c da scanner.re (richiede re2c)
 #
@@ -38,6 +39,7 @@ SYMTAB_SRC      := symbol_table.c
 AST2SYM_SRC     := ast_to_symtab.c
 SEMANTIC_SRC    := semantic.c
 ARENA_SRC       := arena.c
+OPTIMIZE_SRC    := optimize.c
 
 # ---- Composizione dei binari ----
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) parser/main.c
@@ -48,6 +50,9 @@ TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA
 TEST_SEMANTIC_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                        $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
                        tests/test_semantic.c
+TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
+                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) \
+                       tests/test_optimize.c
 
 # Traduce ogni lista di sorgenti .c nei corrispondenti .o dentro build/
 # (build/ rispecchia la struttura delle cartelle sorgente)
@@ -58,10 +63,11 @@ TEST_SYMTAB_OBJS := $(call to_objs,$(TEST_SYMTAB_SRCS))
 TEST_ARENA_OBJS  := $(call to_objs,$(TEST_ARENA_SRCS))
 TEST_PASS1_OBJS  := $(call to_objs,$(TEST_PASS1_SRCS))
 TEST_SEMANTIC_OBJS := $(call to_objs,$(TEST_SEMANTIC_SRCS))
+TEST_OPTIMIZE_OBJS := $(call to_objs,$(TEST_OPTIMIZE_SRCS))
 
 .PHONY: all clean check regen-scanner
 
-all: $(BIN_DIR)/minicc $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_pass1 $(BIN_DIR)/test_semantic
+all: $(BIN_DIR)/minicc $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_pass1 $(BIN_DIR)/test_semantic $(BIN_DIR)/test_optimize
 
 # ---- Regola generica: compila qualunque src/File.c in build/src/File.o ----
 # -I. permette agli #include senza percorso (es. "symbol_table.h" da
@@ -91,10 +97,15 @@ $(BIN_DIR)/test_semantic: $(TEST_SEMANTIC_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
+$(BIN_DIR)/test_optimize: $(TEST_OPTIMIZE_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
 # ---- Comodo: esegue i test automatici dei moduli di base ----
-check: $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena
+check: $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_optimize
 	./$(BIN_DIR)/test_symtab
 	./$(BIN_DIR)/test_arena
+	./$(BIN_DIR)/test_optimize
 
 # ---- Rigenera lo scanner da scanner.re (richiede re2c installato) ----
 regen-scanner:
