@@ -63,6 +63,18 @@ typedef struct {
     DataType   dataType;     /* per FUNC: tipo di ritorno */
     int        isArray;
     int        arraySize;
+
+    /* Coordinate di risoluzione (shadowing): scopeLevel e' la profondita'
+       lessicale dello Scope in cui questo Symbol e' stato dichiarato
+       (= scope->level al momento della symtab_declare); offset e' la sua
+       posizione nella tabella locale di quello scope (= scope->table->size
+       prima dell'inserimento, non un contatore dedicato). Insieme
+       identificano univocamente la variabile anche in presenza di
+       shadowing, e vengono copiate cosi' come sono dentro il nodo AST
+       corrispondente (vedi ASTNode in ast.h) al momento della dichiarazione
+       o della risoluzione di un uso - simtab_lookup le restituisce gia'
+       pronte, senza bisogno di risalire di nuovo la catena degli scope. */
+    int        scopeLevel;
     int        offset;
 
     /* significativi solo se kind == SYM_FUNC */
@@ -96,11 +108,18 @@ typedef struct Scope {
     struct Scope **children;
     int childCount;
     int childCap;
+
+    /* Profondita' lessicale (0 = scope globale/radice), scritta una sola
+       volta in scope_create e mai piu' modificata. Serve a stampigliare
+       Symbol.scopeLevel al momento della dichiarazione, senza dover
+       ricalcolare nulla ad ogni lookup. */
+    int level;
 } Scope;
 
 /* Crea un nuovo scope agganciato a 'parent' (NULL per lo scope globale,
    cioe' la radice dell'albero). Se parent non e' NULL, il nuovo scope
-   viene automaticamente registrato tra i suoi figli. */
+   viene automaticamente registrato tra i suoi figli, e 'level' e'
+   impostato a parent->level + 1 (0 per la radice). */
 Scope *scope_create(Scope *parent);
 
 /* "Esce" dallo scope corrente restituendo il parent. NON distrugge la
@@ -115,8 +134,9 @@ Scope *scope_exit(Scope *scope);
 int symtab_declare(Scope *scope, const char *name, const Symbol *sym);
 
 /* Risolve 'name' risalendo la catena degli scope, dal piu' interno
-   (scope) fino al piu' esterno. Se trovato, copia il Symbol in *out e
-   restituisce 1; altrimenti restituisce 0 (nome non dichiarato). */
+   (scope) fino al piu' esterno. Se trovato, copia il Symbol in *out
+   (scopeLevel/offset gia' pronti dentro, stampigliati alla dichiarazione)
+   e restituisce 1; altrimenti restituisce 0 (nome non dichiarato). */
 int symtab_lookup(Scope *scope, const char *name, Symbol *out);
 
 /* Distrugge RICORSIVAMENTE l'intero albero di scope a partire da 'root'

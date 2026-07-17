@@ -15,7 +15,7 @@ int main() {
        Verifica gli operatori logici e relazionali */
     while (i <= n && fattoriale != 0) {
         int x[20];
-        x[n] = 1;
+        x[11+2] = 1;
         fattoriale = fattoriale * i;
         i = i + 1;
     }

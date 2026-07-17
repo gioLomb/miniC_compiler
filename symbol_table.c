@@ -30,6 +30,7 @@ Scope *scope_create(Scope *parent) {
     scope->children = NULL;
     scope->childCount = 0;
     scope->childCap = 0;
+    scope->level = parent ? parent->level + 1 : 0;
 
     if (parent) {
         if (parent->childCount >= parent->childCap) {

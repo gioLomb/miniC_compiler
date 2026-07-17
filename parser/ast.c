@@ -12,6 +12,8 @@ ASTNode *newNode(NodeKind kind, const char *text) {
     node->children = NULL;
     node->nchildren = 0;
     node->capacity = 0;
+    node->scopeLevel = -1;
+    node->offset = -1;
     return node;
 }
 

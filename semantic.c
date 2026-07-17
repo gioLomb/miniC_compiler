@@ -58,6 +58,8 @@ static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol 
         (*errors)++;
         return T_VOID;
     }
+    expr->scopeLevel = sym.scopeLevel;
+    expr->offset     = sym.offset;
     if (outSym) *outSym = sym;
     return sym.dataType;
 }
@@ -304,7 +306,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
 
     case ND_VAR_DECL: {
         /* dichiara nello scope CORRENTE: non ne apre uno nuovo */
-        if (!symtab_declare_from_decl_text(arena, scope, stmt->text)) {
+        if (!symtab_declare_from_decl_text(arena, scope, stmt)) {
             (*errors)++;
             break;
         }
@@ -413,7 +415,7 @@ static void checkFunctionBody(ASTNode *decl, Scope *global, Arena *arena, int *e
         /* un parametro duplicato e' una redeclaration nello stesso
            scope: symtab_declare la rifiuta gia' da sola, qui si
            controlla solo il valore di ritorno */
-        if (!symtab_declare_from_decl_text(arena, fnScope, decl->children[p]->text)) (*errors)++;
+        if (!symtab_declare_from_decl_text(arena, fnScope, decl->children[p])) (*errors)++;
     }
 
     ASTNode *body = decl->children[decl->nchildren - 1];   /* ND_BLOCK */

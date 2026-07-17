@@ -38,17 +38,24 @@ void symtab_parse_decl_text(Arena *arena, const char *text,
 
 /*
  * Dichiara una singola variabile/parametro in 'scope', a partire dal
- * campo 'text' cosi' come lo produce il parser ("int x", "int arr[5]").
- * Usa 'arena' per il parsing intermedio (vedi symtab_parse_decl_text).
- * Riusata sia per ND_PARAM che per ND_VAR_DECL dal modulo semantico
- * (semantic.c), che la chiama mentre attraversa i corpi funzione
- * dichiarando variabili e risolvendo espressioni nello stesso giro.
+ * campo 'node->text' cosi' come lo produce il parser ("int x", "int
+ * arr[5]"). Usa 'arena' per il parsing intermedio (vedi
+ * symtab_parse_decl_text). Riusata sia per ND_PARAM che per ND_VAR_DECL
+ * dal modulo semantico (semantic.c), che la chiama mentre attraversa i
+ * corpi funzione dichiarando variabili e risolvendo espressioni nello
+ * stesso giro.
+ *
+ * Oltre a dichiarare, stampiglia su 'node' le coordinate di risoluzione
+ * (node->scopeLevel, node->offset: profondita' lessicale di 'scope' e
+ * posizione nella sua tabella locale) - servono a ir_generate per
+ * identificare la variabile senza ripetere una lookup. Vedi il commento
+ * su ASTNode in ast.h per il ragionamento completo sullo shadowing.
  *
  * Restituisce 0 se 'name' e' gia' dichiarato in questo stesso scope
  * (redeclaration - errore semantico da segnalare al chiamante), 1
  * altrimenti.
  */
-int symtab_declare_from_decl_text(Arena *arena, Scope *scope, const char *text);
+int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node);
 
 /*
  * PASS 1: popola 'global' con le signature di TUTTE le dichiarazioni

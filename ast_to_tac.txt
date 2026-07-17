@@ -1,0 +1,28 @@
+1. Di cosa è formato un AST decorato?
+Mentre un AST di base contiene solo la struttura gerarchica del codice (es. operatori e operandi), un AST decorato aggiunge ai nodi diversi attributi essenziali per la traduzione finale
+. Gli elementi principali di un nodo decorato includono:
+Tipo Semantico: L'informazione più importante, inserita durante il type checking, che indica il tipo del risultato prodotto da quel nodo (es. int, float, boolean)
+.
+Puntatore alla Symbol Table: Per i nodi che rappresentano identificatori (Id), viene inserito un riferimento diretto (o un handle) alla voce corrispondente nella Symbol Table
+.
+Valori Costanti: Se un'espressione può essere valutata a tempo di compilazione (constant folding), il valore calcolato viene memorizzato direttamente nel nodo
+.
+Posizione nel Sorgente (Source Map): Riferimenti a riga e colonna del file originale, vitali per emettere messaggi di errore precisi in caso di incongruenze semantiche
+.
+Indirizzamento IR: Informazioni come l'indirizzo relativo (offset) o il registro temporaneo (addr) che conterrà il valore del nodo durante la generazione del codice intermedio
+.
+2. AST con nodi che riflettono la Symbol Table
+Sì, è possibile (ed è la pratica standard) trovare un AST i cui nodi riflettano la struttura dei simboli. Questo collegamento permette al compilatore di risolvere le ambiguità derivanti dallo shadowing (variabili con lo stesso nome in scope diversi)
+.
+Il riflesso della Symbol Table nell'AST avviene in diversi modi:
+Nodi Identificatori (Id): Nel codice di un compilatore reale, un nodo di classe Id non contiene semplicemente il nome della variabile (stringa), ma un campo che punta al record del simbolo specifico creato durante la dichiarazione
+. Questo garantisce che ogni istanza nell'AST "sappia" esattamente a quale area di memoria o registro riferirsi
+.
+Rappresentazione di Aggregati (Struct/Record): Per tipi complessi come le struct, l'AST può contenere nodi che puntano a una tabella di struttura specifica o a una Symbol Table locale dedicata ai campi di quel record
+. L'accesso istanza.campo nell'AST riflette direttamente la struttura dei simboli calcolando l'offset interno al record
+.
+Mappe Nodo-Scope: Molti compilatori moderni utilizzano una NodeScopeMap (una tabella hash ausiliaria) dove ogni nodo dell'AST che "apre" un nuovo ambito (come un blocco {}) è mappato direttamente al suo corrispondente oggetto Scope nella Symbol Table
+. Questo permette di navigare l'AST avendo sempre a portata di mano l'ambiente di denominazione corretto
+.
+Gerarchia delle Classi (OO): Nei linguaggi a oggetti, i nodi dell'AST per le chiamate a metodo riflettono la gerarchia della Symbol Table risalendo la catena dell'ereditarietà per trovare il simbolo del metodo corretto
+.

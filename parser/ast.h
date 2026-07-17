@@ -32,6 +32,16 @@ typedef struct ASTNode {
     struct ASTNode **children;
     int nchildren;
     int capacity;
+
+    /* Coordinate di risoluzione, popolate da semantic_check su ND_ID,
+       ND_ARRAY_ACCESS, ND_VAR_DECL e ND_PARAM (-1 altrove / non ancora
+       risolto). Identificano univocamente la variabile (shadowing incluso)
+       senza che ir_generate debba ripetere una symtab_lookup: scopeLevel e'
+       la profondita' lessicale dello scope in cui la variabile e' stata
+       dichiarata, offset la sua posizione nella tabella locale di quello
+       scope. Vedi report_shadowing_ir.md per il ragionamento completo. */
+    int scopeLevel;
+    int offset;
 } ASTNode;
 
 /* Crea un nuovo nodo; 'text' viene copiato internamente (puo' essere NULL). */
