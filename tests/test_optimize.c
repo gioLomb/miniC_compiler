@@ -71,6 +71,17 @@ static void collectOfKind(ASTNode *node, NodeKind kind, ASTNode **out, int maxOu
     }
 }
 
+/* Altezza del piu' lungo cammino di soli ND_BINOP a partire da 'node'
+   (0 se 'node' non e' un ND_BINOP, cioe' e' gia' una foglia). Serve a
+   verificare che il bilanciamento riduca davvero la profondita' della
+   catena, non solo che il risultato resti corretto. */
+static int binopHeight(ASTNode *node) {
+    if (!node || node->kind != ND_BINOP) return 0;
+    int l = binopHeight(node->children[0]);
+    int r = binopHeight(node->children[1]);
+    return 1 + (l > r ? l : r);
+}
+
 int main(void) {
     ASTNode *root, *body, *node;
 
@@ -180,6 +191,58 @@ int main(void) {
         return 1;
     }
     printf("PASS 8 ok: '5 / 0' resta un ND_BINOP (non foldato a un valore inventato).\n");
+    freeAST(root);
+
+    /* PASS 9: tree height balancing - 'a+b+c+d' e' scritto come catena a
+       sinistra dal parser (((a+b)+c)+d, altezza 3); dopo il bilanciamento
+       deve diventare (a+b)+(c+d), altezza 2, senza perdere ne' duplicare
+       nessuna delle quattro foglie. */
+    root = parseAndOptimize(
+        "int main() { int a; int b; int c; int d; int x; x = a+b+c+d; return x; }");
+    body = lastFuncBody(root);
+    node = findFirstOfKind(body, ND_ASSIGN)->children[1];
+    if (binopHeight(node) != 2) {
+        fprintf(stderr, "PASS 9 FALLITO: altezza attesa 2, trovata %d\n", binopHeight(node));
+        return 1;
+    }
+    if (countOfKind(node, ND_ID) != 4 || countOfKind(node, ND_BINOP) != 3) {
+        fprintf(stderr, "PASS 9 FALLITO: foglie/operatori non coerenti dopo il bilanciamento\n");
+        return 1;
+    }
+    printf("PASS 9 ok: 'a+b+c+d' ribilanciato da altezza 3 a 2, tutte le 4 foglie presenti.\n");
+    freeAST(root);
+
+    /* PASS 10: la guardia sui float blocca il bilanciamento - un
+       letterale float visibile OVUNQUE nella catena (anche non come
+       foglia diretta della catena "+" piu' esterna) la lascia intatta,
+       altezza 3 invariata (nessun bilanciamento tentato). */
+    root = parseAndOptimize(
+        "float main() { float a; float b; float c; float x; x = a+1.5+b+c; return x; }");
+    body = lastFuncBody(root);
+    node = findFirstOfKind(body, ND_ASSIGN)->children[1];
+    if (binopHeight(node) != 3) {
+        fprintf(stderr, "PASS 10 FALLITO: la catena con un float visibile e' stata bilanciata comunque (altezza %d, attesa 3)\n", binopHeight(node));
+        return 1;
+    }
+    printf("PASS 10 ok: catena con un letterale float visibile NON viene bilanciata (limite noto, rispettato).\n");
+    freeAST(root);
+
+    /* PASS 11: numero dispari di foglie (5) - nessuna foglia deve andare
+       persa o duplicata, e l'altezza deve comunque scendere sotto quella
+       della catena naive (4, per 4 operatori in fila). */
+    root = parseAndOptimize(
+        "int main() { int a; int b; int c; int d; int e; int x; x = a+b+c+d+e; return x; }");
+    body = lastFuncBody(root);
+    node = findFirstOfKind(body, ND_ASSIGN)->children[1];
+    if (countOfKind(node, ND_ID) != 5 || countOfKind(node, ND_BINOP) != 4) {
+        fprintf(stderr, "PASS 11 FALLITO: foglie/operatori non coerenti con 5 addendi\n");
+        return 1;
+    }
+    if (binopHeight(node) >= 4) {
+        fprintf(stderr, "PASS 11 FALLITO: altezza non ridotta rispetto alla catena naive (trovata %d)\n", binopHeight(node));
+        return 1;
+    }
+    printf("PASS 11 ok: 5 addendi, nessuna foglia persa/duplicata, altezza ridotta a %d (naive: 4).\n", binopHeight(node));
     freeAST(root);
 
     printf("\nTutti i test sono passati. Cleanup completato senza errori.\n");

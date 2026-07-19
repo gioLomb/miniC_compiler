@@ -59,6 +59,33 @@
  *   4. Array bounds check elimination: gia' implementata in semantic.c
  *      (bound-check statico sugli indici costanti) - non c'e' altro da
  *      fare qui, la lista la cita solo per completezza.
+ *
+ *   5. Tree height balancing su catene '+' e '*': una catena associativa a
+ *      sinistra come "((a+b)+c)+d" (la forma naturale prodotta da un
+ *      parser ricorsivo-discendente per operatori associativi a sinistra)
+ *      viene appiattita e ricostruita bilanciata, per ridurre la
+ *      lunghezza della catena di dipendenze nell'IR risultante (piu'
+ *      parallelizzabile/schedulabile). Limitato a '+' e '*' su soli
+ *      interi: '-'/'/' non sono associativi cosi' come sono scritti, e
+ *      per i float l'arrotondamento IEEE754 non e' associativo (riordinare
+ *      la somma puo' cambiare il risultato nell'ultimo bit).
+ *
+ *      LIMITE NOTO: per essere certi che una catena sia di soli interi
+ *      servirebbe il tipo delle variabili coinvolte - optimize.c non ha
+ *      pero' alcun accesso alla symbol table (nessuno Scope* nella sua
+ *      firma). La guardia qui e' quindi puramente strutturale: rifiuta
+ *      la catena solo se un letterale float e' VISIBILE nel sottoalbero
+ *      (vedi containsFloatLiteral in optimize.c). Una catena di sole
+ *      variabili float, senza alcun letterale in vista, non viene
+ *      riconosciuta e verrebbe bilanciata comunque - risolvibile solo
+ *      estendendo optimize_ast con un vero Scope* (rimandato, non
+ *      implementato in questa versione).
+ *
+ *      L'appaiamento e' per livelli (come costruire un min-heap da un
+ *      array), non tramite una coda a priorita': assume costo/altezza
+ *      uniforme delle foglie. Resta corretto anche quando una foglia e'
+ *      una sotto-espressione molto piu' profonda delle altre, solo non
+ *      ottimale in quel caso (occasione mancata, non un bug).
  */
 void optimize_ast(ASTNode *program);
 

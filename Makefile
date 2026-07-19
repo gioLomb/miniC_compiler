@@ -45,7 +45,7 @@ IR_SRC          := ir.c
 
 # ---- Composizione dei binari ----
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) parser/main.c
+                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) parser/main.c
 TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \

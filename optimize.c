@@ -176,6 +176,124 @@ static ASTNode *foldUnaryLiteral(const char *op, ASTNode *child) {
     return NULL;
 }
 
+/* ---- Tree height balancing per catene associative (+, *) ----------- */
+
+/*
+ * Vero se 'n' contiene, in QUALUNQUE punto del suo sottoalbero, un
+ * letterale ND_NUM_FLOAT - non solo come foglia diretta di una catena
+ * '+' o '*', ma annidato dentro una sotto-espressione con un operatore diverso
+ * (es. "a + (x*1.5) + b": il letterale 1.5 non e' foglia diretta della
+ * catena "+", ma la rende comunque "contaminata" di virgola mobile).
+ *
+ * LIMITE NOTO (vedi discussione): rileva solo i letterali float VISIBILI
+ * nel testo. Una catena di sole variabili "float" (nessun letterale in
+ * vista) non viene riconosciuta come tale - servirebbe conoscere il tipo
+ * delle variabili, e optimize.c non ha accesso alla symbol table (nessuno
+ * Scope* nella sua firma). Bilanciare una simile catena cambierebbe
+ * l'arrotondamento del risultato senza che questa guardia se ne accorga.
+ * Risolvibile solo estendendo optimize_ast con un vero Scope*, rimandato.
+ */
+static int containsFloatLiteral(ASTNode *n) {
+    if (!n) return 0;
+    if (n->kind == ND_NUM_FLOAT) return 1;
+    for (int i = 0; i < n->nchildren; i++) {
+        if (containsFloatLiteral(n->children[i])) return 1;
+    }
+    return 0;
+}
+
+/*
+ * Appiattisce ricorsivamente la catena associativa che ha 'node' come
+ * radice, raccogliendo in '*leaves' (array a raddoppio, come altrove nel
+ * progetto) tutte le foglie in ordine SINISTRA-DESTRA - lo stesso ordine
+ * di valutazione originale: bilanciare cambia solo la FORMA dell'albero,
+ * mai l'ordine in cui le foglie vengono valutate (per questo non serve
+ * controllare hasSideEffect() qui, a differenza delle altre
+ * semplificazioni in questo file). Scende solo finche' incontra nodi
+ * ND_BINOP con lo STESSO operatore testuale di 'op' - un operatore
+ * diverso (anche se associativo a sua volta) e' un'altra catena, e resta
+ * una foglia opaca per questa. I nodi ND_BINOP intermedi della catena
+ * originale vengono liberati (freeNodeShallow: le foglie sopravvivono,
+ * riusate cosi' come sono).
+ */
+static void flattenChain(ASTNode *node, const char *op, ASTNode ***leaves, int *count, int *cap) {
+    if (node->kind == ND_BINOP && strcmp(node->text, op) == 0) {
+        flattenChain(node->children[0], op, leaves, count, cap);
+        flattenChain(node->children[1], op, leaves, count, cap);
+        freeNodeShallow(node);
+    } else {
+        if (*count == *cap) {
+            *cap = *cap ? *cap * 2 : 4;
+            *leaves = realloc(*leaves, (size_t) *cap * sizeof(ASTNode *));
+        }
+        (*leaves)[(*count)++] = node;
+    }
+}
+
+/*
+ * Ricostruisce un albero bilanciato da un array piatto di foglie (gia'
+ * in ordine sinistra-destra), appaiandole a due a due un livello alla
+ * volta - come costruire un min-heap da un array. Con 'count' foglie
+ * produce un albero di altezza ~log2(count) invece di 'count'-1.
+ * Se 'count' e' dispari, l'ultima foglia del livello sale al livello
+ * successivo senza appaiarsi (nessuna foglia viene mai duplicata o
+ * persa). Assume costo/altezza uniforme delle foglie (limite noto: non
+ * ottimale se una foglia e' una sotto-espressione molto piu' profonda
+ * delle altre - correttezza non compromessa, solo bilanciamento subottimale
+ * in quel caso).
+ */
+static ASTNode *buildBalanced(ASTNode **leaves, int count, const char *op) {
+    if (count == 1) return leaves[0];
+
+    int nextCount = (count + 1) / 2;
+    ASTNode **next = malloc((size_t) nextCount * sizeof(ASTNode *));
+    int idx = 0;
+    int i = 0;
+    for (; i + 1 < count; i += 2) {
+        ASTNode *pair = newNode(ND_BINOP, op);
+        addChild(pair, leaves[i]);
+        addChild(pair, leaves[i + 1]);
+        next[idx++] = pair;
+    }
+    if (i < count) {
+        next[idx++] = leaves[i];   /* foglia dispari: sale invariata */
+    }
+
+    ASTNode *result = buildBalanced(next, nextCount, op);
+    free(next);
+    return result;
+}
+
+/*
+ * Punto d'ingresso: se 'expr' e' la radice di una catena '+' o '*' su soli
+ * interi (nessun letterale float visibile, vedi containsFloatLiteral),
+ * la appiattisce e la ricostruisce bilanciata. Altrimenti restituisce
+ * 'expr' invariato. Va chiamata a valle del folding/delle semplificazioni
+ * algebriche gia' esistenti (solo se 'expr' sopravvive come vero ND_BINOP
+ * ha senso provare a bilanciarlo).
+ */
+static ASTNode *balanceAssocChain(ASTNode *expr) {
+    if (strcmp(expr->text, "+") != 0 && strcmp(expr->text, "*") != 0) return expr;
+    if (containsFloatLiteral(expr)) return expr;
+
+    /* Copia l'operatore PRIMA di iniziare a smontare la catena: expr
+       stesso viene liberato (freeNodeShallow, incluso expr->text) dentro
+       flattenChain non appena verifica che la radice fa parte della
+       catena - rileggere expr->text dopo quella chiamata sarebbe un
+       use-after-free (trovato con AddressSanitizer). '+' e '*' sono
+       sempre un solo carattere (verificato dal controllo sopra), quindi
+       un buffer di 2 byte basta sempre. */
+    char op[2] = { expr->text[0], '\0' };
+
+    ASTNode **leaves = NULL;
+    int count = 0, cap = 0;
+    flattenChain(expr, op, &leaves, &count, &cap);
+
+    ASTNode *result = buildBalanced(leaves, count, op);
+    free(leaves);
+    return result;
+}
+
 /* ---- Attraversamento delle espressioni ------------------------------ */
 
 static ASTNode *optimizeExpr(ASTNode *expr) {
@@ -244,7 +362,10 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
             }
         }
 
-        return expr;
+        /* 3) tree height balancing: solo se 'expr' e' sopravvissuto come
+           vero ND_BINOP fin qui (nessun folding/semplificazione l'ha gia'
+           eliminato) */
+        return balanceAssocChain(expr);
     }
 
     case ND_ASSIGN:

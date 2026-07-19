@@ -6,6 +6,7 @@
 #include "../symbol_table.h"
 #include "../ast_to_symtab.h"
 #include "../semantic.h"
+#include "../optimize.h"
 #include "../ir.h"
 
 int main(int argc, char **argv) {
@@ -38,6 +39,8 @@ int main(int argc, char **argv) {
 
     int totalErrors = pass1Errors + semErrors;
     if (totalErrors == 0) {
+        optimize_ast(root);
+
         IRProgram *ir = ir_generate(root);
         printf("\n=== IR LINEARE (three-address code) ===\n");
         ir_print(ir);
