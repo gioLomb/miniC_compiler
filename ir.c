@@ -14,8 +14,6 @@
 static int nextTemp;
 static int nextLabel;
 
-
-
 static Operand mkTemp(void) {
     Operand o; o.kind = OPND_TEMP; o.as.tempId = nextTemp++; return o;
 }
@@ -45,7 +43,7 @@ static Operand noOperand(void) {
 
 static void emit(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2) {
     if (f->count == f->capacity) {
-        f->capacity = f->capacity ? f->capacity * 2 : IR_INITIAL_CAPACITY;
+        f->capacity = f->capacity ? f->capacity * 2 : 16;
         f->instrs = realloc(f->instrs, (size_t) f->capacity * sizeof(IRInstr));
     }
     f->instrs[f->count].op = op;
@@ -84,55 +82,144 @@ static IROp binopToIROp(const char *op) {
 }
 
 static Operand irExpr(ASTNode *expr, IRFunction *out);
+static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest);
+static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl);
+static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl);
 
-/* && e || a corto-circuito: il secondo operando si valuta solo se il
- * primo non basta gia' a determinare il risultato. Un solo tipo di salto
- * condizionale (IR_IF_FALSE) e' sufficiente per entrambi gli operatori -
- * non serve introdurre anche un IR_IF_TRUE. */
-static Operand irShortCircuit(ASTNode *expr, IRFunction *out) {
-    Operand result = mkTemp();
-    Operand lhs = irExpr(expr->children[0], out);
-    Operand endLbl = mkLabel();
+/*
+ * ---- Codice di salto per condizioni a corto-circuito (if/while) -------
+ *
+ * Traduzione CLASSICA "a salti" di un'espressione booleana usata in un
+ * contesto di controllo (condizione di if/while) - schema standard da
+ * compilatori (Aho/Ullman): invece di calcolare && / || come un VALORE
+ * 0/1 e poi ricontrollarlo con un'altra IF_FALSE (come farebbe, e come
+ * comunque fa, la traduzione "a valore" usata quando il risultato booleano
+ * serve davvero come dato, es. "r = a && b;"), qui traduciamo l'intera
+ * espressione DIRETTAMENTE in salti verso l'etichetta che il chiamante
+ * gia' possiede (l'uscita del while, il ramo else dell'if) - senza mai
+ * materializzare un valore intermedio, senza variabile "risultato", senza
+ * blocchi ne' etichette in piu' del necessario.
+ *
+ * irJumpIfFalse(cond, falseLbl): salta a 'falseLbl' se 'cond' e' falsa,
+ * altrimenti prosegue (fallthrough) - usata per "entra nel corpo solo se
+ * la condizione e' vera".
+ * irJumpIfTrue(cond, trueLbl): duale, salta se 'cond' e' vera - serve
+ * internamente per tradurre correttamente il ramo sinistro di un '||'
+ * dentro irJumpIfFalse (vedi sotto).
+ *
+ * Le due funzioni si richiamano a vicenda seguendo le identita' logiche:
+ *   (a && b) e' falsa  <=>  a e' falsa OPPURE b e' falsa
+ *   (a || b) e' vera   <=>  a e' vera  OPPURE b e' vera
+ *   !a e' falsa        <=>  a e' vera
+ * Per ogni altro nodo (un confronto, una variabile, una chiamata...) non
+ * c'e' struttura di salto da sfruttare: si calcola il valore con la
+ * traduzione ordinaria (irExpr, che per un confronto usa comunque un solo
+ * IR_LT/IR_LE/... - nessun'altra riduzione possibile a quel livello) e si
+ * traduce con un singolo salto condizionale, esattamente come oggi.
+ */
 
-    if (strcmp(expr->text, "&&") == 0) {
-        Operand falseLbl = mkLabel();
-        emitIfFalse(out, lhs, falseLbl);
-        Operand rhs = irExpr(expr->children[1], out);
-        emitIfFalse(out, rhs, falseLbl);
-        emit(out, IR_ASSIGN, result, mkConstInt(1), noOperand());
-        emitGoto(out, endLbl);
-        emitLabel(out, falseLbl);
-        emit(out, IR_ASSIGN, result, mkConstInt(0), noOperand());
-    } else { /* || */
-        Operand checkRhsLbl = mkLabel();
-        Operand falseLbl = mkLabel();
-        emitIfFalse(out, lhs, checkRhsLbl);
-        emit(out, IR_ASSIGN, result, mkConstInt(1), noOperand());
-        emitGoto(out, endLbl);
-        emitLabel(out, checkRhsLbl);
-        Operand rhs = irExpr(expr->children[1], out);
-        emitIfFalse(out, rhs, falseLbl);
-        emit(out, IR_ASSIGN, result, mkConstInt(1), noOperand());
-        emitGoto(out, endLbl);
-        emitLabel(out, falseLbl);
-        emit(out, IR_ASSIGN, result, mkConstInt(0), noOperand());
+static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl) {
+    if (cond->kind == ND_BINOP && strcmp(cond->text, "&&") == 0) {
+        /* a && b e' falsa se a e' falsa (salta subito) O se b e' falsa
+           (valutata solo se a era vera - corto-circuito) */
+        irJumpIfFalse(cond->children[0], out, falseLbl);
+        irJumpIfFalse(cond->children[1], out, falseLbl);
+        return;
     }
+    if (cond->kind == ND_BINOP && strcmp(cond->text, "||") == 0) {
+        /* a || b e' falsa solo se ENTRAMBE sono false: se a e' vera,
+           salta oltre il controllo di b (non e' falsa, quindi non si
+           salta a falseLbl); altrimenti (a falsa) il verdetto dipende
+           solo da b. */
+        Operand skipLbl = mkLabel();
+        irJumpIfTrue(cond->children[0], out, skipLbl);
+        irJumpIfFalse(cond->children[1], out, falseLbl);
+        emitLabel(out, skipLbl);
+        return;
+    }
+    if (cond->kind == ND_UNARY && strcmp(cond->text, "!") == 0) {
+        /* !a e' falsa esattamente quando a e' vera */
+        irJumpIfTrue(cond->children[0], out, falseLbl);
+        return;
+    }
+    Operand v = irExpr(cond, out);
+    emitIfFalse(out, v, falseLbl);
+}
+
+static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
+    if (cond->kind == ND_BINOP && strcmp(cond->text, "&&") == 0) {
+        /* a && b e' vera solo se ENTRAMBE lo sono: se a e' falsa, salta
+           oltre (non puo' essere vera); altrimenti dipende da b. */
+        Operand skipLbl = mkLabel();
+        irJumpIfFalse(cond->children[0], out, skipLbl);
+        irJumpIfTrue(cond->children[1], out, trueLbl);
+        emitLabel(out, skipLbl);
+        return;
+    }
+    if (cond->kind == ND_BINOP && strcmp(cond->text, "||") == 0) {
+        /* a || b e' vera se a e' vera (salta subito) O se b lo e' */
+        irJumpIfTrue(cond->children[0], out, trueLbl);
+        irJumpIfTrue(cond->children[1], out, trueLbl);
+        return;
+    }
+    if (cond->kind == ND_UNARY && strcmp(cond->text, "!") == 0) {
+        irJumpIfFalse(cond->children[0], out, trueLbl);
+        return;
+    }
+    /* Caso base: l'unico primitivo di salto che abbiamo e' "salta se
+       falso", quindi per "salta se vero" serve un salto in piu' (salta
+       oltre se falso, altrimenti vai a trueLbl) - inevitabile con questo
+       set di istruzioni, e comunque il caso base e' raro (si attiva solo
+       per un '!'/'||' il cui operando e' a sua volta un'espressione
+       semplice, non un'altra catena &&/||/!). */
+    Operand v = irExpr(cond, out);
+    Operand skipLbl = mkLabel();
+    emitIfFalse(out, v, skipLbl);
+    emitGoto(out, trueLbl);
+    emitLabel(out, skipLbl);
+}
+
+/*
+ * ---- Traduzione "a valore" di &&/|| ------------------------------------
+ * Usata SOLO quando il risultato booleano serve davvero come dato (es.
+ * "r = a && b;", non come condizione di if/while - li' si passa da
+ * irJumpIfFalse sopra, che non materializza mai un valore). 'dest' e'
+ * l'operando (variabile o temporaneo) in cui scrivere 0/1.
+ */
+static Operand irShortCircuitInto(ASTNode *expr, IRFunction *out, Operand dest) {
+    Operand endLbl = mkLabel();
+    Operand falseLbl = mkLabel();
+
+    irJumpIfFalse(expr, out, falseLbl);
+    emit(out, IR_ASSIGN, dest, mkConstInt(1), noOperand());
+    emitGoto(out, endLbl);
+    emitLabel(out, falseLbl);
+    emit(out, IR_ASSIGN, dest, mkConstInt(0), noOperand());
     emitLabel(out, endLbl);
-    return result;
+    return dest;
+}
+static Operand irShortCircuit(ASTNode *expr, IRFunction *out) {
+    return irShortCircuitInto(expr, out, mkTemp());
 }
 
 static Operand irAssign(ASTNode *expr, IRFunction *out) {
     ASTNode *lvalue = expr->children[0];
-    Operand rhs = irExpr(expr->children[1], out);
 
     if (lvalue->kind == ND_ID) {
-        Operand dst = mkVar(lvalue);
-        emit(out, IR_ASSIGN, dst, rhs, noOperand());
-        return dst;
+        /* Traduce il RHS direttamente nella variabile di destinazione,
+           invece che in un temporaneo seguito da una copia (vedi
+           irExprInto) - "cane = a+b" produce "cane = a+b", non
+           "t = a+b; cane = t;". */
+        return irExprInto(expr->children[1], out, mkVar(lvalue));
     }
-    /* ND_ARRAY_ACCESS: arr[idx] = rhs */
+    /* ND_ARRAY_ACCESS: arr[idx] = rhs - IR_STORE_ARR accetta comunque un
+       operando qualsiasi (anche un temporaneo) come valore da scrivere,
+       quindi qui non c'e' nessuna copia ridondante da eliminare: il
+       valore calcolato da irExpr finisce gia' direttamente nell'istruzione
+       di store, non serve un passaggio intermedio in piu'. */
     Operand idx = irExpr(lvalue->children[0], out);
     Operand base = mkVar(lvalue);
+    Operand rhs = irExpr(expr->children[1], out);
     emit(out, IR_STORE_ARR, base, idx, rhs);
     return rhs;   /* il valore di un assegnamento e' il valore assegnato */
 }
@@ -197,6 +284,78 @@ static Operand irExpr(ASTNode *expr, IRFunction *out) {
     }
 }
 
+/*
+ * Come irExpr, ma per l'espressione al livello piu' ESTERNO di un
+ * assegnamento (RHS di ND_ASSIGN su una variabile semplice, o
+ * inizializzatore scalare di ND_VAR_DECL): scrive il risultato
+ * DIRETTAMENTE in 'dest' invece che in un temporaneo, eliminando la copia
+ * finale "temp -> variabile" che altrimenti comparirebbe sempre. Le
+ * sotto-espressioni annidate continuano a passare da irExpr()/un
+ * temporaneo come prima - solo il nodo esterno, quello il cui risultato
+ * e' gia' destinato a una variabile con nome, salta il temporaneo.
+ */
+static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
+    switch (expr->kind) {
+
+    case ND_NUM_INT:
+        emit(out, IR_ASSIGN, dest, mkConstInt(atol(expr->text)), noOperand());
+        return dest;
+
+    case ND_NUM_FLOAT:
+        emit(out, IR_ASSIGN, dest, mkConstFloat(atof(expr->text)), noOperand());
+        return dest;
+
+    case ND_ID:
+        emit(out, IR_ASSIGN, dest, mkVar(expr), noOperand());
+        return dest;
+
+    case ND_ARRAY_ACCESS: {
+        Operand idx = irExpr(expr->children[0], out);
+        Operand base = mkVar(expr);
+        emit(out, IR_LOAD_ARR, dest, base, idx);
+        return dest;
+    }
+
+    case ND_UNARY: {
+        Operand v = irExpr(expr->children[0], out);
+        emit(out, strcmp(expr->text, "!") == 0 ? IR_NOT : IR_NEG, dest, v, noOperand());
+        return dest;
+    }
+
+    case ND_BINOP:
+        if (strcmp(expr->text, "&&") == 0 || strcmp(expr->text, "||") == 0) {
+            return irShortCircuitInto(expr, out, dest);
+        } else {
+            Operand lhs = irExpr(expr->children[0], out);
+            Operand rhs = irExpr(expr->children[1], out);
+            emit(out, binopToIROp(expr->text), dest, lhs, rhs);
+            return dest;
+        }
+
+    case ND_CALL: {
+        for (int i = 0; i < expr->nchildren; i++) {
+            Operand arg = irExpr(expr->children[i], out);
+            emit(out, IR_PARAM, noOperand(), arg, noOperand());
+        }
+        emit(out, IR_CALL, dest, mkFunc(expr->text), mkConstInt(expr->nchildren));
+        return dest;
+    }
+
+    case ND_ASSIGN: {
+        /* "cane = (i = 5)": l'assegnamento annidato scrive gia' la SUA
+           variabile (i); cane deve comunque ricevere una copia del valore
+           - due variabili distinte richiedono davvero due scritture,
+           non e' una copia ridondante come quella che eliminiamo sopra. */
+        Operand inner = irAssign(expr, out);
+        emit(out, IR_ASSIGN, dest, inner, noOperand());
+        return dest;
+    }
+
+    default:
+        return noOperand();
+    }
+}
+
 static void irStmt(ASTNode *stmt, IRFunction *out) {
     if (!stmt) return;
 
@@ -213,9 +372,8 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
     case ND_VAR_DECL: {
         if (stmt->nchildren == 0) break;   /* nessun inizializzatore: nulla da emettere */
         if (stmt->nchildren == 1) {
-            /* scalare */
-            Operand init = irExpr(stmt->children[0], out);
-            emit(out, IR_ASSIGN, mkVar(stmt), init, noOperand());
+            /* scalare: direttamente nella variabile, niente temporaneo intermedio */
+            irExprInto(stmt->children[0], out, mkVar(stmt));
         } else {
             /* array: un figlio per elemento, in ordine */
             for (int i = 0; i < stmt->nchildren; i++) {
@@ -231,9 +389,8 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
         break;
 
     case ND_IF: {
-        Operand cond = irExpr(stmt->children[0], out);
         Operand elseLbl = mkLabel();
-        emitIfFalse(out, cond, elseLbl);
+        irJumpIfFalse(stmt->children[0], out, elseLbl);
         irStmt(stmt->children[1], out);
         if (stmt->nchildren > 2) {
             Operand endLbl = mkLabel();
@@ -251,8 +408,7 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
         Operand startLbl = mkLabel();
         Operand endLbl = mkLabel();
         emitLabel(out, startLbl);
-        Operand cond = irExpr(stmt->children[0], out);
-        emitIfFalse(out, cond, endLbl);
+        irJumpIfFalse(stmt->children[0], out, endLbl);
         irStmt(stmt->children[1], out);
         emitGoto(out, startLbl);
         emitLabel(out, endLbl);

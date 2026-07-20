@@ -194,6 +194,75 @@ int main(void) {
     printf("PASS 9 ok: 'f(5)' genera 1 PARAM e una CALL con nArgs=1.\n");
     ir_free(prog); freeAST(root);
 
+    /* PASS 10: '&&' come condizione di while - NON deve materializzare
+       nessun valore booleano intermedio (niente IR_ASSIGN di 0/1): solo
+       due IF_FALSE che saltano DIRETTAMENTE all'uscita del ciclo, zero
+       GOTO/LABEL in piu' oltre a quelli gia' necessari per il while
+       stesso (inizio/fine, 2 LABEL, 1 GOTO di richiamo). */
+    prog = parseAndGenerateIR(
+        "int main() { int i; int n; int f; while (i <= n && f != 0) { i = i + 1; } return i; }", &root);
+    f = lastFunc(prog);
+    if (countOp(f, IR_IF_FALSE) != 2 || countOp(f, IR_GOTO) != 1 || countOp(f, IR_LABEL) != 2) {
+        fprintf(stderr, "PASS 10 FALLITO: 'while' con '&&' non genera la struttura minima attesa (troppi salti/blocchi)\n");
+        return 1;
+    }
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op == IR_ASSIGN && f->instrs[i].src1.kind == OPND_CONST_INT &&
+            (f->instrs[i].src1.as.intVal == 0 || f->instrs[i].src1.as.intVal == 1) &&
+            f->instrs[i].dst.kind != OPND_VAR) {
+            fprintf(stderr, "PASS 10 FALLITO: trovato un valore booleano 0/1 materializzato inutilmente\n");
+            return 1;
+        }
+    }
+    printf("PASS 10 ok: 'while (a && b)' salta direttamente all'uscita, nessun booleano intermedio.\n");
+    ir_free(prog); freeAST(root);
+
+    /* PASS 11: '||' come condizione di if - anche qui nessun valore
+       booleano materializzato; qui SERVE un'etichetta interna in piu'
+       (per il caso "primo operando vero, salta il controllo del secondo"),
+       ma resta comunque zero variabili "risultato" e zero GOTO in piu'
+       oltre a quello di chiusura dell'if. */
+    prog = parseAndGenerateIR(
+        "int main() { int a; int b; int r; if (a || b) { r = 1; } return r; }", &root);
+    f = lastFunc(prog);
+    if (countOp(f, IR_IF_FALSE) != 2) {
+        fprintf(stderr, "PASS 11 FALLITO: 'if (a || b)' non genera i due IF_FALSE attesi\n");
+        return 1;
+    }
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op == IR_ASSIGN && f->instrs[i].src1.kind == OPND_CONST_INT &&
+            (f->instrs[i].src1.as.intVal == 0 || f->instrs[i].src1.as.intVal == 1) &&
+            f->instrs[i].dst.kind != OPND_VAR) {
+            fprintf(stderr, "PASS 11 FALLITO: trovato un valore booleano 0/1 materializzato inutilmente\n");
+            return 1;
+        }
+    }
+    printf("PASS 11 ok: 'if (a || b)' salta direttamente, nessun booleano intermedio.\n");
+    ir_free(prog); freeAST(root);
+
+    /* PASS 12: eliminazione della copia ridondante - 'cane = a+b+c' non
+       deve produrre un temporaneo finale seguito da una IR_ASSIGN verso
+       'cane': l'ultima operazione della catena deve scrivere
+       DIRETTAMENTE in 'cane'. */
+    prog = parseAndGenerateIR(
+        "int main() { int a; int b; int c; int cane; cane = a+b+c; return cane; }", &root);
+    f = lastFunc(prog);
+    int lastAddIdx = -1;
+    for (int i = 0; i < f->count; i++) if (f->instrs[i].op == IR_ADD) lastAddIdx = i;
+    if (lastAddIdx < 0 || f->instrs[lastAddIdx].dst.kind != OPND_VAR) {
+        fprintf(stderr, "PASS 12 FALLITO: l'ultima addizione non scrive direttamente nella variabile destinazione\n");
+        return 1;
+    }
+    /* nessuna IR_ASSIGN "temp -> cane" deve seguire l'ultima addizione */
+    for (int i = lastAddIdx + 1; i < f->count; i++) {
+        if (f->instrs[i].op == IR_ASSIGN && f->instrs[i].src1.kind == OPND_TEMP) {
+            fprintf(stderr, "PASS 12 FALLITO: trovata una copia ridondante temp -> variabile dopo il calcolo\n");
+            return 1;
+        }
+    }
+    printf("PASS 12 ok: 'cane = a+b+c' scrive direttamente nella variabile, nessuna copia ridondante.\n");
+    ir_free(prog); freeAST(root);
+
     printf("\nTutti i test sono passati.\n");
     remove("/tmp/miniC_test_ir_src.c");
     return 0;
