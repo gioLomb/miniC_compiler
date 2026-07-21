@@ -8,6 +8,7 @@
 #include "../semantic.h"
 #include "../optimize.h"
 #include "../ir.h"
+#include "../svn.h"          // <-- AGGIUNTO
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -42,6 +43,12 @@ int main(int argc, char **argv) {
         optimize_ast(root);
 
         IRProgram *ir = ir_generate(root);
+
+        // --- Applica SVN a ogni funzione ---
+        for (int i = 0; i < ir->count; i++) {
+            svn_optimize(ir->functions[i]);
+        }
+
         printf("\n=== IR LINEARE (three-address code) ===\n");
         ir_print(ir);
         ir_free(ir);

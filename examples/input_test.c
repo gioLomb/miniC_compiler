@@ -14,15 +14,17 @@ int main() {
     fattoriale = i = 1;
     tasso_variazione = 0.75;
     soglia = 0.005;
+    cane = a+fattoriale;
+    n=a+fattoriale;
 
     /* Ciclo di controllo principale
        Verifica gli operatori logici e relazionali */
-    while (i <= n && fattoriale != 0) {
-        int x[20];
-        x[11+2] = 1;
-        fattoriale = fattoriale * i;
-        i = i + 1;
-    }
+    // while (i <= n && fattoriale != 0) {
+    //     int x[20];
+    //     x[11+2] = 1;
+    //     fattoriale = fattoriale * i;
+    //     i = i + 1;
+    // }
 
     if(fattoriale <= 2){
         return 1;
