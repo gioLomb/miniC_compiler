@@ -9,12 +9,13 @@ int main() {
     int a = 1;
     i = fattoriale = n = a;
     int cane;
-    cane = a+fattoriale+i+n;
+    cane = 1;//a+fattoriale+i+n;
     n = 10;
     fattoriale = i = 1;
     tasso_variazione = 0.75;
     soglia = 0.005;
     cane = a+fattoriale;
+    cane = 4;
     n=a+fattoriale;
 
     /* Ciclo di controllo principale

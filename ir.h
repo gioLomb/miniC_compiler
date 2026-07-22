@@ -81,10 +81,39 @@ typedef struct {
     Operand dst, src1, src2;
 } IRInstr;
 
+/* Basic block del CFG: range [start, end) in instrs, e i suoi successori
+ * (indici di blocco, -1 se assente: -1 in succ[0]/succ[1] compare per un
+ * IR_RETURN, o per un IR_GOTO/IR_IF_FALSE il cui bersaglio e' comunque
+ * l'ultimo blocco della funzione). predCount conta gli ARCHI entranti,
+ * non i blocchi predecessori distinti: un IR_IF_FALSE il cui fallthrough
+ * e bersaglio coincidono (es. "if (c) {}" con ramo then vuoto) conta 2,
+ * pur avendo un solo blocco di origine - e' corretto cosi' (il blocco
+ * risultante e' comunque raggiunto da due archi runtime distinti, mai
+ * entrambi nella stessa esecuzione), semplicemente non e' idoneo alla
+ * fusione via singolo predecessore che fa svn.c, e viene trattato come
+ * punto di confluenza. Nessuna perdita di correttezza, solo un'occasione
+ * di propagazione mancata in un caso raro. */
+typedef struct {
+    int start, end;
+    int succ[2];
+    int predCount;
+} IRBlock;
+
 typedef struct {
     char *name;          /* copia propria, indipendente dall'AST */
     IRInstr *instrs;
     int count, capacity;
+
+    IRBlock *blocks;      /* CFG, costruito incrementalmente in emit() (vedi ir.c) */
+    int blockCount, blockCapacity;
+
+    /* ---- scratch di costruzione: significativi SOLO durante irFunction(),
+     * azzerati/liberati da resolveCFG() prima che la funzione ritorni.
+     * Nessun chiamante esterno a ir.c deve leggerli. */
+    int curBlockStart;
+    int labelBase;
+    int *labelToBlock;
+    int labelToBlockCap;
 } IRFunction;
 
 typedef struct {

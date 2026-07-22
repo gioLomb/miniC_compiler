@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ir.h"
+#include "svn.h"
 
 /* Contatori globali per temporanei ed etichette: a differenza dell'offset
  * delle variabili (che DEVE ripartire da zero per ogni scope, per questo
@@ -41,16 +42,90 @@ static Operand noOperand(void) {
     Operand o; o.kind = OPND_NONE; return o;
 }
 
+/* ---- Costruzione live del CFG -----------------------------------------
+ *
+ * I confini di blocco vengono rilevati nell'istante stesso in cui
+ * un'istruzione viene scritta, dentro emit() - l'unico punto per cui
+ * passa OGNI istruzione emessa, da qualunque funzione del traduttore
+ * (irExpr/irExprInto/irStmt/irJumpIfFalse/irShortCircuitInto...).
+ * Nessuna di quelle funzioni viene toccata: bastano emit() stessa e la
+ * chiusura finale in irFunction()/resolveCFG().
+ *
+ * Vantaggio rispetto a una scansione separata di f->instrs dopo la
+ * traduzione: ogni istruzione viene toccata una volta sola in totale
+ * (qui, mentre viene comunque scritta), non due. */
+
+static int isTerminator(IROp op) {
+    return op == IR_GOTO || op == IR_IF_FALSE || op == IR_RETURN;
+}
+
+static void closeBlock(IRFunction *f, int start, int end) {
+    if (end <= start) return;   /* nessun contenuto pendente: nulla da chiudere */
+    if (f->blockCount == f->blockCapacity) {
+        f->blockCapacity = f->blockCapacity ? f->blockCapacity * 2 : 16;
+        f->blocks = realloc(f->blocks, (size_t) f->blockCapacity * sizeof(IRBlock));
+    }
+    IRBlock *b = &f->blocks[f->blockCount++];
+    b->start = start;
+    b->end = end;
+    b->succ[0] = b->succ[1] = -1;
+    b->predCount = 0;
+}
+
+/* Registra che l'etichetta 'labelId' apre il blocco che AVRA' indice
+ * 'futureBlockIdx' quando verra' infine chiuso. Indicizzata da
+ * (labelId - f->labelBase): nextLabel e' un contatore globale al
+ * programma (vedi sopra), ma le etichette di una singola funzione sono
+ * comunque un intervallo contiguo (la traduzione avviene una funzione
+ * alla volta) - un array a crescita raddoppiata basta, O(1) per accesso,
+ * senza l'overhead di una hash table per uno spazio di chiavi denso e
+ * sotto controllo del compilatore. */
+static void registerLabel(IRFunction *f, int labelId, int futureBlockIdx) {
+    int idx = labelId - f->labelBase;
+    if (idx >= f->labelToBlockCap) {
+        int newCap = f->labelToBlockCap ? f->labelToBlockCap * 2 : 8;
+        while (newCap <= idx) newCap *= 2;
+        f->labelToBlock = realloc(f->labelToBlock, (size_t) newCap * sizeof(int));
+        for (int i = f->labelToBlockCap; i < newCap; i++) f->labelToBlock[i] = -1;
+        f->labelToBlockCap = newCap;
+    }
+    f->labelToBlock[idx] = futureBlockIdx;
+}
+
 static void emit(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2) {
     if (f->count == f->capacity) {
         f->capacity = f->capacity ? f->capacity * 2 : 16;
         f->instrs = realloc(f->instrs, (size_t) f->capacity * sizeof(IRInstr));
     }
-    f->instrs[f->count].op = op;
-    f->instrs[f->count].dst = dst;
-    f->instrs[f->count].src1 = src1;
-    f->instrs[f->count].src2 = src2;
+    int idx = f->count;
+
+    /* Una IR_LABEL apre sempre un nuovo blocco: se c'e' contenuto
+       pendente dal blocco corrente, chiudilo prima di scrivere questa
+       istruzione (la label appartiene al blocco NUOVO, non a quello che
+       la precede). */
+    if (op == IR_LABEL && idx > f->curBlockStart) {
+        closeBlock(f, f->curBlockStart, idx);
+        f->curBlockStart = idx;
+    }
+
+    f->instrs[idx].op = op;
+    f->instrs[idx].dst = dst;
+    f->instrs[idx].src1 = src1;
+    f->instrs[idx].src2 = src2;
     f->count++;
+
+    if (op == IR_LABEL) {
+        /* Il blocco che si sta aprendo ora (f->curBlockStart == idx) non
+           e' ancora stato spinto in f->blocks: ricevera' l'indice
+           f->blockCount quando verra' infine chiuso, perche' i blocchi
+           sono sempre spinti in ordine crescente e nessuno e' stato
+           ancora spinto per questo. */
+        registerLabel(f, dst.as.labelId, f->blockCount);
+    }
+    if (isTerminator(op)) {
+        closeBlock(f, f->curBlockStart, f->count);
+        f->curBlockStart = f->count;
+    }
 }
 
 /* Scorciatoie per le tre istruzioni di controllo di flusso, cosi' la
@@ -427,6 +502,50 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
     }
 }
 
+/* Chiude l'eventuale blocco finale pendente (l'ultima istruzione della
+ * funzione non e' detto sia un terminatore: es. un corpo il cui ultimo
+ * statement non è una IR_RETURN esplicita in coda), poi risolve
+ * succ[0]/succ[1]/predCount per ogni blocco usando la mappa etichette
+ * gia' costruita live da emit(). Stessa logica di risoluzione salti che
+ * prima viveva in buildBlocks() dentro svn.c, solo senza doverli
+ * ricostruire da zero: i blocchi esistono gia'. */
+static void resolveCFG(IRFunction *f) {
+    if (f->curBlockStart < f->count) {
+        closeBlock(f, f->curBlockStart, f->count);
+        f->curBlockStart = f->count;
+    }
+
+    for (int b = 0; b < f->blockCount; b++) {
+        int last = f->blocks[b].end - 1;
+        IROp op = f->instrs[last].op;
+        if (op == IR_GOTO) {
+            int lbl = f->instrs[last].dst.as.labelId - f->labelBase;
+            f->blocks[b].succ[0] = (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
+        } else if (op == IR_IF_FALSE) {
+            f->blocks[b].succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;   /* fallthrough */
+            int lbl = f->instrs[last].dst.as.labelId - f->labelBase;
+            f->blocks[b].succ[1] = (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
+        } else if (op != IR_RETURN) {
+            f->blocks[b].succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;   /* fallthrough semplice */
+        }
+    }
+
+    for (int b = 0; b < f->blockCount; b++) {
+        for (int k = 0; k < 2; k++) {
+            int s = f->blocks[b].succ[k];
+            if (s >= 0) f->blocks[s].predCount++;
+        }
+    }
+
+    if (f->blockCount > 0) {
+        f->blocks[0].predCount++;
+    }
+
+    free(f->labelToBlock);
+    f->labelToBlock = NULL;
+    f->labelToBlockCap = 0;
+}
+
 static IRFunction *irFunction(ASTNode *decl) {
     /* decl->text = "tipo nome" (vedi symtab_parse_decl_text); qui ci
        interessa solo il nome, in coda dopo l'ultimo spazio - stessa
@@ -436,9 +555,15 @@ static IRFunction *irFunction(ASTNode *decl) {
 
     IRFunction *f = calloc(1, sizeof(IRFunction));
     f->name = strdup(name);
+    f->labelBase = nextLabel;   /* le label di questa funzione partono da qui: nextLabel
+                                    e' un contatore unico per l'intero programma, ma dentro
+                                    una singola funzione forma comunque un intervallo contiguo */
 
     ASTNode *body = decl->children[decl->nchildren - 1];   /* ND_BLOCK, ultimo figlio */
     irStmt(body, f);
+
+    resolveCFG(f);
+    svn_optimize(f);
     return f;
 }
 
@@ -554,6 +679,8 @@ void ir_free(IRProgram *prog) {
     for (int i = 0; i < prog->count; i++) {
         free(prog->functions[i]->name);
         free(prog->functions[i]->instrs);
+        free(prog->functions[i]->blocks);
+        free(prog->functions[i]->labelToBlock);   /* normalmente gia' NULL (liberato in resolveCFG) */
         free(prog->functions[i]);
     }
     free(prog->functions);

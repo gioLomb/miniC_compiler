@@ -42,12 +42,11 @@ SEMANTIC_SRC    := semantic.c
 ARENA_SRC       := arena.c
 OPTIMIZE_SRC    := optimize.c
 IR_SRC          := ir.c
-SVN_SRC         := svn.c                       # <-- NUOVO
+SVN_SRC         := svn.c
 
 # ---- Composizione dei binari ----
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
-                     $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c   # aggiunto SVN_SRC
+                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c
 TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
@@ -59,8 +58,8 @@ TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARE
                        $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) \
                        tests/test_optimize.c
 TEST_IR_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) \
-                       $(SVN_SRC) tests/test_ir.c   # aggiunto SVN_SRC
+                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) \
+                       tests/test_ir.c
 
 # Traduce ogni lista di sorgenti .c nei corrispondenti .o dentro build/
 # (build/ rispecchia la struttura delle cartelle sorgente)
@@ -85,7 +84,7 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I. -c $< -o $@
 
-# ---- Link dei binari ----
+# ---- Link dei tre binari ----
 $(BIN_DIR)/minicc: $(MINICC_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@

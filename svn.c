@@ -3,79 +3,15 @@
 #include "svn.h"
 #include "hash_table.h"
 
-/* ---- Grafo dei blocchi (minimo indispensabile: successori + predCount) */
-
-typedef struct {
-    int start, end;    /* range [start, end) in f->instrs */
-    int succ[2];       /* indici di blocco, -1 se assente */
-    int predCount;
-} Block;
-
-static int isTerminator(IROp op) {
-    return op == IR_GOTO || op == IR_IF_FALSE || op == IR_RETURN;
-}
-
-static int findBlockStartingWithLabel(IRFunction *f, Block *blocks, int nBlocks, int labelId) {
-    for (int b = 0; b < nBlocks; b++) {
-        IRInstr *first = &f->instrs[blocks[b].start];
-        if (first->op == IR_LABEL && first->dst.as.labelId == labelId) return b;
-    }
-    return -1;   /* non dovrebbe succedere: ogni bersaglio di salto e'
-                    generato insieme alla sua LABEL da ir_generate */
-}
-
-static Block *buildBlocks(IRFunction *f, int *outCount) {
-    int n = f->count;
-    if (n == 0) { *outCount = 0; return NULL; }
-
-    int *isStart = calloc((size_t) n, sizeof(int));
-    isStart[0] = 1;
-    for (int i = 0; i < n; i++) {
-        if (f->instrs[i].op == IR_LABEL) isStart[i] = 1;
-        if (isTerminator(f->instrs[i].op) && i + 1 < n) isStart[i + 1] = 1;
-    }
-
-    int nBlocks = 0;
-    for (int i = 0; i < n; i++) if (isStart[i]) nBlocks++;
-
-    Block *blocks = malloc((size_t) nBlocks * sizeof(Block));
-    int b = -1;
-    for (int i = 0; i < n; i++) {
-        if (isStart[i]) {
-            b++;
-            blocks[b].start = i;
-            blocks[b].succ[0] = blocks[b].succ[1] = -1;
-            blocks[b].predCount = 0;
-        }
-        blocks[b].end = i + 1;
-    }
-    free(isStart);
-
-    for (int bi = 0; bi < nBlocks; bi++) {
-        int last = blocks[bi].end - 1;
-        IROp op = f->instrs[last].op;
-        if (op == IR_GOTO) {
-            blocks[bi].succ[0] = findBlockStartingWithLabel(f, blocks, nBlocks, f->instrs[last].dst.as.labelId);
-        } else if (op == IR_IF_FALSE) {
-            blocks[bi].succ[0] = (bi + 1 < nBlocks) ? bi + 1 : -1;   /* fallthrough */
-            blocks[bi].succ[1] = findBlockStartingWithLabel(f, blocks, nBlocks, f->instrs[last].dst.as.labelId);
-        } else if (op != IR_RETURN) {
-            blocks[bi].succ[0] = (bi + 1 < nBlocks) ? bi + 1 : -1;   /* fallthrough semplice (es. prima di una LABEL) */
-        }
-    }
-
-    for (int bi = 0; bi < nBlocks; bi++) {
-        for (int k = 0; k < 2; k++) {
-            int s = blocks[bi].succ[k];
-            if (s >= 0) blocks[s].predCount++;
-        }
-    }
-
-    *outCount = nBlocks;
-    return blocks;
-}
-
-/* ---- Sheaf di tabelle -------------------------------------------------- */
+/* ---- Sheaf di tabelle ---------------------------------------------------
+ *
+ * Uno SVNScope per blocco, creato e distrutto una volta per blocco: vive
+ * come variabile automatica dentro svnProcessBlock (vedi sotto), non su
+ * arena ne' su heap - la sua durata di vita combacia esattamente con lo
+ * stack frame che lo crea, e nessun figlio lo consulta dopo che quello
+ * stack frame e' ritornato. Le 3 hash table interne restano sull'heap
+ * (ht_create/ht_destroy fanno le loro malloc/free, la libreria non sa
+ * nulla di stack o arena), ma il contenitore che le raggruppa e' gratis. */
 
 typedef struct SVNScope {
     Hash_Table *values;    /* ValueKey -> vn (int): cosa contiene ADESSO questa identita' */
@@ -84,11 +20,22 @@ typedef struct SVNScope {
     struct SVNScope *parent;
 } SVNScope;
 
+/* Capacita' iniziale piccola e non 'default' (101): queste tabelle sono
+ * a vita breve, create/distrutte una volta per OGNI blocco della
+ * funzione, mai riusate. Il costo dominante e' il calloc dei bucket a
+ * ogni creazione (fatto per il caso comune: un blocco piccolo, poche
+ * decine di istruzioni al piu'), non l'eventuale resize (ammortizzato
+ * O(1), e scatta solo per un blocco insolitamente denso di valori
+ * distinti - il caso raro, che puo' permettersi di pagarlo). Pre-allocare
+ * una capacita' grande "per evitare resize" avrebbe senso per una tabella
+ * a vita lunga; qui pagherebbe il caso raro ad ogni singolo blocco. */
+#define SVN_SCOPE_TABLE_CAPACITY 7
+
 typedef struct {
-    int kind;          /* 0=var, 1=temp, 2=constInt, 3=constFloat */
-    long intVal;
-    double floatVal;
-    int a, b;          /* kind==0: level,offset; kind==1: tempId,0 */
+    long intVal;        /* kind==2 */
+    double floatVal;     /* kind==3 */
+    int kind;             /* 0=var, 1=temp, 2=constInt, 3=constFloat, -1=non pertinente */
+    int a, b;             /* kind==0: level,offset; kind==1: tempId,0 */
 } ValueKey;
 
 typedef struct {
@@ -96,26 +43,33 @@ typedef struct {
     int vn1, vn2;       /* vn2 = -1 per gli operatori unari */
 } ExprKey;
 
-/* Mappa valori-nomi "attiva" (vedi svn.h): invece di un unico leader
- * fisso, ogni numero di valore porta con se' TUTTI i nomi che l'hanno
- * mai contenuto lungo il cammino corrente. Non c'e' una vera rimozione
- * alla ridefinizione (mutare la lista di uno scope antenato romperebbe
- * l'invariante della sheaf - un ramo fratello non ancora esplorato
- * vedrebbe un cambiamento che non gli appartiene): la "rimozione" e'
- * ottenuta a costo zero, per filtraggio, al momento della lettura (vedi
- * nameStillValid) - un nome resta nella lista per sempre, ma viene
- * scartato se il suo valore ATTUALE (in 'values', gia' correttamente
- * scoping-aware) non coincide piu' con il vn per cui e' stato inserito.
- * Capacita' fissa (4): un limite dichiarato, non un'illusione di
- * generalita' - oltre la quarta variabile che condivide lo stesso valore
- * smettiamo di tracciarne altre (nessun rischio di scorrettezza, solo
- * un'eventuale occasione di ottimizzazione mancata in un caso raro). */
+/* Mappa valori-nomi "attiva": invece di un unico leader fisso, ogni
+ * numero di valore porta con se' TUTTI i nomi che l'hanno mai contenuto
+ * lungo il cammino corrente. Non c'e' una vera rimozione alla
+ * ridefinizione (mutare la lista di uno scope antenato romperebbe
+ * l'invariante della sheaf): la "rimozione" e' ottenuta a costo zero,
+ * per filtraggio, al momento della lettura (vedi nameStillValid) - un
+ * nome resta nella lista per sempre, ma viene scartato se il suo valore
+ * ATTUALE (in 'values', gia' correttamente scoping-aware) non coincide
+ * piu' con il vn per cui e' stato inserito. Capacita' fissa (4): un
+ * limite dichiarato, non un'illusione di generalita'. */
 #define SVN_MAX_NAMES 4
 typedef struct {
     int count;
     Operand names[SVN_MAX_NAMES];
 } NameList;
 
+/* Hash FNV-1a sui byte grezzi della chiave. E' sicura SOLO perche' ogni
+ * chiave (ValueKey/ExprKey) viene azzerata per intero con memset PRIMA
+ * di valorizzare i singoli campi (vedi keyForOperand/memoizeOrRewrite):
+ * la comparazione in hash_table.c e' un memcmp byte-per-byte, compreso
+ * l'eventuale padding di struct - senza lo zeroing esplicito, due chiavi
+ * logicamente uguali potrebbero avere byte di padding diversi (non
+ * inizializzati) e apparire diverse a ht_get/ht_set, un bug di
+ * correttezza silenzioso e difficile da riprodurre. Con lo zeroing,
+ * l'hash sui byte grezzi e' corretto quanto uno per-campo, e piu' veloce
+ * (un solo giro sequenziale su una struct piccola, niente istruzioni
+ * extra per estrarre campo per campo). */
 static unsigned long svnHash(const void *key, size_t keySize) {
     const unsigned char *bytes = key;
     unsigned long h = 2166136261UL;
@@ -123,20 +77,17 @@ static unsigned long svnHash(const void *key, size_t keySize) {
     return h;
 }
 
-static SVNScope *svnScopeCreate(SVNScope *parent) {
-    SVNScope *s = malloc(sizeof(SVNScope));
-    s->values  = ht_create(31, svnHash);
-    s->exprs   = ht_create(31, svnHash);
-    s->leaders = ht_create(31, svnHash);
-    s->parent  = parent;
-    return s;
+static void svnScopeInit(SVNScope *scope, SVNScope *parent) {
+    scope->values  = ht_create(SVN_SCOPE_TABLE_CAPACITY, svnHash);
+    scope->exprs   = ht_create(SVN_SCOPE_TABLE_CAPACITY, svnHash);
+    scope->leaders = ht_create(SVN_SCOPE_TABLE_CAPACITY, svnHash);
+    scope->parent  = parent;
 }
 
-static void svnScopeDestroy(SVNScope *s) {
-    ht_destroy(s->values, NULL);
-    ht_destroy(s->exprs, NULL);
-    ht_destroy(s->leaders, NULL);
-    free(s);
+static void svnScopeDestroy(SVNScope *scope) {
+    ht_destroy(scope->values, NULL);
+    ht_destroy(scope->exprs, NULL);
+    ht_destroy(scope->leaders, NULL);
 }
 
 static Operand mkNone(void) {
@@ -144,7 +95,8 @@ static Operand mkNone(void) {
 }
 
 static ValueKey keyForOperand(Operand op) {
-    ValueKey k = {0};
+    ValueKey k;
+    memset(&k, 0, sizeof k);   /* azzera anche l'eventuale padding: vedi svnHash */
     switch (op.kind) {
     case OPND_VAR:         k.kind = 0; k.a = op.as.var.level; k.b = op.as.var.offset; break;
     case OPND_TEMP:        k.kind = 1; k.a = op.as.tempId; break;
@@ -161,7 +113,8 @@ static ValueKey keyForOperand(Operand op) {
  * SEMPRE nello scope locale - non modifica mai la tabella del genitore,
  * la "ombreggia" per questo ramo in avanti, esattamente come 'values'. */
 static void addNameForValue(int vn, Operand name, SVNScope *scope) {
-    NameList list = {0};
+    NameList list;
+    memset(&list, 0, sizeof list);
     for (SVNScope *s = scope; s; s = s->parent) {
         if (ht_get(s->leaders, &vn, sizeof(vn), &list, sizeof(list))) break;
     }
@@ -172,12 +125,9 @@ static void addNameForValue(int vn, Operand name, SVNScope *scope) {
 }
 
 /* Registra che 'dst' ora contiene il valore 'vn' (SEMPRE nello scope
- * locale, mai nel genitore - una scrittura deve "coprire" ogni voce
- * precedente per questa identita' nei blocchi discendenti) e aggiunge
- * 'dst' come nuovo nome disponibile per 'vn'. E' l'unico punto che
- * aggiorna sia 'values' sia 'leaders' per una destinazione: se 'dst' non
- * e' una variabile/temporaneo (istruzioni senza vera destinazione
- * scalare: IF_FALSE/GOTO/LABEL/STORE_ARR/PARAM/RETURN) non fa nulla. */
+ * locale, mai nel genitore) e aggiunge 'dst' come nuovo nome disponibile
+ * per 'vn'. Se 'dst' non e' una variabile/temporaneo (istruzioni senza
+ * vera destinazione scalare) non fa nulla. */
 static void defineValue(Operand dst, int vn, SVNScope *scope) {
     if (dst.kind != OPND_VAR && dst.kind != OPND_TEMP) return;
     ValueKey k = keyForOperand(dst);
@@ -186,10 +136,13 @@ static void defineValue(Operand dst, int vn, SVNScope *scope) {
 }
 
 /* Vero se 'name' contiene ANCORA il valore 'vn' in questo punto del
- * cammino: le costanti e i temporanei lo sono sempre (mai riassegnati:
- * le costanti per natura, i temporanei per costruzione in ir.c); una
- * variabile lo e' solo se il suo valore CORRENTE (da 'values', non dalla
- * lista stessa) e' ancora 'vn'. */
+ * cammino: le costanti e i temporanei lo sono sempre (mai riassegnati);
+ * una variabile lo e' solo se il suo valore CORRENTE (da 'values', non
+ * dalla lista stessa) e' ancora 'vn'. E' questo il controllo "al momento
+ * dell'uso" che risolve il problema del leader stantio descritto in
+ * svn.h: una variabile con nome puo' essere stata riassegnata dopo
+ * essere stata registrata come leader, e va scartata qui, non alla
+ * creazione (che romperebbe l'invariante sheaf). */
 static int nameStillValid(Operand name, int vn, SVNScope *scope) {
     if (name.kind != OPND_VAR) return 1;
     ValueKey k = keyForOperand(name);
@@ -204,7 +157,8 @@ static int nameStillValid(Operand name, int vn, SVNScope *scope) {
  * Se nessuno lo e' (tutti ridefiniti nel frattempo), il valore non e'
  * piu' disponibile da nessuna parte: bisogna ricalcolarlo davvero. */
 static int findValidLeader(int vn, SVNScope *scope, Operand *outLeader) {
-    NameList list = {0};
+    NameList list;
+    memset(&list, 0, sizeof list);
     int haveList = 0;
     for (SVNScope *s = scope; s; s = s->parent) {
         if (ht_get(s->leaders, &vn, sizeof(vn), &list, sizeof(list))) { haveList = 1; break; }
@@ -278,7 +232,8 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
         int vn1 = valueNumberOf(in->src1, scope, nextVN);
         int vn2 = valueNumberOf(in->src2, scope, nextVN);
         if (isCommutative(in->op) && vn1 > vn2) { int t = vn1; vn1 = vn2; vn2 = t; }
-        ExprKey ek = {0};
+        ExprKey ek;
+        memset(&ek, 0, sizeof ek);
         ek.op = (int) in->op; ek.vn1 = vn1; ek.vn2 = vn2;
         memoizeOrRewrite(in, ek, scope, nextVN);
         break;
@@ -286,7 +241,8 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
 
     case IR_NEG: case IR_NOT: {
         int vn1 = valueNumberOf(in->src1, scope, nextVN);
-        ExprKey ek = {0};
+        ExprKey ek;
+        memset(&ek, 0, sizeof ek);
         ek.op = (int) in->op; ek.vn1 = vn1; ek.vn2 = -1;
         memoizeOrRewrite(in, ek, scope, nextVN);
         break;
@@ -317,48 +273,53 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
     }
 }
 
-/* ---- Visita: ricorsione lungo l'EBB + worklist ai punti di confluenza -- */
+/* ---- Visita: ricorsione lungo l'EBB, nessun tracking di visita --------
+ *
+ * svnProcessBlock ricorre in un successore SOLO se quel successore ha
+ * predCount == 1 (un solo arco entrante nell'intero CFG: il suo). Per
+ * costruzione questo rende impossibile visitare due volte lo stesso
+ * blocco, o saltarne uno raggiungibile, SENZA bisogno di alcun array
+ * 'visited', campo, o bitmap:
+ *
+ *   - un blocco con predCount != 1 e' raggiunto SOLO dal giro statico in
+ *     svn_optimize (mai per ricorsione, che entra solo se predCount==1);
+ *   - un blocco con predCount == 1 e' raggiunto SOLO per ricorsione, e da
+ *     un unico possibile chiamante (se due chiamate diverse potessero
+ *     raggiungerlo, avrebbe per definizione predCount >= 2).
+ *
+ * Le due categorie sono disgiunte e ciascun blocco rientra in esattamente
+ * una di esse: zero byte di bookkeeping extra, contro gli N int (un
+ * campo visited) o gli N bit (una bitmap) di qualunque alternativa - qui
+ * non serve nemmeno quello, perche' non c'e' nulla da tracciare. */
+static void svnProcessBlock(IRFunction *f, int blockIdx, SVNScope *parent, int *nextVN) {
+    SVNScope scope;
+    svnScopeInit(&scope, parent);
 
-static void svnProcessBlock(IRFunction *f, Block *blocks, int blockIdx, SVNScope *parent,
-                             int *nextVN, int *visited, int *queue, int *qTail) {
-    SVNScope *scope = svnScopeCreate(parent);
-
-    for (int i = blocks[blockIdx].start; i < blocks[blockIdx].end; i++) {
-        svnProcessInstr(&f->instrs[i], scope, nextVN);
+    for (int i = f->blocks[blockIdx].start; i < f->blocks[blockIdx].end; i++) {
+        svnProcessInstr(&f->instrs[i], &scope, nextVN);
     }
 
     for (int k = 0; k < 2; k++) {
-        int s = blocks[blockIdx].succ[k];
-        if (s < 0) continue;
-        if (blocks[s].predCount == 1) {
-            svnProcessBlock(f, blocks, s, scope, nextVN, visited, queue, qTail);
-        } else if (!visited[s]) {
-            visited[s] = 1;
-            queue[(*qTail)++] = s;
+        int s = f->blocks[blockIdx].succ[k];
+        if (s >= 0 && f->blocks[s].predCount == 1) {
+            svnProcessBlock(f, s, &scope, nextVN);
         }
     }
 
-    svnScopeDestroy(scope);
+    svnScopeDestroy(&scope);
 }
 
 void svn_optimize(IRFunction *f) {
-    int nBlocks;
-    Block *blocks = buildBlocks(f, &nBlocks);
-    if (nBlocks == 0) { free(blocks); return; }
+    if (f->blockCount == 0) return;
 
     int nextVN = 0;
-    int *visited = calloc((size_t) nBlocks, sizeof(int));
-    int *queue = malloc((size_t) nBlocks * sizeof(int));
-    int qHead = 0, qTail = 0;
-
-    queue[qTail++] = 0;
-    visited[0] = 1;
-    while (qHead < qTail) {
-        int leader = queue[qHead++];
-        svnProcessBlock(f, blocks, leader, NULL, &nextVN, visited, queue, &qTail);
+    /* Ogni blocco con predCount != 1 (l'entry, predCount==0, inclusa) e'
+       la testa di un EBB: un singolo giro statico sull'array di blocchi
+       gia' costruito basta a coprirli tutti, esattamente una volta a
+       testa (vedi commento sopra svnProcessBlock). */
+    for (int i = 0; i < f->blockCount; i++) {
+        if (f->blocks[i].predCount != 1) {
+            svnProcessBlock(f, i, NULL, &nextVN);
+        }
     }
-
-    free(visited);
-    free(queue);
-    free(blocks);
 }
