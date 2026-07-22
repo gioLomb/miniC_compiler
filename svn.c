@@ -32,10 +32,18 @@ typedef struct SVNScope {
 #define SVN_SCOPE_TABLE_CAPACITY 7
 
 typedef struct {
-    long intVal;        /* kind==2 */
-    double floatVal;     /* kind==3 */
-    int kind;             /* 0=var, 1=temp, 2=constInt, 3=constFloat, -1=non pertinente */
-    int a, b;             /* kind==0: level,offset; kind==1: tempId,0 */
+    int kind;                 /* 0=var, 1=temp, 2=constInt, 3=constFloat, -1=non pertinente */
+    union {
+        /* Struttura anonima per le variabili locali/globali sorgente */
+        struct {
+            int varLevel;     /* Più significativo di 'level' */
+            int varOffset;    /* Più significativo di 'offset' */
+        }; 
+        
+        int tempId;           /* ID del temporaneo generato dal compilatore */
+        long intVal;          /* Valore costante intero */
+        double floatVal;      /* Valore costante a virgola mobile */
+    } data;                   /* 'data' o 'value' è più descrittivo di 'as' */
 } ValueKey;
 
 typedef struct {
@@ -96,13 +104,33 @@ static Operand mkNone(void) {
 
 static ValueKey keyForOperand(Operand op) {
     ValueKey k;
-    memset(&k, 0, sizeof k);   /* azzera anche l'eventuale padding: vedi svnHash */
+    memset(&k, 0, sizeof k);   /* FONDAMENTALE per l'hash sui byte grezzi! */
+    
     switch (op.kind) {
-    case OPND_VAR:         k.kind = 0; k.a = op.as.var.level; k.b = op.as.var.offset; break;
-    case OPND_TEMP:        k.kind = 1; k.a = op.as.tempId; break;
-    case OPND_CONST_INT:   k.kind = 2; k.intVal = op.as.intVal; break;
-    case OPND_CONST_FLOAT: k.kind = 3; k.floatVal = op.as.floatVal; break;
-    default:               k.kind = -1; break;   /* NONE/LABEL/FUNC: non pertinente */
+    case OPND_VAR:
+        k.kind = 0;
+        k.data.varLevel  = op.as.var.level;  /* Diretto, pulito e auto-esplicativo */
+        k.data.varOffset = op.as.var.offset;
+        break;
+        
+    case OPND_TEMP:
+        k.kind = 1;
+        k.data.tempId = op.as.tempId;
+        break;
+        
+    case OPND_CONST_INT:
+        k.kind = 2;
+        k.data.intVal = op.as.intVal;
+        break;
+        
+    case OPND_CONST_FLOAT:
+        k.kind = 3;
+        k.data.floatVal = op.as.floatVal;
+        break;
+        
+    default:
+        k.kind = -1;
+        break;
     }
     return k;
 }
