@@ -130,10 +130,10 @@ static void resolveCFG(IRFunction *f) {
         }
     }
 
-    /* Fix: il blocco 0 ha un predecessore implicito (il chiamante) */
-    if (f->blockCount > 0) {
-        f->blocks[0].predCount++;
-    }
+    // /* Fix: il blocco 0 ha un predecessore implicito (il chiamante) */
+    // if (f->blockCount > 0) {
+    //     f->blocks[0].predCount++;
+    // }
 
     free(f->labelToBlock);
     f->labelToBlock = NULL;

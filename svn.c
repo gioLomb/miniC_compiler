@@ -61,32 +61,40 @@ static Operand mkNone(void) {
     Operand o; o.kind = OPND_NONE; return o;
 }
 
-static ValueKey keyForOperand(Operand op) {
-    ValueKey k;
-    memset(&k, 0, sizeof(k));
-    switch (op.kind) {
+/* La chiave viene passata per puntatore invece di essere ritornata per
+ * valore: un return-by-value di una struct con padding interno puo'
+ * lasciare i byte di padding non azzerati nella copia che il compilatore
+ * scrive nel frame del chiamante, anche se il memset li aveva azzerati
+ * prima dell'assegnazione dei campi (il compilatore e' libero di copiare
+ * solo i campi definiti, non il padding, ottimizzando la "copia" della
+ * struct). Passare l'indirizzo della variabile locale del chiamante e
+ * scrivere direttamente li' evita qualunque copia intermedia: il memset
+ * e le assegnazioni successivi avvengono sugli stessi byte che la
+ * hash table leggera come chiave, senza intermediari. */
+static void keyForOperand(const Operand *op, ValueKey *k) {
+    memset(k, 0, sizeof(*k));
+    switch (op->kind) {
     case OPND_VAR:
-        k.kind = 0;
-        k.data.varLevel = op.data.varLevel;
-        k.data.varOffset = op.data.varOffset;
+        k->kind = 0;
+        k->data.varLevel = op->data.varLevel;
+        k->data.varOffset = op->data.varOffset;
         break;
     case OPND_TEMP:
-        k.kind = 1;
-        k.data.tempId = op.data.tempId;
+        k->kind = 1;
+        k->data.tempId = op->data.tempId;
         break;
     case OPND_CONST_INT:
-        k.kind = 2;
-        k.data.intVal = op.data.intVal;
+        k->kind = 2;
+        k->data.intVal = op->data.intVal;
         break;
     case OPND_CONST_FLOAT:
-        k.kind = 3;
-        k.data.floatVal = op.data.floatVal;
+        k->kind = 3;
+        k->data.floatVal = op->data.floatVal;
         break;
     default:
-        k.kind = -1;
+        k->kind = -1;
         break;
     }
-    return k;
 }
 
 static void addNameForValue(int vn, Operand name, SVNScope *scope) {
@@ -103,14 +111,14 @@ static void addNameForValue(int vn, Operand name, SVNScope *scope) {
 
 static void defineValue(Operand dst, int vn, SVNScope *scope) {
     if (dst.kind != OPND_VAR && dst.kind != OPND_TEMP) return;
-    ValueKey k = keyForOperand(dst);
+    ValueKey k; keyForOperand(&dst, &k);
     ht_set(scope->values, &k, sizeof(k), &vn, sizeof(vn));
     addNameForValue(vn, dst, scope);
 }
 
 static int nameStillValid(Operand name, int vn, SVNScope *scope) {
     if (name.kind != OPND_VAR) return 1;
-    ValueKey k = keyForOperand(name);
+    ValueKey k; keyForOperand(&name, &k);
     for (SVNScope *s = scope; s; s = s->parent) {
         int currentVN;
         if (ht_get(s->values, &k, sizeof(k), &currentVN, sizeof(currentVN)))
@@ -137,7 +145,7 @@ static int findValidLeader(int vn, SVNScope *scope, Operand *outLeader) {
 }
 
 static int valueNumberOf(Operand op, SVNScope *scope, int *nextVN) {
-    ValueKey k = keyForOperand(op);
+    ValueKey k; keyForOperand(&op, &k);
     if (k.kind < 0) return -1;
     int vn;
     for (SVNScope *s = scope; s; s = s->parent) {
