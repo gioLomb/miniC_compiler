@@ -358,51 +358,66 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
         return expr;
     }
 
-    case ND_BINOP: {
+case ND_BINOP: {
         expr->children[0] = optimizeExpr(expr->children[0]);
         expr->children[1] = optimizeExpr(expr->children[1]);
         ASTNode *sx = expr->children[0];
         ASTNode *dx = expr->children[1];
 
-        /* 1) folding completo: entrambi gli operandi sono gia' letterali */
+        // 1) Folding completo
         if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
             ASTNode *folded = foldBinopLiterals(expr->text, sx, dx);
             if (folded) {
-                freeAST(expr);   /* libera BINOP + entrambi gli operandi */
+                freeAST(expr);
                 return folded;
             }
-            /* folded == NULL: divisione/modulo per zero -> non tocco
-               nulla, verra' valutata (e fallira' correttamente) a runtime */
         }
 
-        /* 2) semplificazioni algebriche, solo T_INT, un solo lato costante */
-        if (strcmp(expr->text, "+") == 0) {
-            if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
-            if (literalIntEquals(sx, 0)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
+        unsigned short key = (expr->text && expr->text[0] != '\0') 
+                             ? OP_KEY(expr->text[0], expr->text[1]) 
+                             : 0;
 
-        } else if (strcmp(expr->text, "-") == 0) {
-            if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
+        // 2) Semplificazioni algebriche
+        switch (key) {
+            case OP_KEY('+', '\0'):
+                if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
+                if (literalIntEquals(sx, 0)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
+                break;
+            case OP_KEY('-', '\0'):
+                if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
+                break;
+            case OP_KEY('*', '\0'):
+                if (literalIntEquals(dx, 1)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
+                if (literalIntEquals(sx, 1)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
+                if (literalIntEquals(dx, 0) && !hasSideEffect(sx)) { freeAST(expr); return newNode(ND_NUM_INT, "0"); }
+                if (literalIntEquals(sx, 0) && !hasSideEffect(dx)) { freeAST(expr); return newNode(ND_NUM_INT, "0"); }
+                break;
+            case OP_KEY('&', '&'):
+                if (literalIntEquals(sx, 0)) { // 0 && x -> 0
+                    freeAST(expr);
+                    return newNode(ND_NUM_INT, "0");
+                }
+                if (literalIntEquals(sx, 1)) { // 1 && x -> x
+                    freeNodeShallow(sx); freeNodeShallow(expr);
+                    return dx;
+                }
+                break;
 
-        } else if (strcmp(expr->text, "*") == 0) {
-            if (literalIntEquals(dx, 1)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
-            if (literalIntEquals(sx, 1)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
-
-            /* x*0 / 0*x: elide la valutazione dell'altro operando - lecito
-               SOLO se quell'operando e' provatamente senza effetti
-               collaterali (vedi hasSideEffect sopra) */
-            if (literalIntEquals(dx, 0) && !hasSideEffect(sx)) {
-                freeAST(expr);   /* qui si butta via anche sx: e' provato innocuo */
-                return newNode(ND_NUM_INT, "0");
-            }
-            if (literalIntEquals(sx, 0) && !hasSideEffect(dx)) {
-                freeAST(expr);
-                return newNode(ND_NUM_INT, "0");
-            }
+            case OP_KEY('|', '|'):
+                if (literalIntEquals(sx, 1)) { // 1 || x -> 1
+                    freeAST(expr);
+                    return newNode(ND_NUM_INT, "1");
+                }
+                if (literalIntEquals(sx, 0)) { // 0 || x -> x
+                    freeNodeShallow(sx); freeNodeShallow(expr);
+                    return dx;
+                }
+                break;
+            default:
+                break;
         }
 
-        /* 3) tree height balancing: solo se 'expr' e' sopravvissuto come
-           vero ND_BINOP fin qui (nessun folding/semplificazione l'ha gia'
-           eliminato) */
+        // 3) Tree height balancing sicuro
         return balanceAssocChain(expr);
     }
 

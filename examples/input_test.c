@@ -6,7 +6,7 @@ int main() {
     float tasso_variazione;
     float soglia;
 
-    int a = 1;
+    int a;
     i = fattoriale = n = a + 10+2;
     int cane;
     cane = 1;//a+fattoriale+i+n;
@@ -26,8 +26,8 @@ int main() {
     //     i = i + 1;
     // }
 
-    if(fattoriale <= 2){
-        return 1;
+    if(1){
+        return 2;
     }
     if (fattoriale >= 5000 || tasso_variazione < soglia) {
         return 1;
