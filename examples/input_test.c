@@ -7,16 +7,15 @@ int main() {
     float soglia;
 
     int a = 1;
-    i = fattoriale = n = a;
+    i = fattoriale = n = a + 10+2;
     int cane;
     cane = 1;//a+fattoriale+i+n;
     n = 10;
     fattoriale = i = 1;
     tasso_variazione = 0.75;
-    soglia = 0.005;
+    soglia = 0.005 + 10+20;
     cane = a+fattoriale;
-    cane = 4;
-    n=a+fattoriale;
+    n=a+fattoriale + 30+1+2+a;
 
     /* Ciclo di controllo principale
        Verifica gli operatori logici e relazionali */

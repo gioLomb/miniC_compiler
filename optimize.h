@@ -3,6 +3,7 @@
 
 #include "parser/ast.h"
 
+#define OP_KEY(c1, c2) ((unsigned short)(((unsigned char)(c1) << 8) | (unsigned char)(c2)))
 /*
  * Ottimizzazioni a livello di AST, eseguite DOPO semantic_check() e PRIMA
  * della generazione dell'IR lineare. Muta l'albero in place (puo'

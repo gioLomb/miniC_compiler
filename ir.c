@@ -4,16 +4,28 @@
 #include "ir.h"
 #include "svn.h"
 
+/* ---- Chiavi a 16 bit per operatori (evita strcmp) ---- */
+#define KEY_AND 0x2626   /* '&' '&' */
+#define KEY_OR  0x7C7C   /* '|' '|' */
+#define KEY_NOT 0x2100   /* '!' '\0' */
+
+static inline unsigned short op_key(const char *s) {
+    if (!s || !s[0]) return 0;
+    unsigned short k = (unsigned char)s[0] << 8;
+    if (s[1]) k |= (unsigned char)s[1];
+    return k;
+}
+
 static int nextTemp;
 static int nextLabel;
 
-static Operand mkTemp(void) {
+static inline Operand mkTemp(void) {
     Operand o; o.kind = OPND_TEMP; o.data.tempId = nextTemp++; return o;
 }
-static Operand mkLabel(void) {
+static inline Operand mkLabel(void) {
     Operand o; o.kind = OPND_LABEL; o.data.labelId = nextLabel++; return o;
 }
-static Operand mkVar(const ASTNode *node) {
+static inline Operand mkVar(const ASTNode *node) {
     Operand o;
     o.kind = OPND_VAR;
     o.data.varLevel = node->scopeLevel;
@@ -21,22 +33,23 @@ static Operand mkVar(const ASTNode *node) {
     o.data.sourceName = node->text;
     return o;
 }
-static Operand mkConstInt(int v) {
+static inline Operand mkConstInt(int v) {
     Operand o; o.kind = OPND_CONST_INT; o.data.intVal = v; return o;
 }
-static Operand mkConstFloat(float v) {
+static inline Operand mkConstFloat(float v) {
     Operand o; o.kind = OPND_CONST_FLOAT; o.data.floatVal = v; return o;
 }
-static Operand mkFunc(const char *name) {
+static inline Operand mkFunc(const char *name) {
     Operand o; o.kind = OPND_FUNC; o.data.funcName = name; return o;
 }
-static Operand noOperand(void) {
+static inline Operand noOperand(void) {
     Operand o; o.kind = OPND_NONE; return o;
 }
 
 /* ---- Costruzione live del CFG ---- */
-static int isTerminator(IROp op) {
-    return op == IR_GOTO || op == IR_IF_FALSE || op == IR_RETURN;
+static inline int isTerminator(IROp op) {
+    const unsigned int mask = (1U << IR_GOTO) | (1U << IR_IF_FALSE) | (1U << IR_RETURN);
+    return (mask & (1U << op)) != 0;
 }
 
 static void closeBlock(IRFunction *f, int start, int end) {
@@ -55,10 +68,16 @@ static void closeBlock(IRFunction *f, int start, int end) {
 static void registerLabel(IRFunction *f, int labelId, int futureBlockIdx) {
     int idx = labelId - f->labelBase;
     if (idx >= f->labelToBlockCap) {
-        int newCap = f->labelToBlockCap ? f->labelToBlockCap * 2 : 8;
-        while (newCap <= idx) newCap *= 2;
-        f->labelToBlock = realloc(f->labelToBlock, (size_t) newCap * sizeof(int));
-        for (int i = f->labelToBlockCap; i < newCap; i++) f->labelToBlock[i] = -1;
+        int newCap = f->labelToBlockCap ? f->labelToBlockCap : 8;
+        while (newCap <= idx) newCap <<= 1;
+        int *newTable = realloc(f->labelToBlock, (size_t) newCap * sizeof(int));
+        if (!newTable) {
+            fprintf(stderr, "Errore: memoria esaurita in registerLabel\n");
+            exit(EXIT_FAILURE);
+        }
+        f->labelToBlock = newTable;
+        memset(f->labelToBlock + f->labelToBlockCap, -1,
+               (size_t)(newCap - f->labelToBlockCap) * sizeof(int));
         f->labelToBlockCap = newCap;
     }
     f->labelToBlock[idx] = futureBlockIdx;
@@ -91,13 +110,13 @@ static void emit(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2
     }
 }
 
-static void emitGoto(IRFunction *f, Operand label) {
+static inline void emitGoto(IRFunction *f, Operand label) {
     emit(f, IR_GOTO, label, noOperand(), noOperand());
 }
-static void emitIfFalse(IRFunction *f, Operand cond, Operand label) {
+static inline void emitIfFalse(IRFunction *f, Operand cond, Operand label) {
     emit(f, IR_IF_FALSE, label, cond, noOperand());
 }
-static void emitLabel(IRFunction *f, Operand label) {
+static inline void emitLabel(IRFunction *f, Operand label) {
     emit(f, IR_LABEL, label, noOperand(), noOperand());
 }
 
@@ -137,18 +156,22 @@ static void resolveCFG(IRFunction *f) {
 
 /* ---- Traduzione ---- */
 static IROp binopToIROp(const char *op) {
-    if (strcmp(op, "+") == 0)  return IR_ADD;
-    if (strcmp(op, "-") == 0)  return IR_SUB;
-    if (strcmp(op, "*") == 0)  return IR_MUL;
-    if (strcmp(op, "/") == 0)  return IR_DIV;
-    if (strcmp(op, "%") == 0)  return IR_MOD;
-    if (strcmp(op, "<") == 0)  return IR_LT;
-    if (strcmp(op, "<=") == 0) return IR_LE;
-    if (strcmp(op, ">") == 0)  return IR_GT;
-    if (strcmp(op, ">=") == 0) return IR_GE;
-    if (strcmp(op, "==") == 0) return IR_EQ;
-    if (strcmp(op, "!=") == 0) return IR_NE;
-    return IR_ADD;
+    if (!op || op[0] == '\0') return IR_ADD;
+    unsigned short key = (unsigned short)(((unsigned char)op[0] << 8) | (unsigned char)(op[1] ? op[1] : 0));
+    switch (key) {
+        case (('+')<<8)|0:  return IR_ADD;
+        case (('-')<<8)|0:  return IR_SUB;
+        case (('*')<<8)|0:  return IR_MUL;
+        case (('/')<<8)|0:  return IR_DIV;
+        case (('%')<<8)|0:  return IR_MOD;
+        case (('<')<<8)|0:  return IR_LT;
+        case (('>')<<8)|0:  return IR_GT;
+        case (('<')<<8)|'=': return IR_LE;
+        case (('>')<<8)|'=': return IR_GE;
+        case (('=')<<8)|'=': return IR_EQ;
+        case (('!')<<8)|'=': return IR_NE;
+        default: return IR_ADD;
+    }
 }
 
 static Operand irExpr(ASTNode *expr, IRFunction *out);
@@ -157,19 +180,19 @@ static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl);
 static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl);
 
 static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl) {
-    if (cond->kind == ND_BINOP && strcmp(cond->text, "&&") == 0) {
+    if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_AND) {
         irJumpIfFalse(cond->children[0], out, falseLbl);
         irJumpIfFalse(cond->children[1], out, falseLbl);
         return;
     }
-    if (cond->kind == ND_BINOP && strcmp(cond->text, "||") == 0) {
+    if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_OR) {
         Operand skipLbl = mkLabel();
         irJumpIfTrue(cond->children[0], out, skipLbl);
         irJumpIfFalse(cond->children[1], out, falseLbl);
         emitLabel(out, skipLbl);
         return;
     }
-    if (cond->kind == ND_UNARY && strcmp(cond->text, "!") == 0) {
+    if (cond->kind == ND_UNARY && op_key(cond->text) == KEY_NOT) {
         irJumpIfTrue(cond->children[0], out, falseLbl);
         return;
     }
@@ -178,19 +201,19 @@ static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl) {
 }
 
 static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
-    if (cond->kind == ND_BINOP && strcmp(cond->text, "&&") == 0) {
+    if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_AND) {
         Operand skipLbl = mkLabel();
         irJumpIfFalse(cond->children[0], out, skipLbl);
         irJumpIfTrue(cond->children[1], out, trueLbl);
         emitLabel(out, skipLbl);
         return;
     }
-    if (cond->kind == ND_BINOP && strcmp(cond->text, "||") == 0) {
+    if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_OR) {
         irJumpIfTrue(cond->children[0], out, trueLbl);
         irJumpIfTrue(cond->children[1], out, trueLbl);
         return;
     }
-    if (cond->kind == ND_UNARY && strcmp(cond->text, "!") == 0) {
+    if (cond->kind == ND_UNARY && op_key(cond->text) == KEY_NOT) {
         irJumpIfFalse(cond->children[0], out, trueLbl);
         return;
     }
@@ -253,19 +276,19 @@ static Operand irExpr(ASTNode *expr, IRFunction *out) {
     case ND_UNARY: {
         Operand v = irExpr(expr->children[0], out);
         Operand t = mkTemp();
-        emit(out, strcmp(expr->text, "!") == 0 ? IR_NOT : IR_NEG, t, v, noOperand());
+        emit(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, noOperand());
         return t;
     }
-    case ND_BINOP:
-        if (strcmp(expr->text, "&&") == 0 || strcmp(expr->text, "||") == 0)
+    case ND_BINOP: {
+        unsigned short key = op_key(expr->text);
+        if (key == KEY_AND || key == KEY_OR)
             return irShortCircuit(expr, out);
-        else {
-            Operand lhs = irExpr(expr->children[0], out);
-            Operand rhs = irExpr(expr->children[1], out);
-            Operand t = mkTemp();
-            emit(out, binopToIROp(expr->text), t, lhs, rhs);
-            return t;
-        }
+        Operand lhs = irExpr(expr->children[0], out);
+        Operand rhs = irExpr(expr->children[1], out);
+        Operand t = mkTemp();
+        emit(out, binopToIROp(expr->text), t, lhs, rhs);
+        return t;
+    }
     case ND_ASSIGN:     return irAssign(expr, out);
     case ND_CALL:       return irCall(expr, out);
     default:            return noOperand();
@@ -285,18 +308,18 @@ static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
     }
     case ND_UNARY: {
         Operand v = irExpr(expr->children[0], out);
-        emit(out, strcmp(expr->text, "!") == 0 ? IR_NOT : IR_NEG, dest, v, noOperand());
+        emit(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, dest, v, noOperand());
         return dest;
     }
-    case ND_BINOP:
-        if (strcmp(expr->text, "&&") == 0 || strcmp(expr->text, "||") == 0)
+    case ND_BINOP: {
+        unsigned short key = op_key(expr->text);
+        if (key == KEY_AND || key == KEY_OR)
             return irShortCircuitInto(expr, out, dest);
-        else {
-            Operand lhs = irExpr(expr->children[0], out);
-            Operand rhs = irExpr(expr->children[1], out);
-            emit(out, binopToIROp(expr->text), dest, lhs, rhs);
-            return dest;
-        }
+        Operand lhs = irExpr(expr->children[0], out);
+        Operand rhs = irExpr(expr->children[1], out);
+        emit(out, binopToIROp(expr->text), dest, lhs, rhs);
+        return dest;
+    }
     case ND_CALL: {
         for (int i = 0; i < expr->nchildren; i++) {
             Operand arg = irExpr(expr->children[i], out);

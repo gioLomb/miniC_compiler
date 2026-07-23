@@ -242,6 +242,27 @@ static void flattenChain(ASTNode *node, const char *op, ASTNode ***leaves, int *
  * delle altre - correttezza non compromessa, solo bilanciamento subottimale
  * in quel caso).
  */
+// static ASTNode *buildBalanced(ASTNode **leaves, int count, const char *op) {
+//     if (count == 1) return leaves[0];
+
+//     int nextCount = (count + 1) / 2;
+//     ASTNode **next = malloc((size_t) nextCount * sizeof(ASTNode *));
+//     int idx = 0;
+//     int i = 0;
+//     for (; i + 1 < count; i += 2) {
+//         ASTNode *pair = newNode(ND_BINOP, op);
+//         addChild(pair, leaves[i]);
+//         addChild(pair, leaves[i + 1]);
+//         next[idx++] = pair;
+//     }
+//     if (i < count) {
+//         next[idx++] = leaves[i];   /* foglia dispari: sale invariata */
+//     }
+
+//     ASTNode *result = buildBalanced(next, nextCount, op);
+//     free(next);
+//     return result;
+// }
 static ASTNode *buildBalanced(ASTNode **leaves, int count, const char *op) {
     if (count == 1) return leaves[0];
 
@@ -249,14 +270,31 @@ static ASTNode *buildBalanced(ASTNode **leaves, int count, const char *op) {
     ASTNode **next = malloc((size_t) nextCount * sizeof(ASTNode *));
     int idx = 0;
     int i = 0;
+    
     for (; i + 1 < count; i += 2) {
+        ASTNode *sx = leaves[i];
+        ASTNode *dx = leaves[i + 1];
+
+        // Se buildBalanced accoppia due letterali finiti vicini, li folda all'istante!
+        if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
+            ASTNode *folded = foldBinopLiterals(op, sx, dx);
+            if (folded) {
+                freeAST(sx);
+                freeAST(dx);
+                next[idx++] = folded;
+                continue;
+            }
+        }
+
+        // Accoppiamento standard se non sono due costanti
         ASTNode *pair = newNode(ND_BINOP, op);
-        addChild(pair, leaves[i]);
-        addChild(pair, leaves[i + 1]);
+        addChild(pair, sx);
+        addChild(pair, dx);
         next[idx++] = pair;
     }
+    
     if (i < count) {
-        next[idx++] = leaves[i];   /* foglia dispari: sale invariata */
+        next[idx++] = leaves[i]; // Foglia dispari sale
     }
 
     ASTNode *result = buildBalanced(next, nextCount, op);
