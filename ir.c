@@ -21,10 +21,10 @@ static Operand mkVar(const ASTNode *node) {
     o.data.sourceName = node->text;
     return o;
 }
-static Operand mkConstInt(long v) {
+static Operand mkConstInt(int v) {
     Operand o; o.kind = OPND_CONST_INT; o.data.intVal = v; return o;
 }
-static Operand mkConstFloat(double v) {
+static Operand mkConstFloat(float v) {
     Operand o; o.kind = OPND_CONST_FLOAT; o.data.floatVal = v; return o;
 }
 static Operand mkFunc(const char *name) {
@@ -34,7 +34,7 @@ static Operand noOperand(void) {
     Operand o; o.kind = OPND_NONE; return o;
 }
 
-/* ---- Costruzione live del CFG ----------------------------------------- */
+/* ---- Costruzione live del CFG ---- */
 static int isTerminator(IROp op) {
     return op == IR_GOTO || op == IR_IF_FALSE || op == IR_RETURN;
 }
@@ -101,7 +101,7 @@ static void emitLabel(IRFunction *f, Operand label) {
     emit(f, IR_LABEL, label, noOperand(), noOperand());
 }
 
-/* ---- Risoluzione del CFG (succ[] e predCount) ---- */
+/* ---- Risoluzione del CFG ---- */
 static void resolveCFG(IRFunction *f) {
     if (f->curBlockStart < f->count) {
         closeBlock(f, f->curBlockStart, f->count);
@@ -130,17 +130,12 @@ static void resolveCFG(IRFunction *f) {
         }
     }
 
-    // /* Fix: il blocco 0 ha un predecessore implicito (il chiamante) */
-    // if (f->blockCount > 0) {
-    //     f->blocks[0].predCount++;
-    // }
-
     free(f->labelToBlock);
     f->labelToBlock = NULL;
     f->labelToBlockCap = 0;
 }
 
-/* ---- Traduzione (irExpr, irStmt, ecc.) invariata ---- */
+/* ---- Traduzione ---- */
 static IROp binopToIROp(const char *op) {
     if (strcmp(op, "+") == 0)  return IR_ADD;
     if (strcmp(op, "-") == 0)  return IR_SUB;
@@ -245,8 +240,8 @@ static Operand irCall(ASTNode *expr, IRFunction *out) {
 
 static Operand irExpr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {
-    case ND_NUM_INT:    return mkConstInt(atol(expr->text));
-    case ND_NUM_FLOAT:  return mkConstFloat(atof(expr->text));
+    case ND_NUM_INT:    return mkConstInt(atoi(expr->text));
+    case ND_NUM_FLOAT:  return mkConstFloat((float)atof(expr->text));
     case ND_ID:         return mkVar(expr);
     case ND_ARRAY_ACCESS: {
         Operand idx = irExpr(expr->children[0], out);
@@ -279,8 +274,8 @@ static Operand irExpr(ASTNode *expr, IRFunction *out) {
 
 static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
     switch (expr->kind) {
-    case ND_NUM_INT:    emit(out, IR_ASSIGN, dest, mkConstInt(atol(expr->text)), noOperand()); return dest;
-    case ND_NUM_FLOAT:  emit(out, IR_ASSIGN, dest, mkConstFloat(atof(expr->text)), noOperand()); return dest;
+    case ND_NUM_INT:    emit(out, IR_ASSIGN, dest, mkConstInt(atoi(expr->text)), noOperand()); return dest;
+    case ND_NUM_FLOAT:  emit(out, IR_ASSIGN, dest, mkConstFloat((float)atof(expr->text)), noOperand()); return dest;
     case ND_ID:         emit(out, IR_ASSIGN, dest, mkVar(expr), noOperand()); return dest;
     case ND_ARRAY_ACCESS: {
         Operand idx = irExpr(expr->children[0], out);
@@ -418,8 +413,8 @@ static void printOperand(const Operand *o) {
         printf("v%d.%d", o->data.varLevel, o->data.varOffset);
         if (o->data.sourceName) printf("/*%s*/", o->data.sourceName);
         break;
-    case OPND_CONST_INT:   printf("%ld", o->data.intVal); break;
-    case OPND_CONST_FLOAT: printf("%g", o->data.floatVal); break;
+    case OPND_CONST_INT:   printf("%d", o->data.intVal); break;
+    case OPND_CONST_FLOAT: printf("%g", (double)o->data.floatVal); break;
     case OPND_LABEL:       printf("L%d", o->data.labelId); break;
     case OPND_FUNC:        printf("%s", o->data.funcName); break;
     }

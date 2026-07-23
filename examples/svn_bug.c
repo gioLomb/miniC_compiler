@@ -11,8 +11,6 @@ int main() {
     a = 3;
     b = 5;
 
-    c = a + b;   // Prima occorrenza: genera IR_ADD e la registra
-    d = a + b;   // Seconda occorrenza: DEVE essere ottimizzata in una copia dal temporaneo
-
-    return d;
+while (a+b > 0 && a+b < 10) { c = c+1; }
+return 0;
 }

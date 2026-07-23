@@ -8,28 +8,28 @@
 #define SVN_SCOPE_TABLE_CAPACITY 7
 
 typedef struct SVNScope {
-    Hash_Table *values;    /* ValueKey -> vn (int) */
-    Hash_Table *exprs;     /* ExprKey  -> vn (int) */
-    Hash_Table *leaders;   /* vn (int) -> NameList */
+    Hash_Table *values;
+    Hash_Table *exprs;
+    Hash_Table *leaders;
     struct SVNScope *parent;
 } SVNScope;
 
 typedef struct {
-    int kind;                 /* 0=var, 1=temp, 2=constInt, 3=constFloat, -1=non pertinente */
+    int kind;
     union {
         struct {
             int varLevel;
             int varOffset;
         };
         int tempId;
-        long intVal;
-        double floatVal;
+        int intVal;
+        float floatVal;
     } data;
 } ValueKey;
 
 typedef struct {
     int op;
-    int vn1, vn2;       /* vn2 = -1 per operatori unari */
+    int vn1, vn2;
 } ExprKey;
 
 typedef struct {
@@ -51,27 +51,17 @@ static void svnScopeInit(SVNScope *scope, SVNScope *parent) {
     scope->parent  = parent;
 }
 
-static void svnScopeDestroy(SVNScope *scope) {
+static inline void svnScopeDestroy(SVNScope *scope) {
     ht_destroy(scope->values, NULL);
     ht_destroy(scope->exprs, NULL);
     ht_destroy(scope->leaders, NULL);
 }
 
-static Operand mkNone(void) {
+static inline Operand mkNone(void) {
     Operand o; o.kind = OPND_NONE; return o;
 }
 
-/* La chiave viene passata per puntatore invece di essere ritornata per
- * valore: un return-by-value di una struct con padding interno puo'
- * lasciare i byte di padding non azzerati nella copia che il compilatore
- * scrive nel frame del chiamante, anche se il memset li aveva azzerati
- * prima dell'assegnazione dei campi (il compilatore e' libero di copiare
- * solo i campi definiti, non il padding, ottimizzando la "copia" della
- * struct). Passare l'indirizzo della variabile locale del chiamante e
- * scrivere direttamente li' evita qualunque copia intermedia: il memset
- * e le assegnazioni successivi avvengono sugli stessi byte che la
- * hash table leggera come chiave, senza intermediari. */
-static void keyForOperand(const Operand *op, ValueKey *k) {
+static inline void keyForOperand(const Operand *op, ValueKey *k) {
     memset(k, 0, sizeof(*k));
     switch (op->kind) {
     case OPND_VAR:
@@ -97,28 +87,28 @@ static void keyForOperand(const Operand *op, ValueKey *k) {
     }
 }
 
-static void addNameForValue(int vn, Operand name, SVNScope *scope) {
+static void addNameForValue(int vn, const Operand *name, SVNScope *scope) {
     NameList list;
     memset(&list, 0, sizeof list);
     for (SVNScope *s = scope; s; s = s->parent) {
         if (ht_get(s->leaders, &vn, sizeof(vn), &list, sizeof(list))) break;
     }
     if (list.count < SVN_MAX_NAMES) {
-        list.names[list.count++] = name;
+        list.names[list.count++] = *name;
     }
     ht_set(scope->leaders, &vn, sizeof(vn), &list, sizeof(list));
 }
 
-static void defineValue(Operand dst, int vn, SVNScope *scope) {
-    if (dst.kind != OPND_VAR && dst.kind != OPND_TEMP) return;
-    ValueKey k; keyForOperand(&dst, &k);
+static void defineValue(const Operand *dst, int vn, SVNScope *scope) {
+    if (dst->kind != OPND_VAR && dst->kind != OPND_TEMP) return;
+    ValueKey k; keyForOperand(dst, &k);
     ht_set(scope->values, &k, sizeof(k), &vn, sizeof(vn));
     addNameForValue(vn, dst, scope);
 }
 
-static int nameStillValid(Operand name, int vn, SVNScope *scope) {
-    if (name.kind != OPND_VAR) return 1;
-    ValueKey k; keyForOperand(&name, &k);
+static int nameStillValid(const Operand *name, int vn, SVNScope *scope) {
+    if (name->kind != OPND_VAR) return 1;
+    ValueKey k; keyForOperand(name, &k);
     for (SVNScope *s = scope; s; s = s->parent) {
         int currentVN;
         if (ht_get(s->values, &k, sizeof(k), &currentVN, sizeof(currentVN)))
@@ -129,14 +119,13 @@ static int nameStillValid(Operand name, int vn, SVNScope *scope) {
 
 static int findValidLeader(int vn, SVNScope *scope, Operand *outLeader) {
     NameList list;
-    memset(&list, 0, sizeof list);
     int haveList = 0;
     for (SVNScope *s = scope; s; s = s->parent) {
         if (ht_get(s->leaders, &vn, sizeof(vn), &list, sizeof(list))) { haveList = 1; break; }
     }
     if (!haveList) return 0;
     for (int i = 0; i < list.count; i++) {
-        if (nameStillValid(list.names[i], vn, scope)) {
+        if (nameStillValid(&list.names[i], vn, scope)) {
             *outLeader = list.names[i];
             return 1;
         }
@@ -153,31 +142,33 @@ static int valueNumberOf(Operand op, SVNScope *scope, int *nextVN) {
     }
     vn = (*nextVN)++;
     ht_set(scope->values, &k, sizeof(k), &vn, sizeof(vn));
-    addNameForValue(vn, op, scope);
+    addNameForValue(vn, &op, scope);
     return vn;
 }
 
-static int isCommutative(IROp op) {
-    return op == IR_ADD || op == IR_MUL || op == IR_EQ || op == IR_NE;
+static inline int isCommutative(IROp op) {
+    static const unsigned int mask =
+        (1U << IR_ADD) | (1U << IR_MUL) | (1U << IR_EQ) | (1U << IR_NE);
+    return (mask >> op) & 1U;
 }
 
-static void memoizeOrRewrite(IRInstr *in, ExprKey ek, SVNScope *scope, int *nextVN) {
+static void memoizeOrRewrite(IRInstr *in, const ExprKey *ek, SVNScope *scope, int *nextVN) {
     int exprVN;
     int found = 0;
     for (SVNScope *s = scope; s; s = s->parent) {
-        if (ht_get(s->exprs, &ek, sizeof(ek), &exprVN, sizeof(exprVN))) { found = 1; break; }
+        if (ht_get(s->exprs, (void *)ek, sizeof(*ek), &exprVN, sizeof(exprVN))) { found = 1; break; }
     }
     Operand leader;
     if (found && findValidLeader(exprVN, scope, &leader)) {
         in->op = IR_ASSIGN;
         in->src1 = leader;
         in->src2 = mkNone();
-        defineValue(in->dst, exprVN, scope);
+        defineValue(&in->dst, exprVN, scope);
         return;
     }
     exprVN = (*nextVN)++;
-    ht_set(scope->exprs, &ek, sizeof(ek), &exprVN, sizeof(exprVN));
-    defineValue(in->dst, exprVN, scope);
+    ht_set(scope->exprs, (void *)ek, sizeof(*ek), &exprVN, sizeof(exprVN));
+    defineValue(&in->dst, exprVN, scope);
 }
 
 static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
@@ -190,7 +181,7 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
         ExprKey ek;
         memset(&ek, 0, sizeof ek);
         ek.op = (int) in->op; ek.vn1 = vn1; ek.vn2 = vn2;
-        memoizeOrRewrite(in, ek, scope, nextVN);
+        memoizeOrRewrite(in, &ek, scope, nextVN);
         break;
     }
     case IR_NEG: case IR_NOT: {
@@ -198,18 +189,18 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
         ExprKey ek;
         memset(&ek, 0, sizeof ek);
         ek.op = (int) in->op; ek.vn1 = vn1; ek.vn2 = -1;
-        memoizeOrRewrite(in, ek, scope, nextVN);
+        memoizeOrRewrite(in, &ek, scope, nextVN);
         break;
     }
     case IR_ASSIGN: {
         int vn1 = valueNumberOf(in->src1, scope, nextVN);
-        defineValue(in->dst, vn1, scope);
+        defineValue(&in->dst, vn1, scope);
         break;
     }
     case IR_LOAD_ARR:
     case IR_CALL: {
         int fresh = (*nextVN)++;
-        defineValue(in->dst, fresh, scope);
+        defineValue(&in->dst, fresh, scope);
         break;
     }
     case IR_STORE_ARR:

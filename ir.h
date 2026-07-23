@@ -37,10 +37,10 @@ typedef struct {
         struct {
             int varLevel;           /* kind == OPND_VAR */
             int varOffset;
-            const char *sourceName;  /* non-owning: punta a node->text nell'AST */
+            const char *sourceName;  /* non-owning */
         };
-        long intVal;                /* kind == OPND_CONST_INT */
-        double floatVal;            /* kind == OPND_CONST_FLOAT */
+        int intVal;                 /* kind == OPND_CONST_INT */
+        float floatVal;             /* kind == OPND_CONST_FLOAT */
         int labelId;                /* kind == OPND_LABEL */
         const char *funcName;       /* kind == OPND_FUNC */
     } data;
@@ -53,8 +53,8 @@ typedef struct {
 
 /* ---- Blocco di base (CFG) ---- */
 typedef struct {
-    int start, end;      /* [start, end) in f->instrs */
-    int succ[2];         /* indici di blocco, -1 se assente */
+    int start, end;
+    int succ[2];
     int predCount;
 } IRBlock;
 
@@ -63,14 +63,12 @@ typedef struct {
     IRInstr *instrs;
     int count, capacity;
 
-    /* Blocchi costruiti live durante emit() */
     IRBlock *blocks;
     int blockCount, blockCap;
-    int curBlockStart;          /* indice della prima istruzione del blocco corrente, -1 se nessuno */
+    int curBlockStart;
 
-    /* Mappa labelId -> indice di blocco (array denso) */
-    int labelBase;              /* nextLabel all'inizio di questa funzione */
-    int *labelToBlock;          /* indicizzato da labelId - labelBase */
+    int labelBase;
+    int *labelToBlock;
     int labelToBlockCap;
 } IRFunction;
 
