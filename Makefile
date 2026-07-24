@@ -43,11 +43,13 @@ ARENA_SRC       := arena.c
 OPTIMIZE_SRC    := optimize.c
 IR_SRC          := ir.c
 SVN_SRC         := svn.c
+DCE_SRC := dce.c
+
 
 # ---- Composizione dei binari ----
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c
-TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
+                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(DCE_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c
+TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC)  tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                      $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
@@ -57,7 +59,7 @@ TEST_SEMANTIC_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARE
 TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                        $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) \
                        tests/test_optimize.c
-TEST_IR_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
+TEST_IR_SRCS      := $(SCANNER_SRC) $(DCE_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                        $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) \
                        tests/test_ir.c
 

@@ -3,6 +3,7 @@
 #include <string.h>
 #include "ir.h"
 #include "svn.h"
+#include "dce.h"
 
 /* ---- Chiavi a 16 bit per operatori (evita strcmp) ---- */
 #define KEY_AND 0x2626   /* '&' '&' */
@@ -404,6 +405,7 @@ static IRFunction *irFunction(ASTNode *decl) {
 
     resolveCFG(f);
     svn_optimize(f);
+    dce_optimize(f);
     return f;
 }
 
