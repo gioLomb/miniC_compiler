@@ -477,6 +477,7 @@ static void printInstr(const IRInstr *in) {
     case IR_IF_FALSE: printf("    if_false "); printOperand(&in->src1);
                       printf(" goto "); printOperand(&in->dst); break;
     case IR_LABEL: printOperand(&in->dst); printf(":"); break;
+    case IR_NOP:   printf("    nop"); break;
     }
     printf("\n");
 }

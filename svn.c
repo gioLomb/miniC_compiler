@@ -119,6 +119,7 @@ static int nameStillValid(const Operand *name, int vn, SVNScope *scope) {
 
 static int findValidLeader(int vn, SVNScope *scope, Operand *outLeader) {
     NameList list;
+    memset(&list, 0, sizeof list);
     int haveList = 0;
     for (SVNScope *s = scope; s; s = s->parent) {
         if (ht_get(s->leaders, &vn, sizeof(vn), &list, sizeof(list))) { haveList = 1; break; }
@@ -209,34 +210,34 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
     case IR_GOTO:
     case IR_IF_FALSE:
     case IR_LABEL:
+    case IR_NOP:
         break;
     }
 }
 
-static void svnProcessBlock(IRFunction *f, int blockIdx, SVNScope *parent, int *nextVN) {
+static void svnProcessBlock(IRFunction *f, int blockIdx, SVNScope *parent, int *nextVN, int *visited) {
+    visited[blockIdx] = 1;
     SVNScope scope;
     svnScopeInit(&scope, parent);
-
     for (int i = f->blocks[blockIdx].start; i < f->blocks[blockIdx].end; i++) {
         svnProcessInstr(&f->instrs[i], &scope, nextVN);
     }
-
     for (int k = 0; k < 2; k++) {
         int s = f->blocks[blockIdx].succ[k];
-        if (s >= 0 && f->blocks[s].predCount == 1) {
-            svnProcessBlock(f, s, &scope, nextVN);
+        if (s >= 0 && !visited[s] && f->blocks[s].predCount == 1) {
+            svnProcessBlock(f, s, &scope, nextVN, visited);
         }
     }
-
     svnScopeDestroy(&scope);
 }
 
 void svn_optimize(IRFunction *f) {
     if (f->blockCount == 0) return;
     int nextVN = 0;
+    int *visited = calloc((size_t) f->blockCount, sizeof(int));
     for (int i = 0; i < f->blockCount; i++) {
-        if (f->blocks[i].predCount != 1) {
-            svnProcessBlock(f, i, NULL, &nextVN);
-        }
+        if (!visited[i] && (i == 0 || f->blocks[i].predCount != 1))
+            svnProcessBlock(f, i, NULL, &nextVN, visited);
     }
+    free(visited);
 }

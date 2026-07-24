@@ -43,13 +43,12 @@ ARENA_SRC       := arena.c
 OPTIMIZE_SRC    := optimize.c
 IR_SRC          := ir.c
 SVN_SRC         := svn.c
-DCE_SRC := dce.c
-
+DCE_SRC         := dce.c
 
 # ---- Composizione dei binari ----
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(DCE_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c
-TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC)  tests/sym_main.c
+                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) parser/main.c
+TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                      $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
@@ -59,9 +58,12 @@ TEST_SEMANTIC_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARE
 TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                        $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) \
                        tests/test_optimize.c
-TEST_IR_SRCS      := $(SCANNER_SRC) $(DCE_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) \
+TEST_IR_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
+                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) \
                        tests/test_ir.c
+TEST_SVN_SRCS     := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
+                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) \
+                       tests/test_svn.c
 
 # Traduce ogni lista di sorgenti .c nei corrispondenti .o dentro build/
 # (build/ rispecchia la struttura delle cartelle sorgente)
@@ -74,10 +76,15 @@ TEST_PASS1_OBJS  := $(call to_objs,$(TEST_PASS1_SRCS))
 TEST_SEMANTIC_OBJS := $(call to_objs,$(TEST_SEMANTIC_SRCS))
 TEST_OPTIMIZE_OBJS := $(call to_objs,$(TEST_OPTIMIZE_SRCS))
 TEST_IR_OBJS      := $(call to_objs,$(TEST_IR_SRCS))
+TEST_SVN_OBJS     := $(call to_objs,$(TEST_SVN_SRCS))
+TEST_DCE_SRCS     := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
+                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) \
+                       tests/test_dce.c
+TEST_DCE_OBJS     := $(call to_objs,$(TEST_DCE_SRCS))
 
 .PHONY: all clean check regen-scanner
 
-all: $(BIN_DIR)/minicc $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_pass1 $(BIN_DIR)/test_semantic $(BIN_DIR)/test_optimize $(BIN_DIR)/test_ir
+all: $(BIN_DIR)/minicc $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_pass1 $(BIN_DIR)/test_semantic $(BIN_DIR)/test_optimize $(BIN_DIR)/test_ir $(BIN_DIR)/test_svn $(BIN_DIR)/test_dce
 
 # ---- Regola generica: compila qualunque src/File.c in build/src/File.o ----
 # -I. permette agli #include senza percorso (es. "symbol_table.h" da
@@ -115,11 +122,22 @@ $(BIN_DIR)/test_ir: $(TEST_IR_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
+$(BIN_DIR)/test_svn: $(TEST_SVN_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+$(BIN_DIR)/test_dce: $(TEST_DCE_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
 # ---- Comodo: esegue i test automatici dei moduli di base ----
-check: $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_optimize $(BIN_DIR)/test_ir
+check: $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_optimize $(BIN_DIR)/test_ir $(BIN_DIR)/test_svn $(BIN_DIR)/test_dce
 	./$(BIN_DIR)/test_symtab
 	./$(BIN_DIR)/test_arena
 	./$(BIN_DIR)/test_optimize
+	./$(BIN_DIR)/test_ir
+	./$(BIN_DIR)/test_svn
+	./$(BIN_DIR)/test_dce
 	./$(BIN_DIR)/test_ir
 
 # ---- Rigenera lo scanner da scanner.re (richiede re2c installato) ----
