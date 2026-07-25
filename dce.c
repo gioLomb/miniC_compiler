@@ -182,21 +182,22 @@ void dce_optimize(IRFunction *f) {
     char *reachable = calloc((size_t)nBlocks, sizeof(char));
     markReachableBlocks(f, reachable);
 
+    /* ---- Mappa istruzione -> blocco (O(N) lookup) ---- */
+    int *instrToBlock = malloc((size_t)nInstrs * sizeof(int));
+    for (int b = 0; b < nBlocks; b++) {
+        for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
+            instrToBlock[i] = b;
+        }
+    }
+
     /* ---- PASSO 1: Raccogli tutte le variabili (assegna ID) ---- */
     VarMap varMap;
     varMap_init(&varMap);
 
     for (int i = 0; i < nInstrs; i++) {
         IRInstr *in = &f->instrs[i];
-        /* Solo istruzioni in blocchi raggiungibili contribuiscono */
-        int blockIdx = -1;
-        for (int b = 0; b < nBlocks; b++) {
-            if (i >= f->blocks[b].start && i < f->blocks[b].end) {
-                blockIdx = b;
-                break;
-            }
-        }
-        if (blockIdx < 0 || !reachable[blockIdx]) continue;
+        int blockIdx = instrToBlock[i];
+        if (!reachable[blockIdx]) continue;
 
         if (definesDst(in->op) && isVarOrTemp(in->dst.kind))
             operandId(in->dst, &varMap);
@@ -234,11 +235,13 @@ void dce_optimize(IRFunction *f) {
             }
             if (isVarOrTemp(in->src1.kind)) {
                 int id = operandId(in->src1, &varMap);
-                liveSet_set(&Use[b], id);
+                if (!liveSet_test(&Def[b], id))
+                    liveSet_set(&Use[b], id);
             }
             if (isVarOrTemp(in->src2.kind)) {
                 int id = operandId(in->src2, &varMap);
-                liveSet_set(&Use[b], id);
+                if (!liveSet_test(&Def[b], id))
+                    liveSet_set(&Use[b], id);
             }
         }
     }
@@ -275,7 +278,6 @@ void dce_optimize(IRFunction *f) {
     char *eliminate = calloc((size_t)nInstrs, sizeof(char));
     for (int b = 0; b < nBlocks; b++) {
         if (!reachable[b]) {
-            /* Tutte le istruzioni dei blocchi irraggiungibili vengono eliminate */
             for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
                 eliminate[i] = 1;
             }
@@ -330,11 +332,11 @@ void dce_optimize(IRFunction *f) {
     free(f->instrs);
     f->instrs = newInstrs;
     f->count = newCount;
+    f->capacity = newCount;  /* aggiorniamo la capacità per coerenza */
 
     /* Aggiorna start/end dei blocchi */
     for (int b = 0; b < nBlocks; b++) {
         if (f->blocks[b].start == f->blocks[b].end) {
-            /* Blocco vuoto: tutto il blocco è stato eliminato */
             f->blocks[b].start = f->blocks[b].end = 0;
             continue;
         }
@@ -359,6 +361,7 @@ void dce_optimize(IRFunction *f) {
     free(map);
     free(eliminate);
     free(reachable);
+    free(instrToBlock);
     for (int b = 0; b < nBlocks; b++) {
         liveSet_free(&Use[b]);
         liveSet_free(&Def[b]);
