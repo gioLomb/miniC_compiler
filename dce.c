@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "dce.h"
 #include "hash_table.h"
+#include "arena.h"
 
 /* ---- Helper per l'hash di un uint64_t ---- */
 static unsigned long uint64_hash(const void *key, size_t keySize) {
@@ -23,7 +24,7 @@ typedef struct {
     int nextId;
 } VarMap;
 
-static uint64_t make_key(int kind, int level, int offset) {
+static inline uint64_t make_key(int kind, int level, int offset) {
     uint64_t k = 0;
     k |= (uint64_t)(kind & 0x3) << 62;
     k |= (uint64_t)(level & 0x7fffffff) << 31;
@@ -31,14 +32,14 @@ static uint64_t make_key(int kind, int level, int offset) {
     return k;
 }
 
-static void varMap_init(VarMap *map) {
-    map->table = ht_create(32, uint64_hash);
-    map->nextId = 0;
-}
+// static void varMap_init(VarMap *map) {
+//     map->table = ht_create(32, uint64_hash);
+//     map->nextId = 0;
+// }
 
-static void varMap_destroy(VarMap *map) {
-    ht_destroy(map->table, NULL);
-}
+// static void varMap_destroy(VarMap *map) {
+//     ht_destroy(map->table, NULL);
+// }
 
 static int varMap_getOrCreate(VarMap *map, int kind, int level, int offset) {
     uint64_t key = make_key(kind, level, offset);
@@ -56,61 +57,58 @@ typedef struct {
     int words;
 } LiveSet;
 
-static LiveSet liveSet_new(int words) {
-    LiveSet s;
-    s.words = words;
-    s.bits = calloc((size_t)words, sizeof(uint64_t));
+static LiveSet liveSet_new(Arena *arena, int words) {
+    LiveSet s = {
+    .words = words,
+    .bits = arena_alloc(arena, (size_t)words * sizeof(uint64_t))};
+    memset(s.bits, 0, (size_t)words * sizeof(uint64_t));
     return s;
 }
 
-static void liveSet_free(LiveSet *s) {
-    free(s->bits);
-}
-
-static void liveSet_clear(LiveSet *s) {
+static inline void liveSet_clear(LiveSet *s) {
     memset(s->bits, 0, (size_t)s->words * sizeof(uint64_t));
 }
 
-static void liveSet_set(LiveSet *s, int id) {
+static inline void liveSet_set(LiveSet *s, int id) {
     s->bits[id >> 6] |= 1ULL << (id & 63);
 }
 
-static void liveSet_clearBit(LiveSet *s, int id) {
+static inline void liveSet_clearBit(LiveSet *s, int id) {
     s->bits[id >> 6] &= ~(1ULL << (id & 63));
 }
 
-static int liveSet_test(const LiveSet *s, int id) {
+static inline int liveSet_test(const LiveSet *s, int id) {
     return (s->bits[id >> 6] >> (id & 63)) & 1ULL;
 }
 
-static void liveSet_union(LiveSet *dest, const LiveSet *src) {
+static inline void liveSet_union(LiveSet *dest, const LiveSet *src) {
     for (int i = 0; i < dest->words; i++)
         dest->bits[i] |= src->bits[i];
 }
 
-static void liveSet_union_into(LiveSet *dest, const LiveSet *a, const LiveSet *b) {
+static inline void liveSet_union_into(LiveSet *dest, const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dest->words; i++)
         dest->bits[i] = a->bits[i] | b->bits[i];
 }
 
-static void liveSet_difference(LiveSet *dest, const LiveSet *a, const LiveSet *b) {
+static inline void liveSet_difference(LiveSet *dest, const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dest->words; i++)
         dest->bits[i] = a->bits[i] & ~b->bits[i];
 }
 
-static int liveSet_equal(const LiveSet *a, const LiveSet *b) {
+static inline int liveSet_equal(const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < a->words; i++) {
         if (a->bits[i] != b->bits[i]) return 0;
     }
     return 1;
 }
 
-static void liveSet_copy(LiveSet *dest, const LiveSet *src) {
+static inline void liveSet_copy(LiveSet *dest, const LiveSet *src) {
     memcpy(dest->bits, src->bits, (size_t)src->words * sizeof(uint64_t));
 }
 
 /* ---- Purezza ed effetti collaterali ---- */
-static int isPure(IROp op) {
+static inline int isPure(IROp op) {
     switch (op) {
         case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
         case IR_NEG: case IR_NOT:
@@ -123,7 +121,7 @@ static int isPure(IROp op) {
     }
 }
 
-static int definesDst(IROp op) {
+static inline int definesDst(IROp op) {
     switch (op) {
         case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
         case IR_NEG: case IR_NOT:
@@ -137,11 +135,11 @@ static int definesDst(IROp op) {
     }
 }
 
-static int isVarOrTemp(OperandKind kind) {
+static inline int isVarOrTemp(OperandKind kind) {
     return kind == OPND_VAR || kind == OPND_TEMP;
 }
 
-static int operandId(Operand op, VarMap *map) {
+static inline int operandId(Operand op, VarMap *map) {
     if (op.kind == OPND_VAR) {
         return varMap_getOrCreate(map, 0, op.data.varLevel, op.data.varOffset);
     } else if (op.kind == OPND_TEMP) {
@@ -172,18 +170,21 @@ static void markReachableBlocks(IRFunction *f, char *reachable) {
 }
 
 /* ---- DCE ---- */
-void dce_optimize(IRFunction *f) {
-    if (!f || f->blockCount == 0 || f->count == 0) return;
+int dce_optimize(IRFunction *f) {
+    if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
     int nInstrs = f->count;
 
+    Arena *dce_arena = arena_create(0);
+
     /* ---- PASSO 0: Reachability ---- */
-    char *reachable = calloc((size_t)nBlocks, sizeof(char));
+    char *reachable = arena_alloc(dce_arena, (size_t)nBlocks * sizeof(char));
+    memset(reachable, 0, (size_t)nBlocks * sizeof(char));
     markReachableBlocks(f, reachable);
 
     /* ---- Mappa istruzione -> blocco (O(N) lookup) ---- */
-    int *instrToBlock = malloc((size_t)nInstrs * sizeof(int));
+    int *instrToBlock = arena_alloc(dce_arena, (size_t)nInstrs * sizeof(int));
     for (int b = 0; b < nBlocks; b++) {
         for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
             instrToBlock[i] = b;
@@ -192,7 +193,8 @@ void dce_optimize(IRFunction *f) {
 
     /* ---- PASSO 1: Raccogli tutte le variabili (assegna ID) ---- */
     VarMap varMap;
-    varMap_init(&varMap);
+    varMap.table = ht_create(32, uint64_hash);
+    varMap.nextId = 0;
 
     for (int i = 0; i < nInstrs; i++) {
         IRInstr *in = &f->instrs[i];
@@ -211,15 +213,15 @@ void dce_optimize(IRFunction *f) {
     int words = (numVars + 63) / 64;
 
     /* ---- PASSO 2: Alloca Use, Def, LiveIn, LiveOut per ogni blocco ---- */
-    LiveSet *Use = malloc((size_t)nBlocks * sizeof(LiveSet));
-    LiveSet *Def = malloc((size_t)nBlocks * sizeof(LiveSet));
-    LiveSet *LiveIn = malloc((size_t)nBlocks * sizeof(LiveSet));
-    LiveSet *LiveOut = malloc((size_t)nBlocks * sizeof(LiveSet));
+    LiveSet *Use    = arena_alloc(dce_arena, (size_t)nBlocks * sizeof(LiveSet));
+    LiveSet *Def    = arena_alloc(dce_arena, (size_t)nBlocks * sizeof(LiveSet));
+    LiveSet *LiveIn  = arena_alloc(dce_arena, (size_t)nBlocks * sizeof(LiveSet));
+    LiveSet *LiveOut = arena_alloc(dce_arena, (size_t)nBlocks * sizeof(LiveSet));
     for (int b = 0; b < nBlocks; b++) {
-        Use[b] = liveSet_new(words);
-        Def[b] = liveSet_new(words);
-        LiveIn[b] = liveSet_new(words);
-        LiveOut[b] = liveSet_new(words);
+        Use[b]    = liveSet_new(dce_arena, words);
+        Def[b]    = liveSet_new(dce_arena, words);
+        LiveIn[b]  = liveSet_new(dce_arena, words);
+        LiveOut[b] = liveSet_new(dce_arena, words);
     }
 
     /* ---- PASSO 3: Calcola Use e Def solo per blocchi raggiungibili ---- */
@@ -247,6 +249,7 @@ void dce_optimize(IRFunction *f) {
     }
 
     /* ---- PASSO 4: Liveness dataflow (backward), solo blocchi raggiungibili ---- */
+    LiveSet tmp = liveSet_new(dce_arena, words);
     int changed = 1;
     while (changed) {
         changed = 0;
@@ -262,7 +265,6 @@ void dce_optimize(IRFunction *f) {
             }
 
             /* LiveIn = Use ∪ (LiveOut - Def) */
-            LiveSet tmp = liveSet_new(words);
             liveSet_difference(&tmp, &LiveOut[b], &Def[b]);
             liveSet_union_into(&tmp, &tmp, &Use[b]);
 
@@ -270,12 +272,12 @@ void dce_optimize(IRFunction *f) {
                 liveSet_copy(&LiveIn[b], &tmp);
                 changed = 1;
             }
-            liveSet_free(&tmp);
         }
     }
 
     /* ---- PASSO 5: Mark (backward dentro ogni blocco raggiungibile) ---- */
-    char *eliminate = calloc((size_t)nInstrs, sizeof(char));
+    char *eliminate = arena_alloc(dce_arena, (size_t)nInstrs * sizeof(char));
+    memset(eliminate, 0, (size_t)nInstrs * sizeof(char));
     for (int b = 0; b < nBlocks; b++) {
         if (!reachable[b]) {
             for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
@@ -284,18 +286,17 @@ void dce_optimize(IRFunction *f) {
             continue;
         }
 
-        LiveSet Live = liveSet_new(words);
+        LiveSet Live = liveSet_new(dce_arena, words);
         liveSet_copy(&Live, &LiveOut[b]);
 
         int start = f->blocks[b].start;
         int end = f->blocks[b].end;
         for (int i = end - 1; i >= start; i--) {
             IRInstr *in = &f->instrs[i];
-            int pure = isPure(in->op);
             int def = definesDst(in->op) && isVarOrTemp(in->dst.kind);
             int dstId = def ? operandId(in->dst, &varMap) : -1;
 
-            if (pure && def && !liveSet_test(&Live, dstId)) {
+            if (isPure(in->op) && def && !liveSet_test(&Live, dstId)) {
                 eliminate[i] = 1;
                 continue;
             }
@@ -312,11 +313,10 @@ void dce_optimize(IRFunction *f) {
                 liveSet_clearBit(&Live, dstId);
             }
         }
-        liveSet_free(&Live);
     }
 
     /* ---- PASSO 6: Sweep (compatta le istruzioni rimanenti) ---- */
-    int *map = malloc((size_t)nInstrs * sizeof(int));
+    int *map = arena_alloc(dce_arena, (size_t)nInstrs * sizeof(int));
     for (int i = 0; i < nInstrs; i++) map[i] = -1;
 
     IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
@@ -358,16 +358,7 @@ void dce_optimize(IRFunction *f) {
     f->curBlockStart = 0;
 
     /* ---- PASSO 7: Pulizia ---- */
-    free(map);
-    free(eliminate);
-    free(reachable);
-    free(instrToBlock);
-    for (int b = 0; b < nBlocks; b++) {
-        liveSet_free(&Use[b]);
-        liveSet_free(&Def[b]);
-        liveSet_free(&LiveIn[b]);
-        liveSet_free(&LiveOut[b]);
-    }
-    free(Use); free(Def); free(LiveIn); free(LiveOut);
-    varMap_destroy(&varMap);
+    arena_destroy(dce_arena);
+    ht_destroy(varMap.table, NULL);
+    return newCount != nInstrs;
 }

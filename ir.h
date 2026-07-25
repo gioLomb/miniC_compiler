@@ -18,7 +18,7 @@ typedef enum {
     IR_GOTO,
     IR_IF_FALSE,
     IR_LABEL,
-    IR_NOP    /* istruzione morta, rimossa da dce_optimize() nella fase SWEEP */
+    //IR_NOP    /* istruzione morta, rimossa da dce_optimize() nella fase SWEEP */
 } IROp;
 
 typedef enum {

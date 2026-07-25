@@ -4,6 +4,7 @@
 #include "ir.h"
 #include "svn.h"
 #include "dce.h"
+#include "cp.h"
 
 /* ---- Chiavi a 16 bit per operatori (evita strcmp) ---- */
 #define KEY_AND 0x2626   /* '&' '&' */
@@ -406,6 +407,16 @@ static IRFunction *irFunction(ASTNode *decl) {
     resolveCFG(f);
     svn_optimize(f);
     dce_optimize(f);
+
+    /* Ciclo a punto fisso: cp_optimize propaga costanti e pota il CFG;
+     * dce_optimize elimina cio' che la propagazione ha reso morto.
+     * Si ripete finche' nessuna delle due produce cambiamenti. */
+    int changed;
+    do {
+        changed  = cp_optimize(f);
+        changed |= dce_optimize(f);  /* dce restituisce void — conta le eliminazioni */
+    } while (changed);
+
     return f;
 }
 
@@ -477,7 +488,6 @@ static void printInstr(const IRInstr *in) {
     case IR_IF_FALSE: printf("    if_false "); printOperand(&in->src1);
                       printf(" goto "); printOperand(&in->dst); break;
     case IR_LABEL: printOperand(&in->dst); printf(":"); break;
-    case IR_NOP:   printf("    nop"); break;
     }
     printf("\n");
 }

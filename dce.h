@@ -3,6 +3,6 @@
 
 #include "ir.h"
 
-void dce_optimize(IRFunction *f);
+int dce_optimize(IRFunction *f);
 
 #endif

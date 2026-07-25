@@ -1,13 +1,15 @@
 int main() { int a; int b; int c;int e;
 
     a = 1;
-    if(a){
+    b = 2;
+    if(0){
         a = a+1;
         b = 1;
-        c = b+a+4+5+6;
-        e = b+a+2+5+3;
+        return 1;
     }
+    a = b+1;
+    b = b+1;
 
 
-    return e+c+b+a;
+     return a + b + 5;
 }

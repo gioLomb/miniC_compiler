@@ -210,7 +210,7 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
     case IR_GOTO:
     case IR_IF_FALSE:
     case IR_LABEL:
-    case IR_NOP:
+    //case IR_NOP:
         break;
     }
 }
