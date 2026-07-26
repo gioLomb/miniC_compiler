@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ir.h"
+#include "licm.h"
 #include "svn.h"
 #include "dce.h"
 #include "cp.h"
@@ -414,7 +415,8 @@ static IRFunction *irFunction(ASTNode *decl) {
     int changed;
     do {
         changed  = cp_optimize(f);
-        changed |= dce_optimize(f);  /* dce restituisce void — conta le eliminazioni */
+        changed |= dce_optimize(f);
+        changed |= licm_optimize(f);
     } while (changed);
 
     return f;

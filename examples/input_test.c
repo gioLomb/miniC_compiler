@@ -1,15 +1,7 @@
-int main() { int a; int b; int c;int e;
+int main() { int a; int b; int c;int i = 3;
 
-    a = 1;
-    b = 2;
-    if(0){
-        a = a+1;
-        b = 1;
-        return 1;
+    while(i+1+1+1+1+1+1<5+1 ){
+        return i;
+        i= i + 1;
     }
-    a = b+1;
-    b = b+1;
-
-
-     return a + b + 5;
 }
