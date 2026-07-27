@@ -1,7 +1,21 @@
 # ============================================================
 # Makefile - miniC compiler project
 # ============================================================
-# (intestazione invariata)
+# Target principali:
+#   make               -> costruisce tutti i binari in bin/
+#   make minicc        -> solo lexer+parser (parse tree)
+#   make test_symtab   -> solo unit test del modulo symbol table
+#   make test_arena    -> solo unit test dell'arena allocator
+#   make test_pass1    -> lexer+parser+Pass1 (popolamento scope globale)
+#   make test_semantic -> lexer+parser+Pass1+Pass2/semantica (fuse)
+#   make test_optimize -> lexer+parser+Pass1+semantica+ottimizzazioni AST
+#   make test_ir       -> lexer+parser+Pass1+semantica+generazione IR lineare (TAC)
+#   make check         -> esegue test_symtab, test_arena, test_optimize e test_ir e stampa l'esito
+#   make clean         -> rimuove build/ e bin/
+#   make regen-scanner -> rigenera scanner_generated.c da scanner.re (richiede re2c)
+#
+# Sanitizer opzionali (utile in sviluppo, non per release):
+#   make SANITIZE=1
 # ============================================================
 
 CC      := gcc
@@ -29,16 +43,17 @@ ARENA_SRC       := arena.c
 OPTIMIZE_SRC    := optimize.c
 IR_SRC          := ir.c
 SVN_SRC         := svn.c
-DCE_SRC         := dce.c
-LIVENESS_SRC    := liveness.c
-CP_SRC          := cp.c
-LICM_SRC        := licm.c          # <-- AGGIUNTO
+DCE_SRC     := dce.c
+LIVENESS_SRC := liveness.c
+LOOP_SRC     := loop.c
+LICM_SRC     := licm.c
+SR_SRC       := sr.c
+CP_SRC  := cp.c
+
 
 # ---- Composizione dei binari ----
 MINICC_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(DCE_SRC) $(LIVENESS_SRC) \
-                     $(CP_SRC) $(LICM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c
-
+                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(DCE_SRC) $(LIVENESS_SRC) $(LOOP_SRC) $(LICM_SRC) $(SR_SRC) $(CP_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) parser/main.c
 TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC)  tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
@@ -49,9 +64,8 @@ TEST_SEMANTIC_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARE
 TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                        $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) \
                        tests/test_optimize.c
-TEST_IR_SRCS      := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) \
-                       $(SVN_SRC) $(DCE_SRC) $(LIVENESS_SRC) $(CP_SRC) $(LICM_SRC) \
+TEST_IR_SRCS      := $(SCANNER_SRC) $(DCE_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
+                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) $(LIVENESS_SRC) $(LOOP_SRC) $(LICM_SRC) $(SR_SRC) $(CP_SRC) \
                        tests/test_ir.c
 
 # Traduce ogni lista di sorgenti .c nei corrispondenti .o dentro build/

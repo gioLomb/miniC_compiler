@@ -2,10 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ir.h"
-#include "licm.h"
 #include "svn.h"
 #include "dce.h"
 #include "cp.h"
+#include "licm.h"
+#include "sr.h"
+#include "licm.h"
+#include "sr.h"
 
 /* ---- Chiavi a 16 bit per operatori (evita strcmp) ---- */
 #define KEY_AND 0x2626   /* '&' '&' */
@@ -409,15 +412,26 @@ static IRFunction *irFunction(ASTNode *decl) {
     svn_optimize(f);
     dce_optimize(f);
 
-    /* Ciclo a punto fisso: cp_optimize propaga costanti e pota il CFG;
-     * dce_optimize elimina cio' che la propagazione ha reso morto.
-     * Si ripete finche' nessuna delle due produce cambiamenti. */
+    /* Ciclo a punto fisso: CP propaga costanti e pota il CFG;
+     * DCE elimina cio' che la propagazione ha reso morto. */
     int changed;
     do {
         changed  = cp_optimize(f);
         changed |= dce_optimize(f);
-        changed |= licm_optimize(f);
     } while (changed);
+
+    /* LICM sposta le istruzioni invarianti nel pre-header.
+     * SR sostituisce le moltiplicazioni per la var induttiva con addizioni.
+     * Se uno dei due modifica qualcosa, rientra nel ciclo CP+DCE perche'
+     * le nuove istruzioni nel pre-header possono essere piegate da CP. */
+    changed  = licm_optimize(f);
+    changed |= sr_optimize(f);
+    if (changed) {
+        do {
+            changed  = cp_optimize(f);
+            changed |= dce_optimize(f);
+        } while (changed);
+    }
 
     return f;
 }
