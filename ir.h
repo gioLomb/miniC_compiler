@@ -79,6 +79,7 @@ typedef struct {
 } IRProgram;
 
 IRProgram *ir_generate(ASTNode *program);
+Operand noOperand(void);
 void ir_print(const IRProgram *prog);
 void ir_free(IRProgram *prog);
 

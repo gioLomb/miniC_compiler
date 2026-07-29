@@ -48,7 +48,7 @@ static inline Operand mkConstFloat(float v) {
 static inline Operand mkFunc(const char *name) {
     Operand o; o.kind = OPND_FUNC; o.data.funcName = name; return o;
 }
-static inline Operand noOperand(void) {
+Operand noOperand(void) {
     Operand o; o.kind = OPND_NONE; return o;
 }
 
@@ -426,8 +426,11 @@ static IRFunction *irFunction(ASTNode *decl) {
      * le nuove istruzioni nel pre-header possono essere piegate da CP. */
     changed  = licm_optimize(f);
     changed |= sr_optimize(f);
+    
     if (changed) {
+        printf("changed");
         do {
+            printf("changed_in");
             changed  = cp_optimize(f);
             changed |= dce_optimize(f);
         } while (changed);
