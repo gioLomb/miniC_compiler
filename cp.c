@@ -1,11 +1,11 @@
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>        /* per printf di debug */
+#include <stdio.h>
 #include "cp.h"
 #include "arena.h"
 
 /* ---- Abilita debug ---- */
-#define CP_DEBUG 1
+#define CP_DEBUG 0
 
 /* ---- Reticolo dei valori ----------------------------------------------- */
 #define LAT_UNKNOWN  0
@@ -211,7 +211,7 @@ static LatVal foldUnary(IROp op, LatVal v) {
     return lat_conflict();
 }
 
-/* ---- DEBUG: stampa una LatVal ---- */
+#if CP_DEBUG
 static void printLatVal(const char *prefix, LatVal lv) {
     switch (lv.state) {
     case LAT_UNKNOWN:  printf("%s UNKNOWN\n", prefix); break;
@@ -223,6 +223,7 @@ static void printLatVal(const char *prefix, LatVal lv) {
     default: printf("%s ???\n", prefix);
     }
 }
+#endif
 
 /* ---- Trasferimento: aggiorna la mappa simulando un'istruzione ---------- */
 static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
@@ -233,23 +234,9 @@ static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
 
     if (in->op == IR_ASSIGN) {
         result = getLatVal(map, in->src1, vm);
-#if CP_DEBUG
-        if (in->src1.kind == OPND_VAR || in->src1.kind == OPND_TEMP) {
-            printf("  ASSIGN: dst id %d, src ", id);
-            printLatVal("", result);
-        }
-#endif
     } else if (isBinaryOp(in->op)) {
         LatVal lhs = getLatVal(map, in->src1, vm);
         LatVal rhs = getLatVal(map, in->src2, vm);
-#if CP_DEBUG
-        if (in->op == IR_MUL) {
-            printf("  MUL: lhs id %d, rhs const? %d\n", 
-                   operandVarId(vm, in->src1), in->src2.kind == OPND_CONST_INT);
-            printLatVal("    lhs ", lhs);
-            printLatVal("    rhs ", rhs);
-        }
-#endif
         if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
             if (!lhs.isFloat && !rhs.isFloat) {
                 int r;
@@ -268,12 +255,6 @@ static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
     }
 
     map->vals[id] = result;
-#if CP_DEBUG
-    if (in->op == IR_MUL || in->op == IR_ASSIGN) {
-        printf("  transferInstr -> dst id %d = ", id);
-        printLatVal("", result);
-    }
-#endif
 }
 
 /* ---- cp_optimize ------------------------------------------------------- */
@@ -304,22 +285,11 @@ int cp_optimize(IRFunction *f) {
         constMap_init(&Out[b], numVars, arena);
     }
 
-#if CP_DEBUG
-    printf("\n=== CP DEBUG: inizio dataflow ===\n");
-    printf("Numero blocchi: %d, Num variabili: %d\n", nBlocks, numVars);
-#endif
-
     /* PASSO 3: forward dataflow */
     int changed = 1;
-    int iter = 0;
     while (changed) {
         changed = 0;
-        iter++;
-#if CP_DEBUG
-        printf("\n--- Iterazione %d ---\n", iter);
-#endif
         for (int b = 0; b < nBlocks; b++) {
-            /* Calcola In[b] = meet dei Out dei predecessori */
             int hasPred = 0;
             for (int p = 0; p < nBlocks; p++) {
                 for (int k = 0; k < 2; k++) {
@@ -328,9 +298,7 @@ int cp_optimize(IRFunction *f) {
                     else          constMap_meet(&In[b], &Out[p]);
                 }
             }
-            /* b=0 (entry) ha hasPred=0 -> In[0] resta UNKNOWN */
 
-            /* Calcola Out[b] = transfer(In[b]) */
             constMap_copy(&tmp, &In[b]);
             for (int i = f->blocks[b].start; i < f->blocks[b].end; i++)
                 transferInstr(&f->instrs[i], &tmp, &vm);
@@ -338,42 +306,10 @@ int cp_optimize(IRFunction *f) {
             if (!constMap_equal(&Out[b], &tmp)) {
                 constMap_copy(&Out[b], &tmp);
                 changed = 1;
-#if CP_DEBUG
-                printf("  Blocco %d cambiato\n", b);
-#endif
             }
         }
     }
 
-#if CP_DEBUG
-    printf("\n=== CP DEBUG: dataflow convergito dopo %d iterazioni ===\n", iter);
-    /* Stampa In/Out per i blocchi di interesse: entry (0) e pre-header */
-    for (int b = 0; b < nBlocks; b++) {
-        /* Cerchiamo il blocco che è pre-header: ha predCount > 0 e nessuna istruzione?
-           In realtà il pre-header è quello con un solo successore e start/end uguali.
-           Identifichiamo con i blocchi che hanno start == end (vuoti) e non sono entry. */
-        if (f->blocks[b].start == f->blocks[b].end && b != 0) {
-            printf("\nBlocco %d (pre-header probabile):\n", b);
-            for (int id = 0; id < numVars; id++) {
-                /* Cerca di mappare l'ID a un nome leggibile: cerca l'operand */
-                /* Per semplicità stampiamo solo gli ID 0-5 (assumendo che i sia il primo) */
-                if (id < 6) {
-                    printf("  In[%d] = ", id); printLatVal("", In[b].vals[id]);
-                    printf("  Out[%d] = ", id); printLatVal("", Out[b].vals[id]);
-                }
-            }
-        }
-        if (b == 0) {
-            printf("\nBlocco 0 (entry):\n");
-            for (int id = 0; id < 6 && id < numVars; id++) {
-                printf("  In[%d] = ", id); printLatVal("", In[b].vals[id]);
-                printf("  Out[%d] = ", id); printLatVal("", Out[b].vals[id]);
-            }
-        }
-    }
-#endif
-
-    /* PASSO 4: riscrittura (invariato) */
     /* ---- PASSO 4: riscrittura + CFG pruning + folding binario ---- */
     int modified = 0;
     int *instrToBlock = arena_alloc(arena, (size_t)f->count * sizeof(int));
@@ -391,7 +327,6 @@ int cp_optimize(IRFunction *f) {
         for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
             IRInstr *in = &f->instrs[i];
 
-            /* ---- IF_FALSE handling (invariato) ---- */
             if (in->op == IR_IF_FALSE) {
                 Operand cond = tryFold(in->src1, &live, &vm);
                 if (cond.kind == OPND_CONST_INT || cond.kind == OPND_CONST_FLOAT) {
@@ -423,7 +358,7 @@ int cp_optimize(IRFunction *f) {
                 continue;
             }
 
-            /* ---- Sostituisci src1 e src2 con costanti note ---- */
+            /* Sostituisci src1 e src2 con costanti note */
             Operand ns1 = tryFold(in->src1, &live, &vm);
             Operand ns2 = tryFold(in->src2, &live, &vm);
             if (ns1.kind != in->src1.kind || memcmp(&ns1, &in->src1, sizeof(Operand))) {
@@ -434,14 +369,10 @@ int cp_optimize(IRFunction *f) {
             }
 
             /* ---- FOLDING BINARIO ---- */
-            /* Se l'istruzione è una binaria pura e entrambi gli operandi sono costanti,
-             * calcola il risultato e trasforma in IR_ASSIGN.
-             * Gestisce anche operandi float, divisione per zero, ecc. */
             if (in->op != IR_IF_FALSE && in->op != IR_LABEL && in->op != IR_GOTO && in->op != IR_RETURN &&
                 (in->op == IR_ADD || in->op == IR_SUB || in->op == IR_MUL || in->op == IR_DIV || in->op == IR_MOD ||
                  in->op == IR_LT || in->op == IR_LE || in->op == IR_GT || in->op == IR_GE || in->op == IR_EQ || in->op == IR_NE)) {
                 
-                /* Controlla che ns1 e ns2 siano costanti (int o float) */
                 if ((ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
                     (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
                     
@@ -486,12 +417,10 @@ int cp_optimize(IRFunction *f) {
                     }
                     
                     if (ok) {
-                        /* Trasforma l'istruzione in IR_ASSIGN */
+                        IROp origOp = in->op;   /* salva l'operatore originale */
                         in->op = IR_ASSIGN;
-                        /* La destinazione rimane in->dst, la sorgente è la costante risultante */
-                        if (floatOp && (in->op == IR_LT || in->op == IR_LE || in->op == IR_GT ||
-                                        in->op == IR_GE || in->op == IR_EQ || in->op == IR_NE)) {
-                            /* I confronti danno int, anche se gli operandi erano float */
+                        if (floatOp && (origOp == IR_LT || origOp == IR_LE || origOp == IR_GT ||
+                                        origOp == IR_GE || origOp == IR_EQ || origOp == IR_NE)) {
                             in->src1.kind = OPND_CONST_INT;
                             in->src1.data.intVal = (int)resultFloat;
                         } else if (floatOp) {
@@ -510,7 +439,8 @@ int cp_optimize(IRFunction *f) {
             transferInstr(in, &live, &vm);
         }
     }
-    /* PASSO 5: Sweep */
+
+    /* ---- PASSO 5: Sweep ---- */
     if (modified) {
         int *map = arena_alloc(arena, (size_t)f->count * sizeof(int));
         for (int i = 0; i < f->count; i++) map[i] = -1;

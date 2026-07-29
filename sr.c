@@ -44,7 +44,7 @@ static int sameOperand(Operand a, Operand b) {
     return 0;
 }
 
-/* ---- Passo 1 ----------------------------------------------------------- */
+/* ---- Passo 1: trova le induttive base ---------------------------------- */
 static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
                               InductionBase *ivars, Arena *arena) {
     int count   = 0;
@@ -80,7 +80,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
     return count;
 }
 
-/* ---- Passo 2 ----------------------------------------------------------- */
+/* ---- Passo 2: trova le derivate ---------------------------------------- */
 static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
                         InductionBase *ivars, int ivarCount,
                         InductionDerived *derived, int *nextTemp) {
@@ -112,15 +112,7 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
     return count;
 }
 
-/* ---- Passo 3 -----------------------------------------------------------
- * Costruisce un nuovo array f->instrs inserendo:
- *   - le init SR (t_sr = i * d) PRIMA delle istruzioni dell'header del loop
- *     (posizione fisica corretta nell'IR lineare)
- *   - le copie t = t_sr al posto delle moltiplicazioni originali nel body
- *   - gli aggiornamenti t_sr = t_sr + stride dopo ogni incremento
- * Aggiorna start/end di tutti i blocchi tramite mappa indice.
- * Il blocco pre-header (phIdx) riceve il range delle init SR.
- * -------------------------------------------------------------------- */
+/* ---- Passo 3: applica la trasformazione con inserimento fisico -------- */
 static int applyStrengthReduction(IRFunction *f, Loop *L,
                                    InductionBase *ivars, int ivarCount,
                                    InductionDerived *derived, int derivedCount) {
@@ -131,22 +123,20 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     int nInstrs  = f->count;
     int nBlocks  = f->blockCount;
 
-    /* Punto di inserimento fisico delle init SR:
-     * PRIMA della prima istruzione dell'header del loop. */
+    /* Punto di inserimento: prima della prima istruzione dell'header */
     int insertAt = f->blocks[header].start;
 
     int maxNew = nInstrs + derivedCount * (1 + ivarCount);
     IRInstr *newInstrs = malloc((size_t)maxNew * sizeof(IRInstr));
     int newCount = 0;
 
-    /* map[j] = nuovo indice di f->instrs[j]; -1 se eliminato */
     int *map = malloc((size_t)nInstrs * sizeof(int));
     for (int i = 0; i < nInstrs; i++) map[i] = -1;
 
     int phInitStart = -1, phInitEnd = -1;
 
     for (int j = 0; j < nInstrs; j++) {
-        /* Punto di inserimento: emetti le init SR */
+        /* Inserisci init SR prima dell'header */
         if (j == insertAt) {
             phInitStart = newCount;
             for (int d = 0; d < derivedCount; d++) {
@@ -227,10 +217,9 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     f->count    = newCount;
     f->capacity = newCount;
 
-    /* Aggiorna start/end di ogni blocco */
+    /* ---- Aggiorna start/end di ogni blocco ---- */
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
-            /* Il pre-header corrisponde alle init SR */
             f->blocks[b].start = phInitStart;
             f->blocks[b].end   = phInitEnd;
             continue;
@@ -244,15 +233,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             if (newS == -1) newS = map[j];
             newE = map[j] + 1;
         }
-        /* Estendi end per gli aggiornamenti SR inseriti nel body */
-        for (int v = 0; v < ivarCount; v++) {
-            int incrJ = ivars[v].incrInstr;
-            if (incrJ < oldS || incrJ >= oldE) continue;
-            for (int d = 0; d < derivedCount; d++)
-                if (derived[d].baseIdx == v && newE >= 0) newE++;
-        }
-        /* Tutti i blocchi con start >= insertAt sono stati spostati
-         * in avanti di derivedCount posizioni */
+        /* Fallback per blocchi completamente shiftati (es. dopo insertAt) */
         if (newS == -1 && oldS >= insertAt) {
             newS = oldS + derivedCount;
             newE = oldE + derivedCount;
