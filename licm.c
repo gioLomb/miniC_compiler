@@ -132,6 +132,15 @@ static int instrBlock(IRFunction *f, int j) {
     return -1;
 }
 
+/*
+ * Sposta le istruzioni invarianti nel pre-header.
+ *
+ * Inserimento allineato a SR: le istruzioni hoistate vengono posizionate
+ * nell'array lineare IMMEDIATAMENTE PRIMA dell'header del loop
+ * (insertAt = f->blocks[header].start), non in posizione 0.
+ * In questo modo l'ordine fisico è: [pre-loop] [invarianti] [header...],
+ * coerente con l'ordine di esecuzione logico e con quanto fa SR.
+ */
 static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv) {
@@ -156,20 +165,39 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     if (!moved) { free(doMove); free(inBody); return 0; }
 
-    /* Nuovo array: [istr ph esistenti] [istr spostate] [resto] */
+    /*
+     * Punto di inserimento: primo instruction dell'header del loop.
+     * L'array risultante sarà:
+     *   Fase 1: [0, insertAt)          — codice pre-loop invariato
+     *   Fase 2: [insertAt, insertAt+moved) — invarianti hoistati (pre-header)
+     *   Fase 3: [insertAt+moved, ...)  — header, body, post-loop (istruzioni non mosse)
+     */
+    int insertAt = f->blocks[header].start;
+
     IRInstr *newInstrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
     int newCount = 0;
 
-    int phStart = f->blocks[phIdx].start, phEnd = f->blocks[phIdx].end;
-    for (int j = phStart; j < phEnd; j++) newInstrs[newCount++] = f->instrs[j];
-    int phMovedStart = newCount;
-    for (int j = 0; j < nInstrs; j++) if (doMove[j]) newInstrs[newCount++] = f->instrs[j];
-    int phNewEnd = newCount;
-
     int *map = calloc((size_t)nInstrs, sizeof(int));
     for (int j = 0; j < nInstrs; j++) map[j] = -1;
+
+    /* Fase 1: istruzioni prima dell'header (non mosse, mappate 1:1) */
+    for (int j = 0; j < insertAt; j++) {
+        /* Per costruzione, doMove[j] è sempre falso qui:
+         * le istruzioni invarianti sono tutte nel body del loop,
+         * il cui start >= insertAt. */
+        map[j] = newCount;
+        newInstrs[newCount++] = f->instrs[j];
+    }
+
+    /* Fase 2: istruzioni hoistate → contenuto del pre-header */
+    int phMovedStart = newCount;
     for (int j = 0; j < nInstrs; j++) {
-        if (j >= phStart && j < phEnd) continue;
+        if (doMove[j]) newInstrs[newCount++] = f->instrs[j];
+    }
+    int phNewEnd = newCount;
+
+    /* Fase 3: istruzioni da insertAt in poi, saltando quelle mosse */
+    for (int j = insertAt; j < nInstrs; j++) {
         if (doMove[j]) continue;
         map[j] = newCount;
         newInstrs[newCount++] = f->instrs[j];
@@ -178,12 +206,20 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     free(f->instrs);
     f->instrs = newInstrs; f->count = newCount; f->capacity = newCount;
 
+    /* Aggiorna start/end di ogni blocco tramite la mappa */
     for (int b = 0; b < nBlocks; b++) {
-        if (b == phIdx) { f->blocks[b].start = phMovedStart; f->blocks[b].end = phNewEnd; continue; }
+        if (b == phIdx) {
+            f->blocks[b].start = phMovedStart;
+            f->blocks[b].end   = phNewEnd;
+            continue;
+        }
         int oldS = f->blocks[b].start, oldE = f->blocks[b].end;
         int newS = -1, newE = -1;
         for (int j = oldS; j < oldE; j++) {
-            if (map[j] != -1) { if (newS == -1) newS = map[j]; newE = map[j] + 1; }
+            if (map[j] != -1) {
+                if (newS == -1) newS = map[j];
+                newE = map[j] + 1;
+            }
         }
         f->blocks[b].start = (newS == -1) ? 0 : newS;
         f->blocks[b].end   = (newE == -1) ? 0 : newE;
