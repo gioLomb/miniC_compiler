@@ -231,13 +231,16 @@ static const MachPhysReg ARG_REGS[] = {
 /* Stato del "pending comparison" per CMP+Jcc fusion.
  * Quando si espande IR_LT/IR_EQ/ecc., invece di emettere subito SETCC,
  * si salva il contesto e si aspetta: se l'istruzione successiva è
- * IR_IF_FALSE sul dst della comparazione, si fonde in CMP+JCC. */
+ * IR_IF_FALSE sul dst della comparazione, si fonde in CMP+JCC.
+ *
+ * MODIFICA: ora salva l'istruzione IR originale, non i vreg degli operandi.
+ * Così la traduzione in MachOperand (con immediati) avviene solo al momento
+ * dell'emissione, evitando di materializzare costanti in vreg.
+ */
 typedef struct {
-    int   active;       /* 1 se c'è una comparazione pendente */
-    IROp  cmpOp;        /* IR_LT, IR_EQ, ecc. */
-    int   src1Vreg;     /* vreg del primo operando del cmp */
-    int   src2Vreg;     /* vreg del secondo operando */
-    int   dstVreg;      /* vreg dove andrebbe il booleano materializzato */
+    int            active;       /* 1 se c'è una comparazione pendente */
+    const IRInstr *instr;        /* puntatore all'istruzione IR originale (IR_LT/LE/etc.) */
+    int            dstVreg;      /* vreg destinazione del booleano (per controllare IF_FALSE) */
 } PendingCmp;
 
 #define MAX_PARAMS 64
@@ -262,11 +265,10 @@ static MachFunction *select_function(const IRFunction *irf) {
          * Se l'istruzione corrente NON è IF_FALSE, oppure l'IF_FALSE non
          * legge il dst della comparazione pendente → materializza il
          * booleano della comparazione pendente (non c'è fusione).
+         * MODIFICA: usa l'IR originale salvato in pcmp.instr per tradurre
+         * gli operandi direttamente in MachOperand, evitando vreg intermedi.
          * ---------------------------------------------------------------- */
         if (pcmp.active) {
-            /* Verifica se l'istruzione corrente è un IF_FALSE che consuma
-             * esattamente il dst della comparazione pendente → fusione CMP+JCC.
-             * Altrimenti materializza il booleano prima di procedere. */
             int must_materialize = 1;
             if (in->op == IR_IF_FALSE) {
                 int cond_vreg = operand_to_vreg(&in->src1, &vm, f);
@@ -274,13 +276,27 @@ static MachFunction *select_function(const IRFunction *irf) {
             }
 
             if (must_materialize) {
-                /* Emetti CMP + SETCC + MOVSX per produrre il booleano */
-                mfunc_emit(f, MACH_CMP,
-                           mo_vreg(pcmp.src1Vreg), mo_vreg(pcmp.src2Vreg), mo_none());
-                MachOp setcc = comparison_to_setcc(pcmp.cmpOp);
+                const IRInstr *cmp_instr = pcmp.instr;
+                MachOperand lhs = operand_to_mach(&cmp_instr->src1, &vm, f);
+                MachOperand rhs = operand_to_mach(&cmp_instr->src2, &vm, f);
+                IROp cmpOp = cmp_instr->op;
+
+                /* CMP non accetta immediato come lhs; se lhs è IMM e rhs è vreg, scambia */
+                if (lhs.kind == MO_IMM && rhs.kind != MO_IMM) {
+                    MachOperand tmp = lhs; lhs = rhs; rhs = tmp;
+                    cmpOp = flip_cmp(cmpOp);
+                }
+                /* Se lhs è ancora IMM (entrambi costanti), materializza in vreg (caso raro) */
+                if (lhs.kind == MO_IMM) {
+                    int tmp_vreg = mfunc_new_vreg(f);
+                    mfunc_emit(f, MACH_MOV, mo_vreg(tmp_vreg), lhs, mo_none());
+                    lhs = mo_vreg(tmp_vreg);
+                }
+
+                mfunc_emit(f, MACH_CMP, lhs, rhs, mo_none());
+                MachOp setcc = comparison_to_setcc(cmpOp);
                 mfunc_emit(f, setcc, mo_phys(PHYS_AL), mo_none(), mo_none());
-                mfunc_emit(f, MACH_MOVSX,
-                           mo_vreg(pcmp.dstVreg), mo_phys(PHYS_AL), mo_none());
+                mfunc_emit(f, MACH_MOVSX, mo_vreg(pcmp.dstVreg), mo_phys(PHYS_AL), mo_none());
                 pcmp.active = 0;
             }
         }
@@ -304,10 +320,27 @@ static MachFunction *select_function(const IRFunction *irf) {
 
             if (pcmp.active && cond_vreg == pcmp.dstVreg) {
                 /* === CMP+JCC FUSION === */
+                const IRInstr *cmp_instr = pcmp.instr;
+                MachOperand lhs = operand_to_mach(&cmp_instr->src1, &vm, f);
+                MachOperand rhs = operand_to_mach(&cmp_instr->src2, &vm, f);
+                IROp cmpOp = cmp_instr->op;
+
+                if (lhs.kind == MO_IMM && rhs.kind != MO_IMM) {
+                    MachOperand tmp = lhs; lhs = rhs; rhs = tmp;
+                    cmpOp = flip_cmp(cmpOp);
+                }
+                if (lhs.kind == MO_IMM) {
+                    int tmp_vreg = mfunc_new_vreg(f);
+                    mfunc_emit(f, MACH_MOV, mo_vreg(tmp_vreg), lhs, mo_none());
+                    lhs = mo_vreg(tmp_vreg);
+                }
+
+                mfunc_emit(f, MACH_CMP, lhs, rhs, mo_none());
+
                 /* Invertiamo la condizione: if_false salta se falso,
                  * quindi usiamo il Jcc "inverso" (es. LT → JGE per saltare) */
                 MachOp jcc_fused;
-                switch (pcmp.cmpOp) {
+                switch (cmpOp) {
                 case IR_LT: jcc_fused = MACH_JGE; break;
                 case IR_LE: jcc_fused = MACH_JG;  break;
                 case IR_GT: jcc_fused = MACH_JLE; break;
@@ -316,8 +349,6 @@ static MachFunction *select_function(const IRFunction *irf) {
                 case IR_NE: jcc_fused = MACH_JE;  break;
                 default:    jcc_fused = MACH_JMP;  break;
                 }
-                mfunc_emit(f, MACH_CMP,
-                           mo_vreg(pcmp.src1Vreg), mo_vreg(pcmp.src2Vreg), mo_none());
                 mfunc_emit(f, jcc_fused, mo_label(lbl), mo_none(), mo_none());
                 pcmp.active = 0;
             } else {
@@ -390,7 +421,6 @@ static MachFunction *select_function(const IRFunction *irf) {
             } else {
                 int lhs = load_operand(&in->src1, &vm, f);
                 int rhs = load_operand(&in->src2, &vm, f);
-                /* IMUL a 2 operandi: tmp = lhs; tmp *= rhs */
                 int tmp = mfunc_new_vreg(f);
                 mfunc_emit(f, MACH_MOV, mo_vreg(tmp), mo_vreg(lhs), mo_none());
                 mfunc_emit(f, MACH_IMUL, mo_vreg(tmp), mo_vreg(rhs), mo_none());
@@ -409,13 +439,9 @@ static MachFunction *select_function(const IRFunction *irf) {
             int lhs = load_operand(&in->src1, &vm, f);
             int rhs = load_operand(&in->src2, &vm, f);
 
-            /* lhs → rax */
             mfunc_emit(f, MACH_MOV, mo_phys(PHYS_RAX), mo_vreg(lhs), mo_none());
-            /* sign-extend rax → rdx:rax */
             mfunc_emit(f, MACH_CQO, mo_none(), mo_none(), mo_none());
-            /* idiv rhs (divisore non può essere immediato) */
             mfunc_emit(f, MACH_IDIV, mo_vreg(rhs), mo_none(), mo_none());
-            /* risultato: quoziente in rax, resto in rdx */
             MachPhysReg result_reg = (in->op == IR_DIV) ? PHYS_RAX : PHYS_RDX;
             mfunc_emit(f, MACH_MOV, mo_vreg(dst), mo_phys(result_reg), mo_none());
             break;
@@ -450,56 +476,18 @@ static MachFunction *select_function(const IRFunction *irf) {
         /* ----------------------------------------------------------------
          * Comparazioni: IR_LT, IR_LE, IR_GT, IR_GE, IR_EQ, IR_NE
          *
-         * Non emettiamo subito: salviamo in PendingCmp e aspettiamo
-         * l'eventuale IF_FALSE successivo per la fusione CMP+JCC.
-         * Se non arriva, materializziamo all'inizio del prossimo ciclo.
-         *
-         * CMP x86: solo rhs può essere immediato (cmpq $imm, %reg ✓).
-         * Se src1 è costante e src2 è vreg, scambiamo e invertiamo op.
+         * MODIFICA: non emettiamo subito; salviamo l'istruzione IR originale
+         * in PendingCmp e aspettiamo l'eventuale IF_FALSE successivo per la
+         * fusione CMP+JCC. Se non arriva, materializziamo all'inizio del
+         * prossimo ciclo usando direttamente operand_to_mach.
          * ---------------------------------------------------------------- */
         case IR_LT: case IR_LE: case IR_GT: case IR_GE:
         case IR_EQ: case IR_NE: {
-            int  dst    = operand_to_vreg(&in->dst, &vm, f);
-            IROp cmpOp  = in->op;
-
-            MachOperand lhs_mo = operand_to_mach(&in->src1, &vm, f);
-            MachOperand rhs_mo = operand_to_mach(&in->src2, &vm, f);
-
-            /* CMP non accetta immediato come primo operando (lhs).
-             * Se lhs è immediato e rhs è vreg, scambia + inverti condizione. */
-            if (lhs_mo.kind == MO_IMM && rhs_mo.kind != MO_IMM) {
-                MachOperand tmp_mo = lhs_mo; lhs_mo = rhs_mo; rhs_mo = tmp_mo;
-                cmpOp = flip_cmp(cmpOp);
-            }
-
-            /* Se lhs è ancora un immediato (entrambi costanti), materializza
-             * lhs in un vreg (caso molto raro post-CP, ma corretto). */
-            int lhs_vreg;
-            if (lhs_mo.kind == MO_IMM) {
-                lhs_vreg = mfunc_new_vreg(f);
-                mfunc_emit(f, MACH_MOV, mo_vreg(lhs_vreg), lhs_mo, mo_none());
-                lhs_mo = mo_vreg(lhs_vreg);
-            }
-
-            /* Ricava l'ID vreg del lhs (già un vreg dopo la normalizzazione) */
-            int lhs_id = lhs_mo.vregId;
-
-            /* Salva operandi come vreg per il PendingCmp.
-             * rhs_mo può essere MO_IMM o MO_VREG: lo salviamo come campo
-             * separato nel PendingCmp esteso. */
-            pcmp.active   = 1;
-            pcmp.cmpOp    = cmpOp;
-            pcmp.src1Vreg = lhs_id;
-            /* Per rhs immediato: materializza ora in vreg temporaneo
-             * (CMP con immediato viene emesso direttamente nell'emissione). */
-            if (rhs_mo.kind == MO_IMM) {
-                int rhs_tmp = mfunc_new_vreg(f);
-                mfunc_emit(f, MACH_MOV, mo_vreg(rhs_tmp), rhs_mo, mo_none());
-                pcmp.src2Vreg = rhs_tmp;
-            } else {
-                pcmp.src2Vreg = rhs_mo.vregId;
-            }
-            pcmp.dstVreg  = dst;
+            int dst = operand_to_vreg(&in->dst, &vm, f);
+            pcmp.active  = 1;
+            pcmp.instr   = in;          /* salva l'istruzione IR originale */
+            pcmp.dstVreg = dst;
+            /* Nessuna istruzione macchina emessa ora */
             break;
         }
 
@@ -511,7 +499,6 @@ static MachFunction *select_function(const IRFunction *irf) {
             int dst     = operand_to_vreg(&in->dst, &vm, f);
             int base    = operand_to_vreg(&in->src1, &vm, f);
             int idx     = load_operand(&in->src2, &vm, f);
-            /* Emetti un LOAD con indirizzamento base+index*8 */
             mfunc_emit(f, MACH_LOAD, mo_vreg(dst),
                        mo_mem(base, idx, 8, 0), mo_none());
             break;
@@ -532,14 +519,8 @@ static MachFunction *select_function(const IRFunction *irf) {
 
         /* ----------------------------------------------------------------
          * Chiamate di funzione: PARAM + CALL
-         *
-         * IR_PARAM: accumula argomenti nel buffer param_vregs.
-         * IR_CALL: emette MOV verso registri argomento, CALL, sposta rax.
          * ---------------------------------------------------------------- */
         case IR_PARAM: {
-            /* pushq $imm è istruzione legale in x86-64: evita vreg intermedio
-             * per costanti. Materializziamo comunque in vreg per semplicità
-             * del buffer param_vregs (il regalloc gestirà l'immediato). */
             MachOperand src_mo = operand_to_mach(&in->src1, &vm, f);
             int src;
             if (src_mo.kind == MO_IMM) {
@@ -554,23 +535,18 @@ static MachFunction *select_function(const IRFunction *irf) {
         }
 
         case IR_CALL: {
-            /* Argomenti: primi 6 nei registri, resto sullo stack (push inverso) */
             int n = param_count;
 
-            /* Push argomenti extra (oltre i 6) in ordine inverso */
             for (int k = n - 1; k >= NUM_ARG_REGS; k--)
                 mfunc_emit(f, MACH_PUSH, mo_vreg(param_vregs[k]), mo_none(), mo_none());
 
-            /* Carica i primi N≤6 argomenti nei registri */
             int reg_args = (n < NUM_ARG_REGS) ? n : NUM_ARG_REGS;
             for (int k = 0; k < reg_args; k++)
                 mfunc_emit(f, MACH_MOV,
                            mo_phys(ARG_REGS[k]), mo_vreg(param_vregs[k]), mo_none());
 
-            /* CALL */
             mfunc_emit(f, MACH_CALL, mo_func(in->src1.data.funcName), mo_none(), mo_none());
 
-            /* Pulisci stack se ci sono argomenti extra */
             int extra = n - NUM_ARG_REGS;
             if (extra > 0) {
                 int adj = mfunc_new_vreg(f);
@@ -578,11 +554,10 @@ static MachFunction *select_function(const IRFunction *irf) {
                 mfunc_emit(f, MACH_ADD, mo_phys(PHYS_RSP), mo_vreg(adj), mo_none());
             }
 
-            /* Risultato: rax → dst vreg */
             int dst = operand_to_vreg(&in->dst, &vm, f);
             mfunc_emit(f, MACH_MOV, mo_vreg(dst), mo_phys(PHYS_RAX), mo_none());
 
-            param_count = 0;   /* reset buffer argomenti */
+            param_count = 0;
             break;
         }
 
@@ -599,11 +574,23 @@ static MachFunction *select_function(const IRFunction *irf) {
         } /* switch */
     } /* for istruzioni */
 
-    /* Se rimane una comparazione pendente non fusa (funzione che finisce
-     * con una comparazione senza IF_FALSE dopo), materializzala */
+    /* Se rimane una comparazione pendente non fusa, materializzala */
     if (pcmp.active) {
-        mfunc_emit(f, MACH_CMP, mo_vreg(pcmp.src1Vreg), mo_vreg(pcmp.src2Vreg), mo_none());
-        MachOp setcc = comparison_to_setcc(pcmp.cmpOp);
+        const IRInstr *cmp_instr = pcmp.instr;
+        MachOperand lhs = operand_to_mach(&cmp_instr->src1, &vm, f);
+        MachOperand rhs = operand_to_mach(&cmp_instr->src2, &vm, f);
+        IROp cmpOp = cmp_instr->op;
+        if (lhs.kind == MO_IMM && rhs.kind != MO_IMM) {
+            MachOperand tmp = lhs; lhs = rhs; rhs = tmp;
+            cmpOp = flip_cmp(cmpOp);
+        }
+        if (lhs.kind == MO_IMM) {
+            int tmp_vreg = mfunc_new_vreg(f);
+            mfunc_emit(f, MACH_MOV, mo_vreg(tmp_vreg), lhs, mo_none());
+            lhs = mo_vreg(tmp_vreg);
+        }
+        mfunc_emit(f, MACH_CMP, lhs, rhs, mo_none());
+        MachOp setcc = comparison_to_setcc(cmpOp);
         mfunc_emit(f, setcc, mo_phys(PHYS_AL), mo_none(), mo_none());
         mfunc_emit(f, MACH_MOVSX, mo_vreg(pcmp.dstVreg), mo_phys(PHYS_AL), mo_none());
     }
@@ -686,7 +673,7 @@ void isel_emit_asm(const MachProgram *mp, FILE *out) {
                 continue;
 
             case MACH_FUNC_END:
-                continue;   /* gestito da RET */
+                continue;
 
             case MACH_RET:
                 fprintf(out, "\tleave\n");
@@ -733,7 +720,6 @@ void isel_emit_asm(const MachProgram *mp, FILE *out) {
                 fprintf(out, "\n");
                 continue;
 
-            /* Istruzioni setcc: operano su %al */
             case MACH_SETE:  fprintf(out, "\tsete\t%%al\n");  continue;
             case MACH_SETNE: fprintf(out, "\tsetne\t%%al\n"); continue;
             case MACH_SETL:  fprintf(out, "\tsetl\t%%al\n");  continue;
@@ -741,7 +727,6 @@ void isel_emit_asm(const MachProgram *mp, FILE *out) {
             case MACH_SETG:  fprintf(out, "\tsetg\t%%al\n");  continue;
             case MACH_SETGE: fprintf(out, "\tsetge\t%%al\n"); continue;
 
-            /* Salti */
             case MACH_JMP:
                 fprintf(out, "\tjmp\t.L%d\n", in->dst.labelId); continue;
             case MACH_JE:
@@ -757,11 +742,9 @@ void isel_emit_asm(const MachProgram *mp, FILE *out) {
             case MACH_JGE:
                 fprintf(out, "\tjge\t.L%d\n", in->dst.labelId); continue;
 
-            /* Istruzioni a 2 operandi: mnemonico src, dst */
             default: break;
             }
 
-            /* Istruzioni generali con mnemonic */
             const char *mnem = NULL;
             switch (in->op) {
             case MACH_MOV:   mnem = "movq";  break;
@@ -779,26 +762,19 @@ void isel_emit_asm(const MachProgram *mp, FILE *out) {
             }
 
             fprintf(out, "\t%s\t", mnem);
-
-            /* AT&T: src prima di dst per istruzioni binarie */
             if (in->op == MACH_LOAD) {
-                /* LOAD: src è l'indirizzo MEM, dst è il vreg */
                 emit_operand(&in->src1, out);
                 fprintf(out, ", ");
                 emit_operand(&in->dst, out);
             } else if (in->op == MACH_STORE) {
-                /* STORE: src è il vreg, dst è l'indirizzo MEM */
                 emit_operand(&in->src1, out);
                 fprintf(out, ", ");
                 emit_operand(&in->dst, out);
             } else if (in->src2.kind != MO_NONE) {
-                /* binaria: src2 src1 dst?  No: per ADD/SUB/ecc. in AT&T:
-                 * addq src, dst  (dst += src) → src1=rhs, dst=dst */
                 emit_operand(&in->src1, out);
                 fprintf(out, ", ");
                 emit_operand(&in->dst, out);
             } else if (in->src1.kind != MO_NONE) {
-                /* unaria o mov: src, dst */
                 emit_operand(&in->src1, out);
                 if (in->dst.kind != MO_NONE) {
                     fprintf(out, ", ");
