@@ -58,6 +58,43 @@ static int operandVarId(VarMap *m, Operand op) {
     return -1;
 }
 
+/* ---- Confronto semantico tra Operand ---------------------------------- */
+/*
+ * Bug fix: NON usare memcmp su Operand.
+ *
+ * Operand contiene una union i cui membri hanno dimensioni diverse: int (4
+ * byte) e const char* / float (8 byte su 64bit / 4 byte). Il compilatore
+ * inserisce byte di padding tra i campi della struct anonima interna
+ * (varLevel, varOffset, sourceName) e tra i membri della union per
+ * soddisfare i requisiti di allineamento. Tali byte hanno valori
+ * arbitrari/indeterminati quando la struct viene costruita campo per campo
+ * (es. mkConstInt scrive solo intVal, lasciando il resto della union
+ * non inizializzato).
+ *
+ * Conseguenza pratica: due Operand semanticamente identici (stesso kind,
+ * stesso valore) possono differire nei byte di padding -> memcmp restituisce
+ * "diversi" -> modified=1 spurio -> il ciclo a punto fisso CP+DCE esegue
+ * iterazioni inutili senza produrre alcuna modifica reale al codice.
+ *
+ * Soluzione: confronto campo per campo solo sui membri significativi per il
+ * kind specifico, ignorando completamente i byte di padding.
+ */
+static int operand_equal(const Operand *a, const Operand *b) {
+    if (a->kind != b->kind) return 0;
+    switch (a->kind) {
+    case OPND_NONE:        return 1;
+    case OPND_TEMP:        return a->data.tempId   == b->data.tempId;
+    case OPND_CONST_INT:   return a->data.intVal   == b->data.intVal;
+    case OPND_CONST_FLOAT: return a->data.floatVal == b->data.floatVal;
+    case OPND_LABEL:       return a->data.labelId  == b->data.labelId;
+    case OPND_FUNC:        return a->data.funcName == b->data.funcName;
+    case OPND_VAR:
+        return a->data.varLevel  == b->data.varLevel &&
+               a->data.varOffset == b->data.varOffset;
+    default: return 0;
+    }
+}
+
 /* ---- Operazioni sul reticolo ------------------------------------------ */
 
 static LatVal lat_unknown(void) {
@@ -348,50 +385,54 @@ int cp_optimize(IRFunction *f) {
                         if (s1 >= 0) f->blocks[s1].predCount--;
                     }
                     modified = 1;
-                } else if (cond.kind != in->src1.kind ||
-                           (cond.kind == OPND_VAR  && (cond.data.varLevel != in->src1.data.varLevel ||
-                                                        cond.data.varOffset != in->src1.data.varOffset)) ||
-                           (cond.kind == OPND_TEMP && cond.data.tempId != in->src1.data.tempId)) {
+                } else if (!operand_equal(&cond, &in->src1)) {
                     in->src1 = cond; modified = 1;
                 }
                 transferInstr(in, &live, &vm);
                 continue;
             }
 
-            /* Sostituisci src1 e src2 con costanti note */
+            /* Sostituisci src1 e src2 con costanti note.
+             * Confronto con operand_equal (non memcmp) per evitare falsi
+             * positivi causati da byte di padding non inizializzati. */
             Operand ns1 = tryFold(in->src1, &live, &vm);
             Operand ns2 = tryFold(in->src2, &live, &vm);
-            if (ns1.kind != in->src1.kind || memcmp(&ns1, &in->src1, sizeof(Operand))) {
-                in->src1 = ns1; modified = 1;
-            }
-            if (ns2.kind != in->src2.kind || memcmp(&ns2, &in->src2, sizeof(Operand))) {
-                in->src2 = ns2; modified = 1;
-            }
+            if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
+            if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
 
             /* ---- FOLDING BINARIO ---- */
-            if (in->op != IR_IF_FALSE && in->op != IR_LABEL && in->op != IR_GOTO && in->op != IR_RETURN &&
-                (in->op == IR_ADD || in->op == IR_SUB || in->op == IR_MUL || in->op == IR_DIV || in->op == IR_MOD ||
-                 in->op == IR_LT || in->op == IR_LE || in->op == IR_GT || in->op == IR_GE || in->op == IR_EQ || in->op == IR_NE)) {
-                
+            if (in->op != IR_IF_FALSE && in->op != IR_LABEL &&
+                in->op != IR_GOTO     && in->op != IR_RETURN &&
+                (in->op == IR_ADD || in->op == IR_SUB || in->op == IR_MUL ||
+                 in->op == IR_DIV || in->op == IR_MOD ||
+                 in->op == IR_LT  || in->op == IR_LE  || in->op == IR_GT  ||
+                 in->op == IR_GE  || in->op == IR_EQ  || in->op == IR_NE)) {
+
                 if ((ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
                     (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
-                    
-                    int floatOp = (ns1.kind == OPND_CONST_FLOAT || ns2.kind == OPND_CONST_FLOAT);
+
+                    int floatOp = (ns1.kind == OPND_CONST_FLOAT ||
+                                   ns2.kind == OPND_CONST_FLOAT);
                     int ok = 1;
                     int resultInt = 0;
                     float resultFloat = 0.0f;
-                    
+
                     if (floatOp) {
-                        float a = (ns1.kind == OPND_CONST_INT) ? (float)ns1.data.intVal : ns1.data.floatVal;
-                        float b = (ns2.kind == OPND_CONST_INT) ? (float)ns2.data.intVal : ns2.data.floatVal;
+                        float a = (ns1.kind == OPND_CONST_INT)
+                                  ? (float)ns1.data.intVal : ns1.data.floatVal;
+                        float b = (ns2.kind == OPND_CONST_INT)
+                                  ? (float)ns2.data.intVal : ns2.data.floatVal;
                         switch (in->op) {
                             case IR_ADD: resultFloat = a + b; break;
                             case IR_SUB: resultFloat = a - b; break;
                             case IR_MUL: resultFloat = a * b; break;
-                            case IR_DIV: if (b == 0.0f) ok = 0; else resultFloat = a / b; break;
-                            case IR_LT:  resultFloat = (float)(a < b); break;
+                            case IR_DIV:
+                                if (b == 0.0f) ok = 0;
+                                else resultFloat = a / b;
+                                break;
+                            case IR_LT:  resultFloat = (float)(a <  b); break;
                             case IR_LE:  resultFloat = (float)(a <= b); break;
-                            case IR_GT:  resultFloat = (float)(a > b); break;
+                            case IR_GT:  resultFloat = (float)(a >  b); break;
                             case IR_GE:  resultFloat = (float)(a >= b); break;
                             case IR_EQ:  resultFloat = (float)(a == b); break;
                             case IR_NE:  resultFloat = (float)(a != b); break;
@@ -404,23 +445,30 @@ int cp_optimize(IRFunction *f) {
                             case IR_ADD: resultInt = a + b; break;
                             case IR_SUB: resultInt = a - b; break;
                             case IR_MUL: resultInt = a * b; break;
-                            case IR_DIV: if (b == 0) ok = 0; else resultInt = a / b; break;
-                            case IR_MOD: if (b == 0) ok = 0; else resultInt = a % b; break;
-                            case IR_LT:  resultInt = (a < b); break;
+                            case IR_DIV:
+                                if (b == 0) ok = 0;
+                                else resultInt = a / b;
+                                break;
+                            case IR_MOD:
+                                if (b == 0) ok = 0;
+                                else resultInt = a % b;
+                                break;
+                            case IR_LT:  resultInt = (a <  b); break;
                             case IR_LE:  resultInt = (a <= b); break;
-                            case IR_GT:  resultInt = (a > b); break;
+                            case IR_GT:  resultInt = (a >  b); break;
                             case IR_GE:  resultInt = (a >= b); break;
                             case IR_EQ:  resultInt = (a == b); break;
                             case IR_NE:  resultInt = (a != b); break;
                             default: ok = 0; break;
                         }
                     }
-                    
+
                     if (ok) {
-                        IROp origOp = in->op;   /* salva l'operatore originale */
+                        IROp origOp = in->op;
                         in->op = IR_ASSIGN;
-                        if (floatOp && (origOp == IR_LT || origOp == IR_LE || origOp == IR_GT ||
-                                        origOp == IR_GE || origOp == IR_EQ || origOp == IR_NE)) {
+                        if (floatOp && (origOp == IR_LT || origOp == IR_LE ||
+                                        origOp == IR_GT || origOp == IR_GE ||
+                                        origOp == IR_EQ || origOp == IR_NE)) {
                             in->src1.kind = OPND_CONST_INT;
                             in->src1.data.intVal = (int)resultFloat;
                         } else if (floatOp) {
@@ -451,8 +499,8 @@ int cp_optimize(IRFunction *f) {
             if (!eliminate[i]) { newInstrs[newCount] = f->instrs[i]; map[i] = newCount++; }
         }
         free(f->instrs);
-        f->instrs  = newInstrs;
-        f->count   = newCount;
+        f->instrs   = newInstrs;
+        f->count    = newCount;
         f->capacity = newCount;
 
         for (int b = 0; b < nBlocks; b++) {

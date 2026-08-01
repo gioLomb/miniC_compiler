@@ -68,36 +68,66 @@ static int srcIsInvariant(IRFunction *f, Loop *L, Operand src,
     return 0;
 }
 
+/*
+ * Struttura per la lista "usato da" di una variabile nella worklist.
+ *
+ * Bug fix: il vecchio codice usava arena_alloc + memcpy manuale per
+ * simulare un realloc, abbandonando ogni volta il blocco precedente
+ * nell'arena. Su loop con molte variabili e worklist grandi questo
+ * causava uno spreco di memoria proporzionale al numero di raddoppi
+ * effettuati, poiche' i blocchi arena abbandonati non vengono mai
+ * recuperati fino alla distruzione dell'intera arena.
+ *
+ * Soluzione: usare malloc/realloc/free standard per usedBy, che
+ * supportano il realloc vero e proprio senza sprechi. L'array viene
+ * liberato esplicitamente con freeUsedBy() al termine di findInvariants.
+ */
+typedef struct {
+    int *data;
+    int  len;
+    int  cap;
+} UsedByList;
+
+static void usedByAppend(UsedByList *list, int instrIdx) {
+    if (list->len == list->cap) {
+        list->cap = list->cap ? list->cap * 2 : 4;
+        list->data = realloc(list->data, (size_t)list->cap * sizeof(int));
+    }
+    list->data[list->len++] = instrIdx;
+}
+
+static void freeUsedBy(UsedByList *usedBy, int numVars) {
+    for (int i = 0; i < numVars; i++)
+        free(usedBy[i].data);
+}
+
 static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
                             int numVars, const int *defCount,
                             char *invariant, Arena *arena) {
     int n = f->count;
-    int *worklist  = arena_alloc(arena, (size_t)n * sizeof(int));
-    int **usedBy   = arena_alloc(arena, (size_t)numVars * sizeof(int *));
-    int *usedByLen = arena_alloc(arena, (size_t)numVars * sizeof(int));
-    int *usedByCap = arena_alloc(arena, (size_t)numVars * sizeof(int));
-    memset(usedBy,    0, (size_t)numVars * sizeof(int *));
-    memset(usedByLen, 0, (size_t)numVars * sizeof(int));
-    memset(usedByCap, 0, (size_t)numVars * sizeof(int));
 
+    /* usedBy: per ogni variabile, lista degli indici delle istruzioni
+     * del loop che la usano come sorgente. Allocato con malloc/realloc
+     * (non arena) per poter usare realloc vero senza sprechi di memoria. */
+    UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
+
+    /* worklist: indici delle istruzioni candidate, allocata nell'arena
+     * perche' la sua dimensione massima e' nota (f->count) e non cresce. */
+    int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
     int wHead = 0, wTail = 0;
+
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
         for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!isPure(in->op) || !liveness_defines_dst(in->op) ||
                 !liveness_is_var_or_temp(in->dst.kind)) continue;
+
+            /* Registra le dipendenze src -> j per la propagazione */
             Operand srcs[2] = { in->src1, in->src2 };
             for (int s = 0; s < 2; s++) {
                 int id = varmap_operand_id(vm, srcs[s]);
-                if (id < 0) continue;
-                if (usedByLen[id] == usedByCap[id]) {
-                    usedByCap[id] = usedByCap[id] ? usedByCap[id] * 2 : 4;
-                    int *arr = arena_alloc(arena, (size_t)usedByCap[id] * sizeof(int));
-                    if (usedByLen[id]) memcpy(arr, usedBy[id], (size_t)usedByLen[id] * sizeof(int));
-                    usedBy[id] = arr;
-                }
-                usedBy[id][usedByLen[id]++] = j;
+                if (id >= 0) usedByAppend(&usedBy[id], j);
             }
             worklist[wTail++] = j;
         }
@@ -111,11 +141,17 @@ static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
         if (invariant[j]) continue;
         invariant[j] = 1;
         int dstId = varmap_operand_id(vm, in->dst);
-        if (dstId >= 0)
-            for (int k = 0; k < usedByLen[dstId]; k++)
-                if (!invariant[usedBy[dstId][k]])
-                    worklist[wTail++] = usedBy[dstId][k];
+        if (dstId >= 0) {
+            for (int k = 0; k < usedBy[dstId].len; k++) {
+                int dep = usedBy[dstId].data[k];
+                if (!invariant[dep])
+                    worklist[wTail++] = dep;
+            }
+        }
     }
+
+    freeUsedBy(usedBy, numVars);
+    free(usedBy);
 }
 
 /* ---- Safety check e movimento ----------------------------------------- */
@@ -138,7 +174,7 @@ static int instrBlock(IRFunction *f, int j) {
  * Inserimento allineato a SR: le istruzioni hoistate vengono posizionate
  * nell'array lineare IMMEDIATAMENTE PRIMA dell'header del loop
  * (insertAt = f->blocks[header].start), non in posizione 0.
- * In questo modo l'ordine fisico è: [pre-loop] [invarianti] [header...],
+ * In questo modo l'ordine fisico e': [pre-loop] [invarianti] [header...],
  * coerente con l'ordine di esecuzione logico e con quanto fa SR.
  */
 static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
@@ -167,10 +203,10 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     /*
      * Punto di inserimento: primo instruction dell'header del loop.
-     * L'array risultante sarà:
-     *   Fase 1: [0, insertAt)          — codice pre-loop invariato
+     * L'array risultante sara':
+     *   Fase 1: [0, insertAt)              — codice pre-loop invariato
      *   Fase 2: [insertAt, insertAt+moved) — invarianti hoistati (pre-header)
-     *   Fase 3: [insertAt+moved, ...)  — header, body, post-loop (istruzioni non mosse)
+     *   Fase 3: [insertAt+moved, ...)      — header, body, post-loop
      */
     int insertAt = f->blocks[header].start;
 
@@ -180,16 +216,13 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     int *map = calloc((size_t)nInstrs, sizeof(int));
     for (int j = 0; j < nInstrs; j++) map[j] = -1;
 
-    /* Fase 1: istruzioni prima dell'header (non mosse, mappate 1:1) */
+    /* Fase 1: istruzioni prima dell'header */
     for (int j = 0; j < insertAt; j++) {
-        /* Per costruzione, doMove[j] è sempre falso qui:
-         * le istruzioni invarianti sono tutte nel body del loop,
-         * il cui start >= insertAt. */
         map[j] = newCount;
         newInstrs[newCount++] = f->instrs[j];
     }
 
-    /* Fase 2: istruzioni hoistate → contenuto del pre-header */
+    /* Fase 2: istruzioni hoistate -> contenuto del pre-header */
     int phMovedStart = newCount;
     for (int j = 0; j < nInstrs; j++) {
         if (doMove[j]) newInstrs[newCount++] = f->instrs[j];
