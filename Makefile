@@ -50,6 +50,7 @@ LOOP_SRC        := loop.c
 LICM_SRC        := licm.c
 SR_SRC          := sr.c
 CP_SRC          := cp.c
+SCHED_SRC       := sched.c
 ISEL_SRC        := instr_selector.c
 
 # ---- Sorgenti del frontend completo (riusato in piu' binari) ----
@@ -60,7 +61,7 @@ FRONTEND_SRCS := \
 # ---- Sorgenti backend IR + ottimizzatori (riusato in piu' binari) ----
 BACKEND_SRCS := \
     $(DCE_SRC) $(LIVENESS_SRC) $(LOOP_SRC) $(LICM_SRC) \
-    $(SR_SRC) $(CP_SRC) $(IR_SRC) $(SVN_SRC)
+    $(SR_SRC) $(CP_SRC) $(SCHED_SRC) $(IR_SRC) $(SVN_SRC)
 
 # ---- Composizione dei binari ----
 MINICC_SRCS := \

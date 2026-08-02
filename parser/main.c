@@ -11,22 +11,27 @@
 #include "../ir.h"
 #include "../svn.h"
 #include "../instr_selector.h"
+#include "../sched.h"
 
 static void usage(const char *prog) {
-    fprintf(stderr, "Uso: %s <file_sorgente.c> [-S] [-o <output>]\n", prog);
+    fprintf(stderr, "Uso: %s <file_sorgente.c> [-S] [-d] [-o <output>]\n", prog);
     fprintf(stderr, "  -S          emette assembly x86-64 AT&T invece dell'IR\n");
+    fprintf(stderr, "  -d          debug: stampa asm prima e dopo lo scheduling\n");
     fprintf(stderr, "  -o <file>   scrive l'output su file (default: stdout)\n");
 }
 
 int main(int argc, char **argv) {
-    const char *src_path  = NULL;
-    const char *out_path  = NULL;
-    int         emit_asm  = 0;
+    const char *src_path = NULL;
+    const char *out_path = NULL;
+    int emit_asm  = 0;
+    int debug     = 0;
 
-    /* Parsing argomenti: semplice, nessuna libreria esterna */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-S") == 0) {
             emit_asm = 1;
+        } else if (strcmp(argv[i], "-d") == 0) {
+            emit_asm = 1;   /* -d implica -S */
+            debug    = 1;
         } else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Errore: -o richiede un argomento\n");
@@ -68,9 +73,9 @@ int main(int argc, char **argv) {
         printf("\nParsing completato con successo.\n");
 
     /* ---- Analisi semantica ---- */
-    Scope *global     = scope_create(NULL);
-    int pass1Errors   = symtab_populate_globals(root, global);
-    int semErrors     = semantic_check(root, global);
+    Scope *global   = scope_create(NULL);
+    int pass1Errors = symtab_populate_globals(root, global);
+    int semErrors   = semantic_check(root, global);
 
     if (!emit_asm) {
         printf("\n=== ANALISI SEMANTICA ===\n");
@@ -98,7 +103,6 @@ int main(int argc, char **argv) {
 
     /* ---- Output: IR oppure assembly ---- */
     if (emit_asm) {
-        /* Apri file di output (stdout se non specificato) */
         FILE *out = stdout;
         if (out_path) {
             out = fopen(out_path, "w");
@@ -112,9 +116,25 @@ int main(int argc, char **argv) {
         }
 
         MachProgram *mp = isel_select(ir);
-        isel_emit_asm(mp, out);
-        mach_free(mp);
 
+        if (debug) {
+            fprintf(out, "# ======================================================\n");
+            fprintf(out, "# ASM DOPO INSTRUCTION SELECTOR (pre-scheduling)\n");
+            fprintf(out, "# ======================================================\n");
+            isel_emit_asm(mp, out);
+            fprintf(out, "\n");
+        }
+
+        sched_schedule(mp);
+
+        if (debug) {
+            fprintf(out, "# ======================================================\n");
+            fprintf(out, "# ASM DOPO INSTRUCTION SCHEDULER (post-scheduling)\n");
+            fprintf(out, "# ======================================================\n");
+        }
+        isel_emit_asm(mp, out);
+
+        mach_free(mp);
         if (out_path) fclose(out);
 
     } else {
@@ -125,6 +145,5 @@ int main(int argc, char **argv) {
     ir_free(ir);
     symtab_destroy_tree(global);
     freeAST(root);
-
     return 0;
 }

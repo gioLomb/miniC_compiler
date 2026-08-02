@@ -9,6 +9,7 @@
 #include "sr.h"
 #include "licm.h"
 #include "sr.h"
+#include "sched.h"
 
 /* ---- Chiavi a 16 bit per operatori (evita strcmp) ---- */
 #define KEY_AND 0x2626   /* '&' '&' */
@@ -436,6 +437,7 @@ static IRFunction *irFunction(ASTNode *decl) {
         } while (changed);
     }
 
+    //sched_optimize(f);
     return f;
 }
 
