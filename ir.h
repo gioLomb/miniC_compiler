@@ -18,7 +18,6 @@ typedef enum {
     IR_GOTO,
     IR_IF_FALSE,
     IR_LABEL,
-    //IR_NOP    /* istruzione morta, rimossa da dce_optimize() nella fase SWEEP */
 } IROp;
 
 typedef enum {
@@ -34,25 +33,32 @@ typedef enum {
 typedef struct {
     OperandKind kind;
     union {
-        int tempId;                 /* kind == OPND_TEMP */
+        int tempId;
         struct {
-            int varLevel;           /* kind == OPND_VAR */
+            int varLevel;
             int varOffset;
-            const char *sourceName;  /* non-owning */
+            const char *sourceName;
         };
-        int intVal;                 /* kind == OPND_CONST_INT */
-        float floatVal;             /* kind == OPND_CONST_FLOAT */
-        int labelId;                /* kind == OPND_LABEL */
-        const char *funcName;       /* kind == OPND_FUNC */
+        int intVal;
+        float floatVal;
+        int labelId;
+        const char *funcName;
     } data;
 } Operand;
 
 typedef struct {
-    IROp op;
+    IROp    op;
     Operand dst, src1, src2;
+    int     loopDepth;   /* annidamento loop statico, stampigliato da ir.c
+                            durante irStmt(ND_WHILE). Sopravvive intatto
+                            attraverso SVN/DCE/CP (copiano la struct intera).
+                            LICM/SR lo aggiornano esplicitamente per le
+                            istruzioni che spostano o inseriscono.
+                            Usato da regalloc come peso (10^loopDepth) nel
+                            costo di spill: variabile calda in loop interno
+                            costa piu' spillarla di una fredda fuori. */
 } IRInstr;
 
-/* ---- Blocco di base (CFG) ---- */
 typedef struct {
     int start, end;
     int succ[2];
@@ -60,27 +66,27 @@ typedef struct {
 } IRBlock;
 
 typedef struct {
-    char *name;
+    char    *name;
     IRInstr *instrs;
-    int count, capacity;
+    int      count, capacity;
 
     IRBlock *blocks;
-    int blockCount, blockCap;
-    int curBlockStart;
+    int      blockCount, blockCap;
+    int      curBlockStart;
 
-    int labelBase;
+    int  labelBase;
     int *labelToBlock;
-    int labelToBlockCap;
+    int  labelToBlockCap;
 } IRFunction;
 
 typedef struct {
     IRFunction **functions;
-    int count, capacity;
+    int          count, capacity;
 } IRProgram;
 
 IRProgram *ir_generate(ASTNode *program);
-Operand noOperand(void);
-void ir_print(const IRProgram *prog);
-void ir_free(IRProgram *prog);
+Operand    noOperand(void);
+void       ir_print(const IRProgram *prog);
+void       ir_free(IRProgram *prog);
 
 #endif
