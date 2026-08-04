@@ -12,7 +12,7 @@
 #include "../svn.h"
 #include "../instr_selector.h"
 #include "../sched.h"
-#include "../regalloc.h"   /* NUOVO */
+#include "../regalloc.h"  
 
 static void usage(const char *prog) {
     fprintf(stderr,
