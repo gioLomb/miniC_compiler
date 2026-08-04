@@ -2,19 +2,10 @@
 #include <string.h>
 #include <stdint.h>
 #include "regalloc.h"
-#include "bitset.h"
+#include "liveness.h"
 #include "interference.h"
 #include "regalloc_utils.h"
-
-/* =========================================================================
- * Liveness computation (local)
- * ========================================================================= */
-
-typedef struct {
-    RSet *liveAfter;   /* liveAfter[i] = vivi dopo l'istruzione i */
-    int   N;
-    int   words;
-} MLiveness;
+#include "arena.h"
 
 /* =========================================================================
  * CFG construction (reuses RBlock from regalloc_utils.h)
@@ -85,102 +76,55 @@ static RBlock *build_cfg(const MachFunction *f, int *outCount) {
 }
 
 /* =========================================================================
- * Liveness computation
+ * Liveness: adapter verso il motore generico di liveness.h.
+ * Unica parte specifica al codice macchina = estrazione uses/defs.
+ * Dataflow vero e proprio (Use/Def, punto fisso, liveAfter) è lo stesso
+ * usato da DCE/LICM/SR, non più duplicato.
  * ========================================================================= */
 
-static MLiveness compute_liveness(const MachFunction *f, RBlock *blocks,
-                                   int nBlocks, int nextVreg) {
-    int N = nextVreg + PHYS_ALLOCATABLE;
-    int words = (N + 63) / 64;
-    MLiveness liv;
-    liv.N = N;
-    liv.words = words;
+typedef struct {
+    const MachFunction *f;
+    int                  nextVreg;
+} MachLivenessCtx;
 
-    RSet *use = malloc((size_t)nBlocks * sizeof(RSet));
-    RSet *def = malloc((size_t)nBlocks * sizeof(RSet));
-    RSet *liveIn  = malloc((size_t)nBlocks * sizeof(RSet));
-    RSet *liveOut = malloc((size_t)nBlocks * sizeof(RSet));
-    for (int b = 0; b < nBlocks; b++) {
-        use[b] = rset_new(N);
-        def[b] = rset_new(N);
-        liveIn[b] = rset_new(N);
-        liveOut[b] = rset_new(N);
-    }
+static void machExtract(void *ctxP, int instrIdx,
+                         int uses[LIVENESS_MAX_IDS], int *nUses,
+                         int defs[LIVENESS_MAX_IDS], int *nDefs) {
+    MachLivenessCtx *ctx = ctxP;
+    const MachInstr *in = &ctx->f->instrs[instrIdx];
+    int tmp[LIVENESS_MAX_IDS], n;
+    *nUses = 0; *nDefs = 0;
 
-    int tmpArr[16];
-    for (int b = 0; b < nBlocks; b++) {
-        for (int i = blocks[b].start; i < blocks[b].end; i++) {
-            const MachInstr *in = &f->instrs[i];
-            int n;
-            instr_uses(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++)
-                if (!rset_test(&def[b], tmpArr[k]))
-                    rset_set(&use[b], tmpArr[k]);
-            instr_implicit_uses(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++)
-                if (!rset_test(&def[b], tmpArr[k]))
-                    rset_set(&use[b], tmpArr[k]);
-            instr_defs(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++) rset_set(&def[b], tmpArr[k]);
-            instr_implicit_defs(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++) rset_set(&def[b], tmpArr[k]);
-        }
-    }
+    instr_uses(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
+    instr_implicit_uses(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
 
-    RSet tmp = rset_new(N);
-    int changed = 1;
-    while (changed) {
-        changed = 0;
-        for (int b = nBlocks - 1; b >= 0; b--) {
-            rset_clear(&liveOut[b]);
-            for (int k = 0; k < 2; k++)
-                if (blocks[b].succ[k] >= 0)
-                    rset_union(&liveOut[b], &liveIn[blocks[b].succ[k]]);
-            rset_diff(&tmp, &liveOut[b], &def[b]);
-            rset_union(&tmp, &use[b]);
-            if (!rset_equal(&liveIn[b], &tmp)) {
-                rset_copy(&liveIn[b], &tmp);
-                changed = 1;
-            }
-        }
-    }
-    rset_free(&tmp);
-
-    liv.liveAfter = malloc((size_t)f->count * sizeof(RSet));
-    for (int i = 0; i < f->count; i++)
-        liv.liveAfter[i] = rset_new(N);
-
-    for (int b = 0; b < nBlocks; b++) {
-        RSet live = rset_new(N);
-        rset_copy(&live, &liveOut[b]);
-        for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
-            rset_copy(&liv.liveAfter[i], &live);
-            const MachInstr *in = &f->instrs[i];
-            int n;
-            instr_defs(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++) rset_clr(&live, tmpArr[k]);
-            instr_implicit_defs(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++) rset_clr(&live, tmpArr[k]);
-            instr_uses(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++) rset_set(&live, tmpArr[k]);
-            instr_implicit_uses(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++) rset_set(&live, tmpArr[k]);
-        }
-        rset_free(&live);
-    }
-
-    for (int b = 0; b < nBlocks; b++) {
-        rset_free(&use[b]); rset_free(&def[b]);
-        rset_free(&liveIn[b]); rset_free(&liveOut[b]);
-    }
-    free(use); free(def); free(liveIn); free(liveOut);
-    return liv;
+    instr_defs(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
+    instr_implicit_defs(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
 }
 
-static void liveness_free(MLiveness *liv, int count) {
-    for (int i = 0; i < count; i++)
-        rset_free(&liv->liveAfter[i]);
-    free(liv->liveAfter);
+/* liveAfter[i] = vivi dopo istruzione i. N = nextVreg + PHYS_ALLOCATABLE.
+   Tutto in 'arena': nessuna free individuale, basta arena_destroy(). */
+static LiveSet *compute_mach_liveness(const MachFunction *f, const RBlock *blocks,
+                                       int nBlocks, Arena *arena) {
+    LivenessBlock *lb = arena_alloc(arena, (size_t)nBlocks * sizeof(LivenessBlock));
+    for (int b = 0; b < nBlocks; b++) {
+        lb[b].start   = blocks[b].start;
+        lb[b].end     = blocks[b].end;
+        lb[b].succ[0] = blocks[b].succ[0];
+        lb[b].succ[1] = blocks[b].succ[1];
+    }
+
+    MachLivenessCtx ctx = { f, f->nextVreg };
+    int N = f->nextVreg + PHYS_ALLOCATABLE;
+
+    LivenessBlockSets bsets = liveness_compute_core(nBlocks, lb, N, NULL,
+                                                      machExtract, &ctx, arena);
+    return liveness_compute_per_instr(nBlocks, lb, f->count, N, bsets.LiveOut,
+                                       machExtract, &ctx, arena);
 }
 
 /* =========================================================================
@@ -288,7 +232,7 @@ static int simplify(IGraph *g, int nextVreg, int **outStack) {
 
 static int select_colors(IGraph *g, int nextVreg, int *stack,
                           int stackLen, int *spilled) {
-    (void)nextVreg; /* unused but needed for signature */
+    (void)nextVreg;
     int nSpilled = 0;
     for (int si = stackLen - 1; si >= 0; si--) {
         int v = stack[si];
@@ -563,9 +507,11 @@ static void regalloc_function(MachFunction *f) {
     for (;;) {
         int nBlocks;
         RBlock *blocks = build_cfg(f, &nBlocks);
-        MLiveness liv = compute_liveness(f, blocks, nBlocks, f->nextVreg);
 
-        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter);
+        Arena *livArena = arena_create(0);
+        LiveSet *liveAfter = compute_mach_liveness(f, blocks, nBlocks, livArena);
+
+        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liveAfter);
 
         int *stack = NULL;
         int stackLen = simplify(&g, f->nextVreg, &stack);
@@ -575,20 +521,14 @@ static void regalloc_function(MachFunction *f) {
 
         if (nSpilled == 0) {
             finalize_colors(f, g.color);
-            free(stack);
-            free(spilled);
-            ig_free(&g);
-            liveness_free(&liv, f->count);
-            free(blocks);
+            free(stack); free(spilled); ig_free(&g);
+            arena_destroy(livArena); free(blocks);
             break;
         }
 
         spill_insert(f, spilled, nSpilled, &frameOff);
-        free(stack);
-        free(spilled);
-        ig_free(&g);
-        liveness_free(&liv, f->count);
-        free(blocks);
+        free(stack); free(spilled); ig_free(&g);
+        arena_destroy(livArena); free(blocks);
         /* retry with enlarged vreg space */
     }
 

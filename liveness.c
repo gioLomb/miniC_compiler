@@ -45,7 +45,7 @@ void varmap_destroy(VarMap *m) {
     ht_destroy(m->table, NULL);
 }
 
-/* ---- LiveSet ----------------------------------------------------------- */
+/* ---- LiveSet ------------------------------------------------------------ */
 
 LiveSet liveset_new(Arena *arena, int words) {
     LiveSet s;
@@ -93,6 +93,150 @@ void liveset_copy(LiveSet *dst, const LiveSet *src) {
     memcpy(dst->bits, src->bits, (size_t)src->words * sizeof(uint64_t));
 }
 
+/* ---- Motore di dataflow generico ---------------------------------------- */
+
+LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks,
+                                         int numVars, const char *reachable,
+                                         LivenessExtractFn extract, void *ctx,
+                                         Arena *arena) {
+    LivenessBlockSets r;
+    r.numVars = numVars;
+    r.words   = (numVars + 63) / 64;
+
+    r.Use     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
+    r.Def     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
+    r.LiveIn  = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
+    r.LiveOut = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
+    for (int b = 0; b < nBlocks; b++) {
+        r.Use[b]     = liveset_new(arena, r.words);
+        r.Def[b]     = liveset_new(arena, r.words);
+        r.LiveIn[b]  = liveset_new(arena, r.words);
+        r.LiveOut[b] = liveset_new(arena, r.words);
+    }
+
+    int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
+    for (int b = 0; b < nBlocks; b++) {
+        if (reachable && !reachable[b]) continue;
+        for (int i = blocks[b].start; i < blocks[b].end; i++) {
+            extract(ctx, i, uses, &nUses, defs, &nDefs);
+            for (int k = 0; k < nUses; k++)
+                if (!liveset_test(&r.Def[b], uses[k]))
+                    liveset_set(&r.Use[b], uses[k]);
+            for (int k = 0; k < nDefs; k++)
+                liveset_set(&r.Def[b], defs[k]);
+        }
+    }
+
+    LiveSet tmp = liveset_new(arena, r.words);
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int b = nBlocks - 1; b >= 0; b--) {
+            if (reachable && !reachable[b]) continue;
+
+            liveset_clear(&r.LiveOut[b]);
+            for (int k = 0; k < 2; k++) {
+                int s = blocks[b].succ[k];
+                if (s >= 0 && s < nBlocks && !(reachable && !reachable[s]))
+                    liveset_union(&r.LiveOut[b], &r.LiveIn[s]);
+            }
+
+            liveset_diff(&tmp, &r.LiveOut[b], &r.Def[b]);
+            liveset_union_into(&tmp, &tmp, &r.Use[b]);
+
+            if (!liveset_equal(&r.LiveIn[b], &tmp)) {
+                liveset_copy(&r.LiveIn[b], &tmp);
+                changed = 1;
+            }
+        }
+    }
+
+    return r;
+}
+
+LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
+                                     int instrCount, int numVars,
+                                     const LiveSet *blockLiveOut,
+                                     LivenessExtractFn extract, void *ctx,
+                                     Arena *arena) {
+    int words = (numVars + 63) / 64;
+
+    LiveSet *liveAfter = arena_alloc(arena, (size_t)instrCount * sizeof(LiveSet));
+    for (int i = 0; i < instrCount; i++) liveAfter[i] = liveset_new(arena, words);
+
+    int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
+    for (int b = 0; b < nBlocks; b++) {
+        LiveSet live = liveset_new(arena, words);
+        liveset_copy(&live, &blockLiveOut[b]);
+
+        for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
+            liveset_copy(&liveAfter[i], &live);
+            extract(ctx, i, uses, &nUses, defs, &nDefs);
+            for (int k = 0; k < nDefs; k++) liveset_clrbit(&live, defs[k]);
+            for (int k = 0; k < nUses; k++) liveset_set(&live, uses[k]);
+        }
+    }
+    return liveAfter;
+}
+
+/* ---- Fronte IR lineare ------------------------------------------------- */
+
+typedef struct {
+    IRFunction *f;
+    VarMap     *varMap;
+} IRLivenessCtx;
+
+static void irExtract(void *ctxP, int instrIdx,
+                       int uses[LIVENESS_MAX_IDS], int *nUses,
+                       int defs[LIVENESS_MAX_IDS], int *nDefs) {
+    IRLivenessCtx *ctx = ctxP;
+    IRInstr *in = &ctx->f->instrs[instrIdx];
+    *nUses = 0; *nDefs = 0;
+
+    if (liveness_is_var_or_temp(in->src1.kind)) {
+        int id = varmap_operand_id(ctx->varMap, in->src1);
+        if (id >= 0) uses[(*nUses)++] = id;
+    }
+    if (liveness_is_var_or_temp(in->src2.kind)) {
+        int id = varmap_operand_id(ctx->varMap, in->src2);
+        if (id >= 0) uses[(*nUses)++] = id;
+    }
+    if (liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind)) {
+        int id = varmap_operand_id(ctx->varMap, in->dst);
+        if (id >= 0) defs[(*nDefs)++] = id;
+    }
+}
+
+LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *arena) {
+    int nBlocks = f->blockCount;
+
+    LivenessResult r;
+    varmap_init(&r.varMap);
+    for (int i = 0; i < f->count; i++) {
+        IRInstr *in = &f->instrs[i];
+        varmap_operand_id(&r.varMap, in->dst);
+        varmap_operand_id(&r.varMap, in->src1);
+        varmap_operand_id(&r.varMap, in->src2);
+    }
+    r.numVars = r.varMap.nextId;
+
+    LivenessBlock *lb = arena_alloc(arena, (size_t)nBlocks * sizeof(LivenessBlock));
+    for (int b = 0; b < nBlocks; b++) {
+        lb[b].start   = f->blocks[b].start;
+        lb[b].end     = f->blocks[b].end;
+        lb[b].succ[0] = f->blocks[b].succ[0];
+        lb[b].succ[1] = f->blocks[b].succ[1];
+    }
+
+    IRLivenessCtx ctx = { f, &r.varMap };
+    LivenessBlockSets bsets = liveness_compute_core(nBlocks, lb, r.numVars, reachable,
+                                                      irExtract, &ctx, arena);
+    r.Use = bsets.Use; r.Def = bsets.Def;
+    r.LiveIn = bsets.LiveIn; r.LiveOut = bsets.LiveOut;
+    r.words = bsets.words;
+    return r;
+}
+
 /* ---- Predicati --------------------------------------------------------- */
 
 int liveness_defines_dst(IROp op) {
@@ -109,91 +253,4 @@ int liveness_defines_dst(IROp op) {
 
 int liveness_is_var_or_temp(OperandKind kind) {
     return kind == OPND_VAR || kind == OPND_TEMP;
-}
-
-/* ---- liveness_compute -------------------------------------------------- */
-
-LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *arena) {
-    int nBlocks = f->blockCount;
-    int nInstrs = f->count;
-
-    LivenessResult r;
-
-    /* PASSO 1: costruisci VarMap scansionando tutte le istruzioni */
-    varmap_init(&r.varMap);
-    for (int i = 0; i < nInstrs; i++) {
-        IRInstr *in = &f->instrs[i];
-        varmap_operand_id(&r.varMap, in->dst);
-        varmap_operand_id(&r.varMap, in->src1);
-        varmap_operand_id(&r.varMap, in->src2);
-    }
-    r.numVars = r.varMap.nextId;
-    r.words   = (r.numVars + 63) / 64;
-
-    /* PASSO 2: alloca Use, Def, LiveIn, LiveOut nell'arena */
-    r.Use     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
-    r.Def     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
-    r.LiveIn  = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
-    r.LiveOut = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
-    for (int b = 0; b < nBlocks; b++) {
-        r.Use[b]     = liveset_new(arena, r.words);
-        r.Def[b]     = liveset_new(arena, r.words);
-        r.LiveIn[b]  = liveset_new(arena, r.words);
-        r.LiveOut[b] = liveset_new(arena, r.words);
-    }
-
-    /* PASSO 3: calcola Use e Def per blocco
-     * Use[b]: variabili usate prima di essere definite nel blocco
-     *         (upward-exposed uses — le uniche rilevanti per il dataflow).
-     * Def[b]: variabili definite nel blocco. */
-    for (int b = 0; b < nBlocks; b++) {
-        if (reachable && !reachable[b]) continue;
-        for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
-            IRInstr *in = &f->instrs[i];
-
-            if (liveness_is_var_or_temp(in->src1.kind)) {
-                int id = varmap_operand_id(&r.varMap, in->src1);
-                if (id >= 0 && !liveset_test(&r.Def[b], id))
-                    liveset_set(&r.Use[b], id);
-            }
-            if (liveness_is_var_or_temp(in->src2.kind)) {
-                int id = varmap_operand_id(&r.varMap, in->src2);
-                if (id >= 0 && !liveset_test(&r.Def[b], id))
-                    liveset_set(&r.Use[b], id);
-            }
-            if (liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind)) {
-                int id = varmap_operand_id(&r.varMap, in->dst);
-                if (id >= 0) liveset_set(&r.Def[b], id);
-            }
-        }
-    }
-
-    /* PASSO 4: backward dataflow a punto fisso
-     * LiveOut[b] = union di LiveIn[succ]
-     * LiveIn[b]  = Use[b] ∪ (LiveOut[b] - Def[b]) */
-    LiveSet tmp = liveset_new(arena, r.words);
-    int changed = 1;
-    while (changed) {
-        changed = 0;
-        for (int b = nBlocks - 1; b >= 0; b--) {
-            if (reachable && !reachable[b]) continue;
-
-            liveset_clear(&r.LiveOut[b]);
-            for (int k = 0; k < 2; k++) {
-                int s = f->blocks[b].succ[k];
-                if (s >= 0 && s < nBlocks && !(reachable && !reachable[s]))
-                    liveset_union(&r.LiveOut[b], &r.LiveIn[s]);
-            }
-
-            liveset_diff(&tmp, &r.LiveOut[b], &r.Def[b]);
-            liveset_union_into(&tmp, &tmp, &r.Use[b]);
-
-            if (!liveset_equal(&r.LiveIn[b], &tmp)) {
-                liveset_copy(&r.LiveIn[b], &tmp);
-                changed = 1;
-            }
-        }
-    }
-
-    return r;
 }

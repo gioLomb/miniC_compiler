@@ -51,7 +51,7 @@ void ig_free(IGraph *g) {
 }
 
 IGraph ig_build(const MachFunction *f, const RBlock *blocks, int nBlocks,
-                int nextVreg, const RSet *liveAfter) {
+                int nextVreg, const LiveSet *liveAfter) {
     int totalNodes = nextVreg + PHYS_ALLOCATABLE;
     IGraph g;
     g.n = totalNodes;
@@ -92,33 +92,33 @@ IGraph ig_build(const MachFunction *f, const RBlock *blocks, int nBlocks,
             instr_implicit_defs(in, nextVreg, idefs, &nid);
 
             for (int d = 0; d < nd; d++) {
-                RSET_FOREACH(&liveAfter[i], id)
+                LIVESET_FOREACH(&liveAfter[i], id)
                     ig_add_edge(&g, defs[d], id);
-                RSET_FOREACH_END
+                LIVESET_FOREACH_END
             }
             for (int d = 0; d < nid; d++) {
-                RSET_FOREACH(&liveAfter[i], id)
+                LIVESET_FOREACH(&liveAfter[i], id)
                     ig_add_edge(&g, idefs[d], id);
-                RSET_FOREACH_END
+                LIVESET_FOREACH_END
             }
 
             if (in->op == MACH_CALL) {
-                RSET_FOREACH(&liveAfter[i], id)
+                LIVESET_FOREACH(&liveAfter[i], id)
                     if (id < nextVreg) {
                         g.excl[id] |= ((1U << PHYS_CALLER_SAVED_COUNT) - 1);
                         g.crossesCall[id] = 1;
                     }
-                RSET_FOREACH_END
+                LIVESET_FOREACH_END
             } else if (in->op == MACH_IDIV || in->op == MACH_CQO) {
                 uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
-                RSET_FOREACH(&liveAfter[i], id)
+                LIVESET_FOREACH(&liveAfter[i], id)
                     if (id < nextVreg) g.excl[id] |= mask;
-                RSET_FOREACH_END
+                LIVESET_FOREACH_END
             } else if (regalloc_is_setcc(in->op)) {
                 uint32_t mask = (1U << PHYS_RAX);
-                RSET_FOREACH(&liveAfter[i], id)
+                LIVESET_FOREACH(&liveAfter[i], id)
                     if (id < nextVreg) g.excl[id] |= mask;
-                RSET_FOREACH_END
+                LIVESET_FOREACH_END
             }
         }
     }

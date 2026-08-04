@@ -7,25 +7,15 @@
 #include "hash_table.h"
 
 /* =========================================================================
- * Modulo di liveness analysis condiviso tra DCE e LICM.
- *
- * Espone tre famiglie di primitive:
- *
- *   VarMap  — mappa (tipo, level/tempId, offset) → ID intero compatto,
- *             usata per indicizzare i bitset. Stessa chiave uint64_t
- *             usata in dce.c e cp.c, ora condivisa.
- *
- *   LiveSet — bitset di variabili vive, con le operazioni elementari
- *             (set, clear, union, difference, equal, copy).
- *             Allocato dentro un'Arena: nessuna free individuale.
- *
- *   liveness_compute — calcola Use/Def/LiveIn/LiveOut per tutti i
- *             blocchi di una funzione in un'unica chiamata. I risultati
- *             vivono nell'arena passata dal chiamante: il chiamante
- *             decide quando liberarli (arena_destroy).
+ * Modulo liveness condiviso da DCE/LICM/SR (IR lineare) e regalloc
+ * (codice macchina). Stesso dataflow in entrambi i casi; l'unica parte
+ * specifica è l'estrazione uses/defs da un'istruzione, fattorizzata
+ * tramite callback (LivenessExtractFn). regalloc ha bisogno anche
+ * della liveness PER ISTRUZIONE (liveAfter); DCE/LICM/SR si fermano
+ * al livello di blocco.
  * ========================================================================= */
 
-/* ---- VarMap ------------------------------------------------------------ */
+/* ---- VarMap (solo fronte IR) ------------------------------------------- */
 
 typedef struct {
     Hash_Table *table;
@@ -39,7 +29,7 @@ int           varmap_operand_id(VarMap *m, Operand op);
 void          varmap_init(VarMap *m);
 void          varmap_destroy(VarMap *m);
 
-/* ---- LiveSet ----------------------------------------------------------- */
+/* ---- LiveSet: unico bitset del progetto ------------------------------- */
 
 typedef struct {
     uint64_t *bits;
@@ -57,7 +47,51 @@ void    liveset_diff   (LiveSet *dst, const LiveSet *a, const LiveSet *b);
 int     liveset_equal  (const LiveSet *a, const LiveSet *b);
 void    liveset_copy   (LiveSet *dst, const LiveSet *src);
 
-/* ---- Liveness analysis ------------------------------------------------- */
+/* Itera solo i bit a 1 (costo proporzionale ai bit settati). */
+#define LIVESET_FOREACH(s, idvar) \
+    for (int _w = 0; _w < (s)->words; _w++) { \
+        uint64_t _bits = (s)->bits[_w]; \
+        while (_bits) { \
+            int _b = __builtin_ctzll(_bits); \
+            int idvar = (_w << 6) + _b; \
+            _bits &= (_bits - 1);
+#define LIVESET_FOREACH_END } }
+
+/* ---- Motore di dataflow generico ---------------------------------------- */
+
+/* Massimo usi/defs per istruzione (caso peggiore: MACH_CALL ha 9 caller-saved) */
+#define LIVENESS_MAX_IDS 16
+
+/* Blocco base per il dataflow (indipendente da IRBlock/RBlock) */
+typedef struct {
+    int start, end;
+    int succ[2];
+} LivenessBlock;
+
+/* Estrae uses/defs (id già mappati in [0,numVars)) dell'istruzione 'instrIdx'. */
+typedef void (*LivenessExtractFn)(void *ctx, int instrIdx,
+                                   int uses[LIVENESS_MAX_IDS], int *nUses,
+                                   int defs[LIVENESS_MAX_IDS], int *nDefs);
+
+typedef struct {
+    LiveSet *Use, *Def, *LiveIn, *LiveOut;
+    int numVars, words;
+} LivenessBlockSets;
+
+/* Use/Def per blocco + dataflow backward (LiveIn/LiveOut). */
+LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks,
+                                         int numVars, const char *reachable,
+                                         LivenessExtractFn extract, void *ctx,
+                                         Arena *arena);
+
+/* liveAfter[i] = vivi subito dopo l'istruzione i. Richiede LiveOut già calcolato. */
+LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
+                                     int instrCount, int numVars,
+                                     const LiveSet *blockLiveOut,
+                                     LivenessExtractFn extract, void *ctx,
+                                     Arena *arena);
+
+/* ---- Fronte IR lineare (DCE/LICM/SR) ------------------------------------ */
 
 typedef struct {
     LiveSet *Use;
@@ -70,20 +104,12 @@ typedef struct {
 } LivenessResult;
 
 /*
- * Calcola Use, Def, LiveIn, LiveOut per tutti i blocchi di 'f'.
- * Tutta la memoria vive nell'arena passata: il chiamante libera con
- * arena_destroy quando non serve piu'. La hash table di varMap viene
- * pero' liberata separatamente con varmap_destroy(&result.varMap)
- * perche' usa malloc interno non gestito dall'arena.
- *
- * 'reachable' e' un array char[f->blockCount] opzionale: se non NULL,
- * i blocchi con reachable[b]==0 vengono ignorati (Use/Def restano zero).
- * Passare NULL equivale a considerare tutti i blocchi raggiungibili.
+ * Calcola Use/Def/LiveIn/LiveOut per tutti i blocchi di 'f'.
+ * Memoria in 'arena'. 'reachable' opzionale (NULL = tutti raggiungibili).
  */
 LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *arena);
 
-/* ---- Predicati condivisi ----------------------------------------------- */
-
+/* Predicati condivisi per IR */
 int liveness_defines_dst   (IROp op);
 int liveness_is_var_or_temp(OperandKind kind);
 

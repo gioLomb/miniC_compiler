@@ -1,9 +1,9 @@
 #ifndef INTERFERENCE_H
 #define INTERFERENCE_H
 
-#include "bitset.h"
+#include "liveness.h"
 #include "instr_selector.h"
-#include "regalloc_utils.h"   /* for RBlock */
+#include "regalloc_utils.h"
 
 typedef struct {
     int *data;
@@ -24,7 +24,7 @@ typedef struct {
 } IGraph;
 
 IGraph ig_build(const MachFunction *f, const RBlock *blocks, int nBlocks,
-                int nextVreg, const RSet *liveAfter);
+                int nextVreg, const LiveSet *liveAfter);
 
 void ig_add_edge(IGraph *g, int i, int j);
 void ig_free(IGraph *g);

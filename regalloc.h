@@ -2,7 +2,7 @@
 #define REGALLOC_H
 
 #include "instr_selector.h"
-#include "bitset.h"
+#include "liveness.h"
 #include "interference.h"
 #include "regalloc_utils.h"
 
@@ -19,7 +19,7 @@
  * lo stesso temporaneo su letture consecutive dello stesso slot spillato
  * entro un blocco (invalidata su label/salto/call).
  *
- * Limiti noti: nessun coalescing delle copie (EaC 13.4.3) — puo' restare
+ * Limiti noti: nessun coalescing delle copie (EaC 13.4.3) — può restare
  * qualche MOV reg->reg ridondante dopo la colorazione. Corretto, solo
  * subottimale.
  */
