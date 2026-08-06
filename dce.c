@@ -52,9 +52,9 @@ int dce_optimize(IRFunction *f) {
     memset(reachable, 0, (size_t)nBlocks);
     markReachableBlocks(f, reachable);
 
-    /* PASSO 1-4: liveness (modulo condiviso) */
-    LivenessResult liv = liveness_compute(f, reachable, arena);
-    int words   = liv.words;
+    /* PASSO 1-4: liveness (fronte IR, modulo condiviso) */
+    LivenessResult liv = liveness_compute_ir(f, reachable, arena);
+    int words   = liv.blockSets.words;
 
     /* PASSO 5: Mark — scansione backward dentro ogni blocco */
     char *eliminate = arena_alloc(arena, (size_t)nInstrs);
@@ -68,7 +68,7 @@ int dce_optimize(IRFunction *f) {
         }
 
         LiveSet live = liveset_new(arena, words);
-        liveset_copy(&live, &liv.LiveOut[b]);
+        liveset_copy(&live, &liv.blockSets.LiveOut[b]);
 
         for (int i = f->blocks[b].end - 1; i >= f->blocks[b].start; i--) {
             IRInstr *in = &f->instrs[i];

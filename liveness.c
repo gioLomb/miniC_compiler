@@ -179,7 +179,7 @@ LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
     return liveAfter;
 }
 
-/* ---- Fronte IR lineare ------------------------------------------------- */
+/* ---- Fronte IR lineare (DCE/LICM/SR) ------------------------------------ */
 
 typedef struct {
     IRFunction *f;
@@ -207,10 +207,13 @@ static void irExtract(void *ctxP, int instrIdx,
     }
 }
 
-LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *arena) {
-    int nBlocks = f->blockCount;
+LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *arena) {
+    LivenessResult r = {0};
 
-    LivenessResult r;
+    /* Prescan completa (tutte le istruzioni, non solo quelle reachable):
+       serve a fissare numVars PRIMA di allocare i bitset dentro
+       liveness_compute_core - un id nato a meta' dataflow sforerebbe
+       la dimensione gia' allocata dei LiveSet. */
     varmap_init(&r.varMap);
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
@@ -218,10 +221,10 @@ LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *are
         varmap_operand_id(&r.varMap, in->src1);
         varmap_operand_id(&r.varMap, in->src2);
     }
-    r.numVars = r.varMap.nextId;
+    int numVars = r.varMap.nextId;
 
-    LivenessBlock *lb = arena_alloc(arena, (size_t)nBlocks * sizeof(LivenessBlock));
-    for (int b = 0; b < nBlocks; b++) {
+    LivenessBlock *lb = arena_alloc(arena, (size_t)f->blockCount * sizeof(LivenessBlock));
+    for (int b = 0; b < f->blockCount; b++) {
         lb[b].start   = f->blocks[b].start;
         lb[b].end     = f->blocks[b].end;
         lb[b].succ[0] = f->blocks[b].succ[0];
@@ -229,15 +232,61 @@ LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *are
     }
 
     IRLivenessCtx ctx = { f, &r.varMap };
-    LivenessBlockSets bsets = liveness_compute_core(nBlocks, lb, r.numVars, reachable,
-                                                      irExtract, &ctx, arena);
-    r.Use = bsets.Use; r.Def = bsets.Def;
-    r.LiveIn = bsets.LiveIn; r.LiveOut = bsets.LiveOut;
-    r.words = bsets.words;
+    r.blockSets = liveness_compute_core(f->blockCount, lb, numVars, reachable,
+                                         irExtract, &ctx, arena);
+    /* r.liveAfter resta NULL: DCE/LICM/SR non la usano. */
     return r;
 }
 
-/* ---- Predicati --------------------------------------------------------- */
+/* ---- Fronte codice macchina (regalloc/interference) ---------------------- */
+
+typedef struct {
+    const MachFunction *f;
+    int                  nextVreg;
+} MachLivenessCtx;
+
+static void machExtract(void *ctxP, int instrIdx,
+                         int uses[LIVENESS_MAX_IDS], int *nUses,
+                         int defs[LIVENESS_MAX_IDS], int *nDefs) {
+    MachLivenessCtx *ctx = ctxP;
+    const MachInstr *in = &ctx->f->instrs[instrIdx];
+    int tmp[LIVENESS_MAX_IDS], n;
+    *nUses = 0; *nDefs = 0;
+
+    instr_uses(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
+    instr_implicit_uses(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
+
+    instr_defs(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
+    instr_implicit_defs(in, ctx->nextVreg, tmp, &n);
+    for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
+}
+
+LivenessResult liveness_compute_mach(const MachFunction *f, const RBlock *blocks,
+                                      int nBlocks, Arena *arena) {
+    LivenessResult r = {0};   /* varMap resta {NULL,0}: non usata dal fronte Mach */
+
+    LivenessBlock *lb = arena_alloc(arena, (size_t)nBlocks * sizeof(LivenessBlock));
+    for (int b = 0; b < nBlocks; b++) {
+        lb[b].start   = blocks[b].start;
+        lb[b].end     = blocks[b].end;
+        lb[b].succ[0] = blocks[b].succ[0];
+        lb[b].succ[1] = blocks[b].succ[1];
+    }
+
+    MachLivenessCtx ctx = { f, f->nextVreg };
+    int numVars = f->nextVreg + PHYS_ALLOCATABLE;
+
+    r.blockSets = liveness_compute_core(nBlocks, lb, numVars, NULL,
+                                         machExtract, &ctx, arena);
+    r.liveAfter = liveness_compute_per_instr(nBlocks, lb, f->count, numVars,
+                                              r.blockSets.LiveOut, machExtract, &ctx, arena);
+    return r;
+}
+
+/* ---- Predicati (fronte IR) ---------------------------------------------- */
 
 int liveness_defines_dst(IROp op) {
     switch (op) {

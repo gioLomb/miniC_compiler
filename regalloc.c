@@ -76,56 +76,11 @@ static RBlock *build_cfg(const MachFunction *f, int *outCount) {
 }
 
 /* =========================================================================
- * Liveness: adapter verso il motore generico di liveness.h.
- * Unica parte specifica al codice macchina = estrazione uses/defs.
- * Dataflow vero e proprio (Use/Def, punto fisso, liveAfter) è lo stesso
- * usato da DCE/LICM/SR, non più duplicato.
+ * Liveness del codice macchina: incapsulata in liveness_compute_mach()
+ * (liveness.h/.c) - non piu' composta a mano qui. Vedi il modulo
+ * liveness per l'estrazione uses/defs (incluse le implicite di
+ * MACH_CALL/MACH_IDIV/MACH_CQO), che ora vive una volta sola li'.
  * ========================================================================= */
-
-typedef struct {
-    const MachFunction *f;
-    int                  nextVreg;
-} MachLivenessCtx;
-
-static void machExtract(void *ctxP, int instrIdx,
-                         int uses[LIVENESS_MAX_IDS], int *nUses,
-                         int defs[LIVENESS_MAX_IDS], int *nDefs) {
-    MachLivenessCtx *ctx = ctxP;
-    const MachInstr *in = &ctx->f->instrs[instrIdx];
-    int tmp[LIVENESS_MAX_IDS], n;
-    *nUses = 0; *nDefs = 0;
-
-    instr_uses(in, ctx->nextVreg, tmp, &n);
-    for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
-    instr_implicit_uses(in, ctx->nextVreg, tmp, &n);
-    for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
-
-    instr_defs(in, ctx->nextVreg, tmp, &n);
-    for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
-    instr_implicit_defs(in, ctx->nextVreg, tmp, &n);
-    for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
-}
-
-/* liveAfter[i] = vivi dopo istruzione i. N = nextVreg + PHYS_ALLOCATABLE.
-   Tutto in 'arena': nessuna free individuale, basta arena_destroy(). */
-static LiveSet *compute_mach_liveness(const MachFunction *f, const RBlock *blocks,
-                                       int nBlocks, Arena *arena) {
-    LivenessBlock *lb = arena_alloc(arena, (size_t)nBlocks * sizeof(LivenessBlock));
-    for (int b = 0; b < nBlocks; b++) {
-        lb[b].start   = blocks[b].start;
-        lb[b].end     = blocks[b].end;
-        lb[b].succ[0] = blocks[b].succ[0];
-        lb[b].succ[1] = blocks[b].succ[1];
-    }
-
-    MachLivenessCtx ctx = { f, f->nextVreg };
-    int N = f->nextVreg + PHYS_ALLOCATABLE;
-
-    LivenessBlockSets bsets = liveness_compute_core(nBlocks, lb, N, NULL,
-                                                      machExtract, &ctx, arena);
-    return liveness_compute_per_instr(nBlocks, lb, f->count, N, bsets.LiveOut,
-                                       machExtract, &ctx, arena);
-}
 
 /* =========================================================================
  * Buckets for Simplify (Briggs-optimistic)
@@ -509,9 +464,13 @@ static void regalloc_function(MachFunction *f) {
         RBlock *blocks = build_cfg(f, &nBlocks);
 
         Arena *livArena = arena_create(0);
-        LiveSet *liveAfter = compute_mach_liveness(f, blocks, nBlocks, livArena);
 
-        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liveAfter);
+        /* Liveness del codice macchina via API centralizzata del modulo
+           liveness (fronte Mach): niente piu' estrazione uses/defs
+           duplicata qui, vedi liveness_compute_mach(). */
+        LivenessResult liv = liveness_compute_mach(f, blocks, nBlocks, livArena);
+
+        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter);
 
         int *stack = NULL;
         int stackLen = simplify(&g, f->nextVreg, &stack);

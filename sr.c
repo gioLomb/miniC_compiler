@@ -274,7 +274,7 @@ int sr_optimize(IRFunction *f) {
     if (nLoops == 0) { arena_destroy(arena); return 0; }
 
     Arena *livArena = arena_create(0);
-    LivenessResult liv = liveness_compute(f, NULL, livArena);
+    LivenessResult liv = liveness_compute_ir(f, NULL, livArena);
     VarMap *vm = &liv.varMap;
 
     int nextTemp = 0;

@@ -195,7 +195,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
         if (!dominatesAllExits(L, Dom, blk)) continue;
         int dstId = varmap_operand_id(vm, f->instrs[j].dst);
         if (dstId < 0 || defCount[dstId] != 1) continue;
-        if (liveset_test(&liv->LiveIn[header], dstId)) continue;
+        if (liveset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
         doMove[j] = 1; moved++;
     }
 
@@ -276,7 +276,7 @@ int licm_optimize(IRFunction *f) {
     if (nLoops == 0) { arena_destroy(arena); return 0; }
 
     Arena *livArena = arena_create(0);
-    LivenessResult liv = liveness_compute(f, NULL, livArena);
+    LivenessResult liv = liveness_compute_ir(f, NULL, livArena);
     int totalMoved = 0;
 
     for (int l = 0; l < nLoops; l++) {
@@ -284,7 +284,7 @@ int licm_optimize(IRFunction *f) {
         loop_build_pre_header(f, L);
 
         VarMap *vm  = &liv.varMap;
-        int numVars = liv.numVars;
+        int numVars = liv.blockSets.numVars;
         int *defCount = countDefsInLoop(f, L, vm, numVars, arena);
 
         char *invariant = arena_alloc(arena, (size_t)f->count);
@@ -298,7 +298,7 @@ int licm_optimize(IRFunction *f) {
             varmap_destroy(&liv.varMap);
             arena_destroy(livArena);
             livArena = arena_create(0);
-            liv = liveness_compute(f, NULL, livArena);
+            liv = liveness_compute_ir(f, NULL, livArena);
         }
     }
 
