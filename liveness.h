@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "ir.h"
 #include "arena.h"
-#include "hash_table.h"
+#include "varmap.h"           /* VarMap */
 #include "regalloc_utils.h"   /* MachFunction, RBlock, instr_uses&co: fronte Mach */
 
 /* =========================================================================
@@ -15,26 +15,10 @@
  * in liveness.c), incapsulata dietro le due funzioni pubbliche
  * liveness_compute_ir()/liveness_compute_mach(). Nessun'altra funzione di
  * "compute" generica e' esposta: chi vuole la liveness sceglie il fronte
- * giusto, non compone il motore a mano (il vecchio regalloc.c chiamava
- * liveness_compute_core/per_instr direttamente, duplicando qui la logica
- * di adattamento CFG/estrazione - ora vive una volta sola in liveness.c).
+ * giusto, non compone il motore a mano.
  * ========================================================================= */
 
-/* ---- VarMap (solo fronte IR) ------------------------------------------- */
-
-typedef struct {
-    Hash_Table *table;
-    int         nextId;
-} VarMap;
-
-unsigned long varmap_hash(const void *key, size_t keySize);
-uint64_t      varmap_make_key(int kind, int a, int b);
-int           varmap_id(VarMap *m, int kind, int a, int b);
-int           varmap_operand_id(VarMap *m, Operand op);
-void          varmap_init(VarMap *m);
-void          varmap_destroy(VarMap *m);
-
-/* ---- LiveSet: unico bitset del progetto ------------------------------- */
+/* ---- LiveSet: unico bitset del progetto --------------------------------- */
 
 typedef struct {
     uint64_t *bits;
@@ -81,12 +65,7 @@ typedef void (*LivenessExtractFn)(void *ctx, int instrIdx,
 
 /*
  * Use/Def per blocco + risultato del dataflow backward (LiveIn/LiveOut).
- * E' il "nucleo" condiviso da entrambi i fronti (IR e Mach): annidato
- * dentro LivenessResult qui sotto, non un tipo separato da costruire a
- * mano dal chiamante - evita la duplicazione che c'era prima tra
- * LivenessResult (fronte IR) e le variabili sciolte usate a mano in
- * regalloc.c (fronte Mach) per rappresentare esattamente gli stessi
- * quattro campi + numVars/words.
+ * Annidato dentro LivenessResult, non da costruire a mano dal chiamante.
  */
 typedef struct {
     LiveSet *Use, *Def, *LiveIn, *LiveOut;
@@ -94,13 +73,9 @@ typedef struct {
 } LivenessBlockSets;
 
 /*
- * Building block interno del motore: Use/Def per blocco + dataflow
- * backward a punto fisso. Usato SOLO da liveness_compute_ir/
- * liveness_compute_mach dentro liveness.c - non e' un terzo modo
- * alternativo per un chiamante esterno di ottenere la liveness. Un
- * nuovo fronte (es. un futuro target diverso da x86) si aggiunge come
- * ulteriore funzione liveness_compute_<fronte> qui in liveness.c,
- * riusando questo motore, non ricomponendolo altrove nel progetto.
+ * Motore dataflow backward a punto fisso.
+ * Tutti i bits dei quattro array LiveSet sono allocati in un unico blocco
+ * contiguo nell'arena e azzerati con un solo memset.
  */
 LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks,
                                          int numVars, const char *reachable,

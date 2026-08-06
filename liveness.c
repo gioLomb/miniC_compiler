@@ -1,49 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "liveness.h"
-
-/* ---- VarMap ------------------------------------------------------------ */
-
-unsigned long varmap_hash(const void *key, size_t keySize) {
-    (void)keySize;
-    uint64_t v = *(const uint64_t *)key;
-    v ^= v >> 33; v *= 0xff51afd7ed558ccdULL;
-    v ^= v >> 33; v *= 0xc4ceb9fe1a85ec53ULL;
-    v ^= v >> 33;
-    return (unsigned long)v;
-}
-
-uint64_t varmap_make_key(int kind, int a, int b) {
-    uint64_t k = 0;
-    k |= (uint64_t)(kind & 0x3)        << 62;
-    k |= (uint64_t)(a    & 0x7fffffff) << 31;
-    k |= (uint64_t)(b    & 0x7fffffff);
-    return k;
-}
-
-int varmap_id(VarMap *m, int kind, int a, int b) {
-    uint64_t key = varmap_make_key(kind, a, b);
-    int id;
-    if (ht_get(m->table, &key, sizeof key, &id, sizeof id)) return id;
-    id = m->nextId++;
-    ht_set(m->table, &key, sizeof key, &id, sizeof id);
-    return id;
-}
-
-int varmap_operand_id(VarMap *m, Operand op) {
-    if (op.kind == OPND_VAR)  return varmap_id(m, 0, op.data.varLevel, op.data.varOffset);
-    if (op.kind == OPND_TEMP) return varmap_id(m, 1, op.data.tempId, 0);
-    return -1;
-}
-
-void varmap_init(VarMap *m) {
-    m->table  = ht_create(32, varmap_hash);
-    m->nextId = 0;
-}
-
-void varmap_destroy(VarMap *m) {
-    ht_destroy(m->table, NULL);
-}
+/* varmap.h incluso transitivamente da liveness.h */
 
 /* ---- LiveSet ------------------------------------------------------------ */
 
@@ -93,7 +51,15 @@ void liveset_copy(LiveSet *dst, const LiveSet *src) {
     memcpy(dst->bits, src->bits, (size_t)src->words * sizeof(uint64_t));
 }
 
-/* ---- Motore di dataflow generico ---------------------------------------- */
+/* ---- Motore di dataflow generico ----------------------------------------
+ *
+ * Tutti i bits dei quattro array (Use/Def/LiveIn/LiveOut) sono allocati
+ * in un unico blocco contiguo e azzerati con un solo memset.
+ *
+ * Layout del blocco:
+ *   [ Use_0..Use_{n-1} | Def_0..Def_{n-1} | LiveIn_0..LiveIn_{n-1} | LiveOut_0..LiveOut_{n-1} ]
+ * dove ogni slot occupa 'words' uint64_t.
+ * -------------------------------------------------------------------------*/
 
 LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks,
                                          int numVars, const char *reachable,
@@ -107,11 +73,18 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks
     r.Def     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
     r.LiveIn  = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
     r.LiveOut = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
+
+    /* Unico blocco contiguo per tutti i bits + un solo memset. */
+    size_t   wordsPerBlock = (size_t)r.words;
+    size_t   totalWords    = 4 * (size_t)nBlocks * wordsPerBlock;
+    uint64_t *allBits      = arena_alloc(arena, totalWords * sizeof(uint64_t));
+    memset(allBits, 0, totalWords * sizeof(uint64_t));
+
     for (int b = 0; b < nBlocks; b++) {
-        r.Use[b]     = liveset_new(arena, r.words);
-        r.Def[b]     = liveset_new(arena, r.words);
-        r.LiveIn[b]  = liveset_new(arena, r.words);
-        r.LiveOut[b] = liveset_new(arena, r.words);
+        r.Use[b]     = (LiveSet){ allBits + (0 * nBlocks + b) * wordsPerBlock, r.words };
+        r.Def[b]     = (LiveSet){ allBits + (1 * nBlocks + b) * wordsPerBlock, r.words };
+        r.LiveIn[b]  = (LiveSet){ allBits + (2 * nBlocks + b) * wordsPerBlock, r.words };
+        r.LiveOut[b] = (LiveSet){ allBits + (3 * nBlocks + b) * wordsPerBlock, r.words };
     }
 
     int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
@@ -162,11 +135,18 @@ LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
     int words = (numVars + 63) / 64;
 
     LiveSet *liveAfter = arena_alloc(arena, (size_t)instrCount * sizeof(LiveSet));
-    for (int i = 0; i < instrCount; i++) liveAfter[i] = liveset_new(arena, words);
+    uint64_t *allBits = arena_alloc(arena, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
+    memset(allBits, 0, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
 
+    for (int i = 0; i < instrCount; i++)
+        liveAfter[i] = (LiveSet){ allBits + (size_t)i * (size_t)words, words };
     int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
+
+    /* unica alloc scratch: riusata (sovrascritta da liveset_copy) ad ogni blocco */
+    uint64_t *liveBits = arena_alloc(arena, (size_t)words * sizeof(uint64_t));
+    LiveSet   live     = { liveBits, words };
+
     for (int b = 0; b < nBlocks; b++) {
-        LiveSet live = liveset_new(arena, words);
         liveset_copy(&live, &blockLiveOut[b]);
 
         for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
