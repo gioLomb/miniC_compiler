@@ -125,7 +125,7 @@ LiveSet *liveness_compute_per_instr(int nBlocks, const BasicBlock *blocks,
                                      const LiveSet *blockLiveOut,
                                      LivenessExtractFn extract, void *ctx,
                                      Arena *arena) {
-    int words = (numVars + 63) / 64;
+    int words = (numVars + (BITS_PER_WORD - 1)) / BITS_PER_WORD;
 
     LiveSet  *liveAfter = arena_alloc(arena, (size_t)instrCount * sizeof(LiveSet));
     uint64_t *allBits   = arena_alloc(arena, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
@@ -195,10 +195,7 @@ LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *
     /* Costruisce array BasicBlock dal CFG IR (IRBlock → BasicBlock via campo bb) */
     BasicBlock *lb = arena_alloc(arena, (size_t)f->blockCount * sizeof(BasicBlock));
     for (int b = 0; b < f->blockCount; b++) {
-        lb[b].start   = f->blocks[b].bb.start;
-        lb[b].end     = f->blocks[b].bb.end;
-        lb[b].succ[0] = f->blocks[b].bb.succ[0];
-        lb[b].succ[1] = f->blocks[b].bb.succ[1];
+        lb[b]   = f->blocks[b].bb;
     }
 
     IRLivenessCtx ctx = { f, &r.varMap };

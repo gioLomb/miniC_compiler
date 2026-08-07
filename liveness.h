@@ -8,6 +8,7 @@
 #include "varmap.h"
 #include "regalloc_utils.h"
 
+#define BITS_PER_WORD 64
 /* =========================================================================
  * Modulo liveness condiviso da DCE/LICM/SR (IR lineare) e da regalloc/
  * interference (codice macchina). Stesso motore di dataflow in entrambi
