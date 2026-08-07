@@ -28,7 +28,7 @@ static void markReachableBlocks(IRFunction *f, char *reachable) {
     while (top > 0) {
         int b = stack[--top];
         for (int k = 0; k < 2; k++) {
-            int s = f->blocks[b].succ[k];
+            int s = f->blocks[b].bb.succ[k];
             if (s >= 0 && s < f->blockCount && !reachable[s]) {
                 reachable[s] = 1;
                 stack[top++] = s;
@@ -54,7 +54,7 @@ int dce_optimize(IRFunction *f) {
 
     /* PASSO 1-4: liveness (fronte IR, modulo condiviso) */
     LivenessResult liv = liveness_compute_ir(f, reachable, arena);
-    int words   = liv.blockSets.words;
+    int words = liv.blockSets.words;
 
     /* PASSO 5: Mark — scansione backward dentro ogni blocco */
     char *eliminate = arena_alloc(arena, (size_t)nInstrs);
@@ -62,7 +62,7 @@ int dce_optimize(IRFunction *f) {
 
     for (int b = 0; b < nBlocks; b++) {
         if (!reachable[b]) {
-            for (int i = f->blocks[b].start; i < f->blocks[b].end; i++)
+            for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
                 eliminate[i] = 1;
             continue;
         }
@@ -70,7 +70,7 @@ int dce_optimize(IRFunction *f) {
         LiveSet live = liveset_new(arena, words);
         liveset_copy(&live, &liv.blockSets.LiveOut[b]);
 
-        for (int i = f->blocks[b].end - 1; i >= f->blocks[b].start; i--) {
+        for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
             IRInstr *in = &f->instrs[i];
             int def   = liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind);
             int dstId = def ? varmap_operand_id(&liv.varMap, in->dst) : -1;
@@ -106,7 +106,7 @@ int dce_optimize(IRFunction *f) {
     f->capacity = newCount;
 
     for (int b = 0; b < nBlocks; b++) {
-        int oldStart = f->blocks[b].start, oldEnd = f->blocks[b].end;
+        int oldStart = f->blocks[b].bb.start, oldEnd = f->blocks[b].bb.end;
         int newStart = -1, newEnd = -1;
         for (int i = oldStart; i < oldEnd; i++) {
             if (map[i] != -1) {
@@ -114,8 +114,8 @@ int dce_optimize(IRFunction *f) {
                 newEnd = map[i] + 1;
             }
         }
-        f->blocks[b].start = (newStart == -1) ? 0 : newStart;
-        f->blocks[b].end   = (newEnd   == -1) ? 0 : newEnd;
+        f->blocks[b].bb.start = (newStart == -1) ? 0 : newStart;
+        f->blocks[b].bb.end   = (newEnd   == -1) ? 0 : newEnd;
     }
     f->curBlockStart = 0;
 

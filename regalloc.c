@@ -8,7 +8,7 @@
 #include "arena.h"
 
 /* =========================================================================
- * CFG construction (reuses RBlock from regalloc_utils.h)
+ * CFG construction (now uses BasicBlock from block.h; RBlock removed)
  * ========================================================================= */
 
 static int find_label_block(int *labelIds, int *blockIdx, int n, int labelId) {
@@ -17,23 +17,25 @@ static int find_label_block(int *labelIds, int *blockIdx, int n, int labelId) {
     return -1;
 }
 
-static RBlock *build_cfg(const MachFunction *f, int *outCount) {
+static BasicBlock *build_cfg(const MachFunction *f, int *outCount) {
     int cap = 8, count = 0;
-    RBlock *blocks = malloc((size_t)cap * sizeof(RBlock));
+    BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
     int start = 0;
     for (int i = 0; i < f->count; i++) {
         if (f->instrs[i].op == MACH_LABEL && i > start) {
-            if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(RBlock)); }
+            if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
             blocks[count].start = start;
             blocks[count].end   = i;
+            blocks[count].succ[0] = blocks[count].succ[1] = -1;
             count++;
             start = i;
         }
     }
     if (start < f->count) {
-        if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(RBlock)); }
+        if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
         blocks[count].start = start;
         blocks[count].end   = f->count;
+        blocks[count].succ[0] = blocks[count].succ[1] = -1;
         count++;
     }
 
@@ -461,7 +463,7 @@ static void regalloc_function(MachFunction *f) {
     int frameOff = 0;
     for (;;) {
         int nBlocks;
-        RBlock *blocks = build_cfg(f, &nBlocks);
+        BasicBlock *blocks = build_cfg(f, &nBlocks);
 
         Arena *livArena = arena_create(0);
 

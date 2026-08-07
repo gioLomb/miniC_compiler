@@ -1,7 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "liveness.h"
-/* varmap.h incluso transitivamente da liveness.h */
 
 /* ---- LiveSet ------------------------------------------------------------ */
 
@@ -53,15 +52,10 @@ void liveset_copy(LiveSet *dst, const LiveSet *src) {
 
 /* ---- Motore di dataflow generico ----------------------------------------
  *
- * Tutti i bits dei quattro array (Use/Def/LiveIn/LiveOut) sono allocati
- * in un unico blocco contiguo e azzerati con un solo memset.
- *
- * Layout del blocco:
- *   [ Use_0..Use_{n-1} | Def_0..Def_{n-1} | LiveIn_0..LiveIn_{n-1} | LiveOut_0..LiveOut_{n-1} ]
- * dove ogni slot occupa 'words' uint64_t.
+ * Riceve BasicBlock* (ex LivenessBlock*): stesso layout, tipo unificato.
  * -------------------------------------------------------------------------*/
 
-LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks,
+LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
                                          int numVars, const char *reachable,
                                          LivenessExtractFn extract, void *ctx,
                                          Arena *arena) {
@@ -74,7 +68,6 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks
     r.LiveIn  = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
     r.LiveOut = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
 
-    /* Unico blocco contiguo per tutti i bits + un solo memset. */
     size_t   wordsPerBlock = (size_t)r.words;
     size_t   totalWords    = 4 * (size_t)nBlocks * wordsPerBlock;
     uint64_t *allBits      = arena_alloc(arena, totalWords * sizeof(uint64_t));
@@ -127,22 +120,22 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks
     return r;
 }
 
-LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
+LiveSet *liveness_compute_per_instr(int nBlocks, const BasicBlock *blocks,
                                      int instrCount, int numVars,
                                      const LiveSet *blockLiveOut,
                                      LivenessExtractFn extract, void *ctx,
                                      Arena *arena) {
     int words = (numVars + 63) / 64;
 
-    LiveSet *liveAfter = arena_alloc(arena, (size_t)instrCount * sizeof(LiveSet));
-    uint64_t *allBits = arena_alloc(arena, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
+    LiveSet  *liveAfter = arena_alloc(arena, (size_t)instrCount * sizeof(LiveSet));
+    uint64_t *allBits   = arena_alloc(arena, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
     memset(allBits, 0, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
 
     for (int i = 0; i < instrCount; i++)
         liveAfter[i] = (LiveSet){ allBits + (size_t)i * (size_t)words, words };
+
     int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
 
-    /* unica alloc scratch: riusata (sovrascritta da liveset_copy) ad ogni blocco */
     uint64_t *liveBits = arena_alloc(arena, (size_t)words * sizeof(uint64_t));
     LiveSet   live     = { liveBits, words };
 
@@ -190,10 +183,6 @@ static void irExtract(void *ctxP, int instrIdx,
 LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *arena) {
     LivenessResult r = {0};
 
-    /* Prescan completa (tutte le istruzioni, non solo quelle reachable):
-       serve a fissare numVars PRIMA di allocare i bitset dentro
-       liveness_compute_core - un id nato a meta' dataflow sforerebbe
-       la dimensione gia' allocata dei LiveSet. */
     varmap_init(&r.varMap);
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
@@ -203,18 +192,19 @@ LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *
     }
     int numVars = r.varMap.nextId;
 
-    LivenessBlock *lb = arena_alloc(arena, (size_t)f->blockCount * sizeof(LivenessBlock));
+    /* Costruisce array BasicBlock dal CFG IR (IRBlock → BasicBlock via campo bb) */
+    BasicBlock *lb = arena_alloc(arena, (size_t)f->blockCount * sizeof(BasicBlock));
     for (int b = 0; b < f->blockCount; b++) {
-        lb[b].start   = f->blocks[b].start;
-        lb[b].end     = f->blocks[b].end;
-        lb[b].succ[0] = f->blocks[b].succ[0];
-        lb[b].succ[1] = f->blocks[b].succ[1];
+        lb[b].start   = f->blocks[b].bb.start;
+        lb[b].end     = f->blocks[b].bb.end;
+        lb[b].succ[0] = f->blocks[b].bb.succ[0];
+        lb[b].succ[1] = f->blocks[b].bb.succ[1];
     }
 
     IRLivenessCtx ctx = { f, &r.varMap };
     r.blockSets = liveness_compute_core(f->blockCount, lb, numVars, reachable,
                                          irExtract, &ctx, arena);
-    /* r.liveAfter resta NULL: DCE/LICM/SR non la usano. */
+    r.liveAfter = NULL;
     return r;
 }
 
@@ -229,7 +219,7 @@ static void machExtract(void *ctxP, int instrIdx,
                          int uses[LIVENESS_MAX_IDS], int *nUses,
                          int defs[LIVENESS_MAX_IDS], int *nDefs) {
     MachLivenessCtx *ctx = ctxP;
-    const MachInstr *in = &ctx->f->instrs[instrIdx];
+    const MachInstr *in  = &ctx->f->instrs[instrIdx];
     int tmp[LIVENESS_MAX_IDS], n;
     *nUses = 0; *nDefs = 0;
 
@@ -244,24 +234,17 @@ static void machExtract(void *ctxP, int instrIdx,
     for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
 }
 
-LivenessResult liveness_compute_mach(const MachFunction *f, const RBlock *blocks,
+/* Riceve BasicBlock* (ex RBlock*): layout identico, tipo unificato */
+LivenessResult liveness_compute_mach(const MachFunction *f, const BasicBlock *blocks,
                                       int nBlocks, Arena *arena) {
-    LivenessResult r = {0};   /* varMap resta {NULL,0}: non usata dal fronte Mach */
-
-    LivenessBlock *lb = arena_alloc(arena, (size_t)nBlocks * sizeof(LivenessBlock));
-    for (int b = 0; b < nBlocks; b++) {
-        lb[b].start   = blocks[b].start;
-        lb[b].end     = blocks[b].end;
-        lb[b].succ[0] = blocks[b].succ[0];
-        lb[b].succ[1] = blocks[b].succ[1];
-    }
+    LivenessResult r = {0};
 
     MachLivenessCtx ctx = { f, f->nextVreg };
     int numVars = f->nextVreg + PHYS_ALLOCATABLE;
 
-    r.blockSets = liveness_compute_core(nBlocks, lb, numVars, NULL,
+    r.blockSets = liveness_compute_core(nBlocks, blocks, numVars, NULL,
                                          machExtract, &ctx, arena);
-    r.liveAfter = liveness_compute_per_instr(nBlocks, lb, f->count, numVars,
+    r.liveAfter = liveness_compute_per_instr(nBlocks, blocks, f->count, numVars,
                                               r.blockSets.LiveOut, machExtract, &ctx, arena);
     return r;
 }

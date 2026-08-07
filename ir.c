@@ -65,10 +65,11 @@ static void closeBlock(IRFunction *f, int start, int end) {
         f->blockCap = f->blockCap ? f->blockCap * 2 : 16;
         f->blocks = realloc(f->blocks, (size_t)f->blockCap * sizeof(IRBlock));
     }
-    IRBlock *b = &f->blocks[f->blockCount++];
-    b->start = start; b->end = end;
-    b->succ[0] = b->succ[1] = -1;
-    b->predCount = 0;
+    IRBlock *b    = &f->blocks[f->blockCount++];
+    b->bb.start   = start;
+    b->bb.end     = end;
+    b->bb.succ[0] = b->bb.succ[1] = -1;
+    b->predCount  = 0;
 }
 
 static void registerLabel(IRFunction *f, int labelId, int futureBlockIdx) {
@@ -102,7 +103,7 @@ static void emit(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2
     f->instrs[idx].dst       = dst;
     f->instrs[idx].src1      = src1;
     f->instrs[idx].src2      = src2;
-    f->instrs[idx].loopDepth = currentLoopDepth;   /* stamp depth corrente */
+    f->instrs[idx].loopDepth = currentLoopDepth;
     f->count++;
 
     if (op == IR_LABEL)
@@ -130,24 +131,24 @@ static void resolveCFG(IRFunction *f) {
         f->curBlockStart = f->count;
     }
     for (int b = 0; b < f->blockCount; b++) {
-        int last = f->blocks[b].end - 1;
+        int last = f->blocks[b].bb.end - 1;
         IROp op  = f->instrs[last].op;
         if (op == IR_GOTO) {
             int lbl = f->instrs[last].dst.data.labelId - f->labelBase;
-            f->blocks[b].succ[0] =
+            f->blocks[b].bb.succ[0] =
                 (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
         } else if (op == IR_IF_FALSE) {
-            f->blocks[b].succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
+            f->blocks[b].bb.succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
             int lbl = f->instrs[last].dst.data.labelId - f->labelBase;
-            f->blocks[b].succ[1] =
+            f->blocks[b].bb.succ[1] =
                 (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
         } else if (op != IR_RETURN) {
-            f->blocks[b].succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
+            f->blocks[b].bb.succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
         }
     }
     for (int b = 0; b < f->blockCount; b++)
         for (int k = 0; k < 2; k++) {
-            int s = f->blocks[b].succ[k];
+            int s = f->blocks[b].bb.succ[k];
             if (s >= 0) f->blocks[s].predCount++;
         }
     free(f->labelToBlock);
@@ -220,7 +221,7 @@ static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
         irJumpIfFalse(cond->children[0], out, trueLbl);
         return;
     }
-    Operand v      = irExpr(cond, out);
+    Operand v       = irExpr(cond, out);
     Operand skipLbl = mkLabel();
     emitIfFalse(out, v, skipLbl);
     emitGoto(out, trueLbl);
@@ -383,12 +384,10 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
         Operand startLbl = mkLabel();
         Operand endLbl   = mkLabel();
         emitLabel(out, startLbl);
-        /* la guardia e' valutata a depth ESTERNO: si esegue anche
-           all'uscita, non e' "dentro" il corpo del loop */
         irJumpIfFalse(stmt->children[0], out, endLbl);
-        currentLoopDepth++;                  /* entra nel corpo */
+        currentLoopDepth++;
         irStmt(stmt->children[1], out);
-        currentLoopDepth--;                  /* esce dal corpo */
+        currentLoopDepth--;
         emitGoto(out, startLbl);
         emitLabel(out, endLbl);
         break;
@@ -410,7 +409,7 @@ static IRFunction *irFunction(ASTNode *decl) {
     f->name          = strdup(name);
     f->labelBase     = nextLabel;
     f->curBlockStart = 0;
-    currentLoopDepth = 0;   /* reset per ogni funzione */
+    currentLoopDepth = 0;
 
     ASTNode *body = decl->children[decl->nchildren - 1];
     irStmt(body, f);

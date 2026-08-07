@@ -4,6 +4,7 @@
 #define IR_INITIAL_CAPACITY 64
 
 #include "parser/ast.h"
+#include "block.h"
 
 typedef enum {
     IR_ADD, IR_SUB, IR_MUL, IR_DIV, IR_MOD,
@@ -60,9 +61,8 @@ typedef struct {
 } IRInstr;
 
 typedef struct {
-    int start, end;
-    int succ[2];
-    int predCount;
+    BasicBlock bb;         /* start, end, succ[2] condivisi con BasicBlock */
+    int        predCount;  /* numero di predecessori nel CFG               */
 } IRBlock;
 
 typedef struct {

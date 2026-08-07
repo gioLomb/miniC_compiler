@@ -3,9 +3,10 @@
 
 #include <stdint.h>
 #include "ir.h"
+#include "block.h"
 #include "arena.h"
-#include "varmap.h"           /* VarMap */
-#include "regalloc_utils.h"   /* MachFunction, RBlock, instr_uses&co: fronte Mach */
+#include "varmap.h"
+#include "regalloc_utils.h"
 
 /* =========================================================================
  * Modulo liveness condiviso da DCE/LICM/SR (IR lineare) e da regalloc/
@@ -13,9 +14,10 @@
  * i casi (liveness_compute_core); l'unica parte specifica per fronte e'
  * l'estrazione uses/defs da un'istruzione (irExtract/machExtract, statiche
  * in liveness.c), incapsulata dietro le due funzioni pubbliche
- * liveness_compute_ir()/liveness_compute_mach(). Nessun'altra funzione di
- * "compute" generica e' esposta: chi vuole la liveness sceglie il fronte
- * giusto, non compone il motore a mano.
+ * liveness_compute_ir()/liveness_compute_mach().
+ *
+ * LivenessBlock rimosso: BasicBlock (block.h) usato direttamente come
+ * tipo blocco in tutte le firme di questo modulo.
  * ========================================================================= */
 
 /* ---- LiveSet: unico bitset del progetto --------------------------------- */
@@ -51,13 +53,6 @@ void    liveset_copy   (LiveSet *dst, const LiveSet *src);
 /* Massimo usi/defs per istruzione (caso peggiore: MACH_CALL ha 9 caller-saved) */
 #define LIVENESS_MAX_IDS 16
 
-/* Blocco base per il dataflow (indipendente da IRBlock/RBlock: entrambi
-   i fronti vi si mappano prima di chiamare il motore). */
-typedef struct {
-    int start, end;
-    int succ[2];
-} LivenessBlock;
-
 /* Estrae uses/defs (id gia' mappati in [0,numVars)) dell'istruzione 'instrIdx'. */
 typedef void (*LivenessExtractFn)(void *ctx, int instrIdx,
                                    int uses[LIVENESS_MAX_IDS], int *nUses,
@@ -65,7 +60,6 @@ typedef void (*LivenessExtractFn)(void *ctx, int instrIdx,
 
 /*
  * Use/Def per blocco + risultato del dataflow backward (LiveIn/LiveOut).
- * Annidato dentro LivenessResult, non da costruire a mano dal chiamante.
  */
 typedef struct {
     LiveSet *Use, *Def, *LiveIn, *LiveOut;
@@ -74,16 +68,15 @@ typedef struct {
 
 /*
  * Motore dataflow backward a punto fisso.
- * Tutti i bits dei quattro array LiveSet sono allocati in un unico blocco
- * contiguo nell'arena e azzerati con un solo memset.
+ * Riceve BasicBlock* al posto del vecchio LivenessBlock*.
  */
-LivenessBlockSets liveness_compute_core(int nBlocks, const LivenessBlock *blocks,
+LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
                                          int numVars, const char *reachable,
                                          LivenessExtractFn extract, void *ctx,
                                          Arena *arena);
 
 /* liveAfter[i] = vivi subito dopo l'istruzione i. Richiede LiveOut gia' calcolato. */
-LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
+LiveSet *liveness_compute_per_instr(int nBlocks, const BasicBlock *blocks,
                                      int instrCount, int numVars,
                                      const LiveSet *blockLiveOut,
                                      LivenessExtractFn extract, void *ctx,
@@ -93,32 +86,20 @@ LiveSet *liveness_compute_per_instr(int nBlocks, const LivenessBlock *blocks,
 
 typedef struct {
     LivenessBlockSets blockSets;   /* Use/Def/LiveIn/LiveOut a livello di blocco */
-    LiveSet          *liveAfter;   /* per-istruzione; NULL nel fronte IR (non richiesta) */
-    VarMap            varMap;      /* Operand IR -> id; non significativa nel fronte Mach */
+    LiveSet          *liveAfter;   /* per-istruzione; NULL nel fronte IR         */
+    VarMap            varMap;      /* Operand IR -> id; non usata nel fronte Mach */
 } LivenessResult;
 
 /* ---- Fronte IR lineare (DCE/LICM/SR) ------------------------------------ */
 
-/*
- * Calcola Use/Def/LiveIn/LiveOut per tutti i blocchi di 'f'. Costruisce
- * internamente la VarMap (Operand IR -> id) con una prescan di f->instrs
- * (fissa numVars prima di allocare i bitset). Memoria in 'arena'.
- * 'reachable' opzionale (NULL = tutti raggiungibili). liveAfter NON
- * calcolata (resta NULL): DCE/LICM/SR non ne hanno bisogno.
- */
 LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *arena);
 
 /* ---- Fronte codice macchina (regalloc/interference) --------------------- */
 
 /*
- * Calcola Use/Def/LiveIn/LiveOut + liveAfter per tutte le istruzioni di
- * 'f' (codice macchina gia' selezionato/schedulato). 'blocks'/'nBlocks'
- * e' il CFG macchina (RBlock, costruito dal chiamante con build_cfg in
- * regalloc.c). Risorse tracciate: vreg [0, f->nextVreg) piu' i registri
- * fisici allocabili offsettati da f->nextVreg (PHYS_ALLOCATABLE),
- * inclusi usi/def IMPLICITI (RAX/RDX per IDIV, caller-saved per CALL).
+ * Riceve BasicBlock* (ex RBlock*) al posto del vecchio tipo dedicato.
  */
-LivenessResult liveness_compute_mach(const MachFunction *f, const RBlock *blocks,
+LivenessResult liveness_compute_mach(const MachFunction *f, const BasicBlock *blocks,
                                       int nBlocks, Arena *arena);
 
 /* ---- Predicati condivisi (fronte IR) ------------------------------------ */

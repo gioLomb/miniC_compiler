@@ -24,7 +24,7 @@ static int *countDefsInLoop(IRFunction *f, Loop *L, VarMap *vm,
     memset(defCount, 0, (size_t)numVars * sizeof(int));
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
+        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!liveness_defines_dst(in->op) || !liveness_is_var_or_temp(in->dst.kind)) continue;
             int id = varmap_operand_id(vm, in->dst);
@@ -42,12 +42,12 @@ static int singleLoopDefInvariant(IRFunction *f, Loop *L, Operand op,
     int found = -1;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
+        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!liveness_defines_dst(in->op)) continue;
             if (in->dst.kind != op.kind) continue;
             if (op.kind == OPND_VAR &&
-                (in->dst.data.varLevel != op.data.varLevel ||
+                (in->dst.data.varLevel  != op.data.varLevel ||
                  in->dst.data.varOffset != op.data.varOffset)) continue;
             if (op.kind == OPND_TEMP && in->dst.data.tempId != op.data.tempId) continue;
             if (!invariant[j]) return -1;
@@ -68,20 +68,6 @@ static int srcIsInvariant(IRFunction *f, Loop *L, Operand src,
     return 0;
 }
 
-/*
- * Struttura per la lista "usato da" di una variabile nella worklist.
- *
- * Bug fix: il vecchio codice usava arena_alloc + memcpy manuale per
- * simulare un realloc, abbandonando ogni volta il blocco precedente
- * nell'arena. Su loop con molte variabili e worklist grandi questo
- * causava uno spreco di memoria proporzionale al numero di raddoppi
- * effettuati, poiche' i blocchi arena abbandonati non vengono mai
- * recuperati fino alla distruzione dell'intera arena.
- *
- * Soluzione: usare malloc/realloc/free standard per usedBy, che
- * supportano il realloc vero e proprio senza sprechi. L'array viene
- * liberato esplicitamente con freeUsedBy() al termine di findInvariants.
- */
 typedef struct {
     int *data;
     int  len;
@@ -90,7 +76,7 @@ typedef struct {
 
 static void usedByAppend(UsedByList *list, int instrIdx) {
     if (list->len == list->cap) {
-        list->cap = list->cap ? list->cap * 2 : 4;
+        list->cap  = list->cap ? list->cap * 2 : 4;
         list->data = realloc(list->data, (size_t)list->cap * sizeof(int));
     }
     list->data[list->len++] = instrIdx;
@@ -106,24 +92,17 @@ static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
                             char *invariant, Arena *arena) {
     int n = f->count;
 
-    /* usedBy: per ogni variabile, lista degli indici delle istruzioni
-     * del loop che la usano come sorgente. Allocato con malloc/realloc
-     * (non arena) per poter usare realloc vero senza sprechi di memoria. */
-    UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
-
-    /* worklist: indici delle istruzioni candidate, allocata nell'arena
-     * perche' la sua dimensione massima e' nota (f->count) e non cresce. */
-    int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
+    UsedByList *usedBy   = calloc((size_t)numVars, sizeof(UsedByList));
+    int        *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
     int wHead = 0, wTail = 0;
 
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
+        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!isPure(in->op) || !liveness_defines_dst(in->op) ||
                 !liveness_is_var_or_temp(in->dst.kind)) continue;
 
-            /* Registra le dipendenze src -> j per la propagazione */
             Operand srcs[2] = { in->src1, in->src2 };
             for (int s = 0; s < 2; s++) {
                 int id = varmap_operand_id(vm, srcs[s]);
@@ -144,8 +123,7 @@ static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
         if (dstId >= 0) {
             for (int k = 0; k < usedBy[dstId].len; k++) {
                 int dep = usedBy[dstId].data[k];
-                if (!invariant[dep])
-                    worklist[wTail++] = dep;
+                if (!invariant[dep]) worklist[wTail++] = dep;
             }
         }
     }
@@ -164,19 +142,10 @@ static int dominatesAllExits(Loop *L, LiveSet *Dom, int blk) {
 
 static int instrBlock(IRFunction *f, int j) {
     for (int b = 0; b < f->blockCount; b++)
-        if (j >= f->blocks[b].start && j < f->blocks[b].end) return b;
+        if (j >= f->blocks[b].bb.start && j < f->blocks[b].bb.end) return b;
     return -1;
 }
 
-/*
- * Sposta le istruzioni invarianti nel pre-header.
- *
- * Inserimento allineato a SR: le istruzioni hoistate vengono posizionate
- * nell'array lineare IMMEDIATAMENTE PRIMA dell'header del loop
- * (insertAt = f->blocks[header].start), non in posizione 0.
- * In questo modo l'ordine fisico e': [pre-loop] [invarianti] [header...],
- * coerente con l'ordine di esecuzione logico e con quanto fa SR.
- */
 static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv) {
@@ -201,14 +170,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     if (!moved) { free(doMove); free(inBody); return 0; }
 
-    /*
-     * Punto di inserimento: primo instruction dell'header del loop.
-     * L'array risultante sara':
-     *   Fase 1: [0, insertAt)              — codice pre-loop invariato
-     *   Fase 2: [insertAt, insertAt+moved) — invarianti hoistati (pre-header)
-     *   Fase 3: [insertAt+moved, ...)      — header, body, post-loop
-     */
-    int insertAt = f->blocks[header].start;
+    int insertAt = f->blocks[header].bb.start;
 
     IRInstr *newInstrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
     int newCount = 0;
@@ -222,7 +184,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
         newInstrs[newCount++] = f->instrs[j];
     }
 
-    /* Fase 2: istruzioni hoistate -> contenuto del pre-header */
+    /* Fase 2: invarianti hoistate → contenuto pre-header */
     int phMovedStart = newCount;
     for (int j = 0; j < nInstrs; j++) {
         if (doMove[j]) newInstrs[newCount++] = f->instrs[j];
@@ -237,16 +199,17 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     }
 
     free(f->instrs);
-    f->instrs = newInstrs; f->count = newCount; f->capacity = newCount;
+    f->instrs   = newInstrs;
+    f->count    = newCount;
+    f->capacity = newCount;
 
-    /* Aggiorna start/end di ogni blocco tramite la mappa */
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
-            f->blocks[b].start = phMovedStart;
-            f->blocks[b].end   = phNewEnd;
+            f->blocks[b].bb.start = phMovedStart;
+            f->blocks[b].bb.end   = phNewEnd;
             continue;
         }
-        int oldS = f->blocks[b].start, oldE = f->blocks[b].end;
+        int oldS = f->blocks[b].bb.start, oldE = f->blocks[b].bb.end;
         int newS = -1, newE = -1;
         for (int j = oldS; j < oldE; j++) {
             if (map[j] != -1) {
@@ -254,8 +217,8 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
                 newE = map[j] + 1;
             }
         }
-        f->blocks[b].start = (newS == -1) ? 0 : newS;
-        f->blocks[b].end   = (newE == -1) ? 0 : newE;
+        f->blocks[b].bb.start = (newS == -1) ? 0 : newS;
+        f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
     free(doMove); free(inBody); free(map);
@@ -271,12 +234,12 @@ int licm_optimize(IRFunction *f) {
     Arena *arena = arena_create(0);
 
     LiveSet *Dom = loop_compute_dominators(f, words, arena);
-    Loop *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
-    int nLoops   = loop_find(f, Dom, loops, arena);
+    Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
+    int      nLoops = loop_find(f, Dom, loops, arena);
     if (nLoops == 0) { arena_destroy(arena); return 0; }
 
-    Arena *livArena = arena_create(0);
-    LivenessResult liv = liveness_compute_ir(f, NULL, livArena);
+    Arena         *livArena = arena_create(0);
+    LivenessResult  liv     = liveness_compute_ir(f, NULL, livArena);
     int totalMoved = 0;
 
     for (int l = 0; l < nLoops; l++) {

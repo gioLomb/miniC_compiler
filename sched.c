@@ -197,7 +197,7 @@ typedef struct {
 typedef struct {
     int start;   /* indice primo in MachFunction.instrs[] */
     int end;     /* indice dopo l'ultimo (esclusivo) */
-} BasicBlock;
+} BasicBlockOffset;
 
 /* Restituisce 1 se l'istruzione NON può essere spostata dal greedy
  * scheduler (deve restare nella posizione finale del blocco, nell'ordine
@@ -250,16 +250,16 @@ static int is_cmp_or_test(MachOp op) {
 /* =========================================================================
  * Costruisce la lista dei blocchi base per una funzione.
  * ========================================================================= */
-static BasicBlock *find_basic_blocks(const MachFunction *f, int *outCount) {
+static BasicBlockOffset *find_basic_blocks(const MachFunction *f, int *outCount) {
     int cap = 8, count = 0;
-    BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
+    BasicBlockOffset *blocks = malloc((size_t)cap * sizeof(BasicBlockOffset));
 
     int start = 0;
     for (int i = 0; i < f->count; i++) {
         if (f->instrs[i].op == MACH_LABEL && i > start) {
             if (count == cap) {
                 cap *= 2;
-                blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
+                blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlockOffset));
             }
             blocks[count].start = start;
             blocks[count].end   = i;
@@ -270,7 +270,7 @@ static BasicBlock *find_basic_blocks(const MachFunction *f, int *outCount) {
     if (start < f->count) {
         if (count == cap) {
             cap *= 2;
-            blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
+            blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlockOffset));
         }
         blocks[count].start = start;
         blocks[count].end   = f->count;
@@ -498,7 +498,7 @@ void sched_schedule(MachProgram *mp) {
         if (!f || f->count == 0) continue;
 
         int bbCount = 0;
-        BasicBlock *blocks = find_basic_blocks(f, &bbCount);
+        BasicBlockOffset *blocks = find_basic_blocks(f, &bbCount);
 
         for (int b = 0; b < bbCount; b++)
             schedule_block(f, blocks[b].start, blocks[b].end);

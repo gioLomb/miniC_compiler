@@ -23,12 +23,13 @@ typedef struct {
     char     *crossesCall;
 } IGraph;
 
-IGraph ig_build(const MachFunction *f, const RBlock *blocks, int nBlocks,
+/* Riceve BasicBlock* (ex RBlock*) */
+IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
                 int nextVreg, const LiveSet *liveAfter);
 
 void ig_add_edge(IGraph *g, int i, int j);
 void ig_free(IGraph *g);
 long tri_idx(int i, int j);
-int ig_has_edge(const IGraph *g, int i, int j);
+int  ig_has_edge(const IGraph *g, int i, int j);
 
 #endif

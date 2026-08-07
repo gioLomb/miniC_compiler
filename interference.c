@@ -21,14 +21,14 @@ void ig_add_edge(IGraph *g, int i, int j) {
 
     AdjList *ai = &g->adj[i];
     if (ai->len == ai->cap) {
-        ai->cap = ai->cap ? ai->cap * 2 : 4;
+        ai->cap  = ai->cap ? ai->cap * 2 : 4;
         ai->data = realloc(ai->data, (size_t)ai->cap * sizeof(int));
     }
     ai->data[ai->len++] = j;
 
     AdjList *aj = &g->adj[j];
     if (aj->len == aj->cap) {
-        aj->cap = aj->cap ? aj->cap * 2 : 4;
+        aj->cap  = aj->cap ? aj->cap * 2 : 4;
         aj->data = realloc(aj->data, (size_t)aj->cap * sizeof(int));
     }
     aj->data[aj->len++] = i;
@@ -50,23 +50,24 @@ void ig_free(IGraph *g) {
     free(g->crossesCall);
 }
 
-IGraph ig_build(const MachFunction *f, const RBlock *blocks, int nBlocks,
+/* Riceve BasicBlock* (ex RBlock*): layout identico, tipo unificato */
+IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
                 int nextVreg, const LiveSet *liveAfter) {
     int totalNodes = nextVreg + PHYS_ALLOCATABLE;
     IGraph g;
     g.n = totalNodes;
     long nbits = (long)totalNodes * (totalNodes - 1) / 2;
-    g.matrix = calloc((size_t)((nbits + 63) / 64 + 1), sizeof(uint64_t));
-    g.adj = calloc((size_t)totalNodes, sizeof(AdjList));
-    g.degree = calloc((size_t)totalNodes, sizeof(int));
-    g.color = malloc((size_t)totalNodes * sizeof(int));
-    g.active = malloc((size_t)totalNodes * sizeof(int));
-    g.excl = calloc((size_t)totalNodes, sizeof(uint32_t));
-    g.spillCost = calloc((size_t)totalNodes, sizeof(int));
+    g.matrix      = calloc((size_t)((nbits + 63) / 64 + 1), sizeof(uint64_t));
+    g.adj         = calloc((size_t)totalNodes, sizeof(AdjList));
+    g.degree      = calloc((size_t)totalNodes, sizeof(int));
+    g.color       = malloc((size_t)totalNodes * sizeof(int));
+    g.active      = malloc((size_t)totalNodes * sizeof(int));
+    g.excl        = calloc((size_t)totalNodes, sizeof(uint32_t));
+    g.spillCost   = calloc((size_t)totalNodes, sizeof(int));
     g.crossesCall = calloc((size_t)totalNodes, 1);
 
     for (int i = 0; i < totalNodes; i++) {
-        g.color[i] = -1;
+        g.color[i]  = -1;
         g.active[i] = 1;
     }
     for (int p = 0; p < PHYS_ALLOCATABLE; p++)

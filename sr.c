@@ -53,7 +53,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
 
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
+        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!liveness_defines_dst(in->op)) continue;
             int id = varmap_operand_id(vm, in->dst);
@@ -63,7 +63,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
 
     for (int i = 0; i < L->bodyCount && count < MAX_IVARS; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
+        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (in->op != IR_ADD && in->op != IR_SUB) continue;
             if (!liveness_is_var_or_temp(in->dst.kind)) continue;
@@ -74,8 +74,10 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
             int step = in->src2.data.intVal;
             if (in->op == IR_SUB) step = -step;
             InductionBase *iv = &ivars[count++];
-            iv->var = in->dst; iv->varId = id;
-            iv->step = step;   iv->incrInstr = j;
+            iv->var       = in->dst;
+            iv->varId     = id;
+            iv->step      = step;
+            iv->incrInstr = j;
         }
     }
     return count;
@@ -87,8 +89,8 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
     int count = 0;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].start;
-             j < f->blocks[b].end && count < MAX_DERIVED; j++) {
+        for (int j = f->blocks[b].bb.start;
+             j < f->blocks[b].bb.end && count < MAX_DERIVED; j++) {
             IRInstr *in = &f->instrs[j];
             if (in->op != IR_MUL) continue;
             if (!liveness_is_var_or_temp(in->dst.kind)) continue;
@@ -131,13 +133,10 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     int nInstrs = f->count;
     int nBlocks = f->blockCount;
 
-    int insertAt = f->blocks[header].start;
+    int insertAt = f->blocks[header].bb.start;
 
-    /* depth delle istruzioni inserite nel preheader: fuori dal loop */
     int outerDepth = f->instrs[insertAt].loopDepth - 1;
     if (outerDepth < 0) outerDepth = 0;
-
-    /* depth delle istruzioni dentro il corpo (incrementi t_sr) */
     int bodyDepth = f->instrs[insertAt].loopDepth;
 
     int maxNew = nInstrs + derivedCount * (1 + ivarCount);
@@ -164,7 +163,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
                 init.src1             = iv->var;
                 init.src2.kind        = OPND_CONST_INT;
                 init.src2.data.intVal = der->multiplier;
-                init.loopDepth        = outerDepth;   /* fuori dal loop */
+                init.loopDepth        = outerDepth;
                 newInstrs[newCount++] = init;
             }
             phInitEnd = newCount;
@@ -182,7 +181,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             copy.src1.kind        = OPND_TEMP;
             copy.src1.data.tempId = derived[d].srTempId;
             copy.src2.kind        = OPND_NONE;
-            copy.loopDepth        = in->loopDepth;   /* stessa depth dell'originale */
+            copy.loopDepth        = in->loopDepth;
             map[j] = newCount;
             newInstrs[newCount++] = copy;
             isDerived = 1;
@@ -206,13 +205,13 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
                 upd.src1.data.tempId = derived[d].srTempId;
                 upd.src2.kind        = OPND_CONST_INT;
                 upd.src2.data.intVal = derived[d].stride;
-                upd.loopDepth        = bodyDepth;   /* dentro il corpo del loop */
+                upd.loopDepth        = bodyDepth;
                 newInstrs[newCount++] = upd;
             }
         }
     }
 
-    /* caso degenere: insertAt == nInstrs (header alla fine) */
+    /* caso degenere: insertAt == nInstrs */
     if (phInitStart == -1) {
         phInitStart = newCount;
         for (int d = 0; d < derivedCount; d++) {
@@ -238,11 +237,11 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
 
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
-            f->blocks[b].start = phInitStart;
-            f->blocks[b].end   = phInitEnd;
+            f->blocks[b].bb.start = phInitStart;
+            f->blocks[b].bb.end   = phInitEnd;
             continue;
         }
-        int oldS = f->blocks[b].start, oldE = f->blocks[b].end;
+        int oldS = f->blocks[b].bb.start, oldE = f->blocks[b].bb.end;
         int newS = -1, newE = -1;
         for (int j = oldS; j < oldE; j++) {
             if (map[j] == -1) continue;
@@ -253,8 +252,8 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             newS = oldS + derivedCount;
             newE = oldE + derivedCount;
         }
-        f->blocks[b].start = (newS == -1) ? 0 : newS;
-        f->blocks[b].end   = (newE == -1) ? 0 : newE;
+        f->blocks[b].bb.start = (newS == -1) ? 0 : newS;
+        f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
     free(map);
@@ -269,23 +268,23 @@ int sr_optimize(IRFunction *f) {
     Arena *arena = arena_create(0);
 
     LiveSet *Dom = loop_compute_dominators(f, words, arena);
-    Loop *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
-    int nLoops   = loop_find(f, Dom, loops, arena);
+    Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
+    int      nLoops = loop_find(f, Dom, loops, arena);
     if (nLoops == 0) { arena_destroy(arena); return 0; }
 
-    Arena *livArena = arena_create(0);
-    LivenessResult liv = liveness_compute_ir(f, NULL, livArena);
-    VarMap *vm = &liv.varMap;
+    Arena         *livArena = arena_create(0);
+    LivenessResult  liv     = liveness_compute_ir(f, NULL, livArena);
+    VarMap         *vm      = &liv.varMap;
 
     int nextTemp = 0;
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
-        if (in->dst.kind  == OPND_TEMP &&
-            in->dst.data.tempId  >= nextTemp) nextTemp = in->dst.data.tempId  + 1;
-        if (in->src1.kind == OPND_TEMP &&
-            in->src1.data.tempId >= nextTemp) nextTemp = in->src1.data.tempId + 1;
-        if (in->src2.kind == OPND_TEMP &&
-            in->src2.data.tempId >= nextTemp) nextTemp = in->src2.data.tempId + 1;
+        if (in->dst.kind  == OPND_TEMP && in->dst.data.tempId  >= nextTemp)
+            nextTemp = in->dst.data.tempId  + 1;
+        if (in->src1.kind == OPND_TEMP && in->src1.data.tempId >= nextTemp)
+            nextTemp = in->src1.data.tempId + 1;
+        if (in->src2.kind == OPND_TEMP && in->src2.data.tempId >= nextTemp)
+            nextTemp = in->src2.data.tempId + 1;
     }
 
     int totalChanged = 0;
@@ -299,7 +298,8 @@ int sr_optimize(IRFunction *f) {
         if (ivarCount == 0) continue;
         int derivedCount = findDerived(f, L, vm, ivars, ivarCount, derived, &nextTemp);
         if (derivedCount == 0) continue;
-        totalChanged += applyStrengthReduction(f, L, ivars, ivarCount, derived, derivedCount);
+        totalChanged += applyStrengthReduction(f, L, ivars, ivarCount,
+                                                derived, derivedCount);
     }
 
     varmap_destroy(&liv.varMap);

@@ -66,7 +66,7 @@ static inline void keyForOperand(const Operand *op, ValueKey *k) {
     switch (op->kind) {
     case OPND_VAR:
         k->kind = 0;
-        k->data.varLevel = op->data.varLevel;
+        k->data.varLevel  = op->data.varLevel;
         k->data.varOffset = op->data.varOffset;
         break;
     case OPND_TEMP:
@@ -161,7 +161,7 @@ static void memoizeOrRewrite(IRInstr *in, const ExprKey *ek, SVNScope *scope, in
     }
     Operand leader;
     if (found && findValidLeader(exprVN, scope, &leader)) {
-        in->op = IR_ASSIGN;
+        in->op   = IR_ASSIGN;
         in->src1 = leader;
         in->src2 = mkNone();
         defineValue(&in->dst, exprVN, scope);
@@ -181,7 +181,7 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
         if (isCommutative(in->op) && vn1 > vn2) { int t = vn1; vn1 = vn2; vn2 = t; }
         ExprKey ek;
         memset(&ek, 0, sizeof ek);
-        ek.op = (int) in->op; ek.vn1 = vn1; ek.vn2 = vn2;
+        ek.op = (int)in->op; ek.vn1 = vn1; ek.vn2 = vn2;
         memoizeOrRewrite(in, &ek, scope, nextVN);
         break;
     }
@@ -189,7 +189,7 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
         int vn1 = valueNumberOf(in->src1, scope, nextVN);
         ExprKey ek;
         memset(&ek, 0, sizeof ek);
-        ek.op = (int) in->op; ek.vn1 = vn1; ek.vn2 = -1;
+        ek.op = (int)in->op; ek.vn1 = vn1; ek.vn2 = -1;
         memoizeOrRewrite(in, &ek, scope, nextVN);
         break;
     }
@@ -210,31 +210,32 @@ static void svnProcessInstr(IRInstr *in, SVNScope *scope, int *nextVN) {
     case IR_GOTO:
     case IR_IF_FALSE:
     case IR_LABEL:
-    //case IR_NOP:
         break;
     }
 }
 
-static void svnProcessBlock(IRFunction *f, int blockIdx, SVNScope *parent, int *nextVN, int *visited) {
+static void svnProcessBlock(IRFunction *f, int blockIdx, SVNScope *parent,
+                             int *nextVN, int *visited) {
     visited[blockIdx] = 1;
     SVNScope scope;
     svnScopeInit(&scope, parent);
-    for (int i = f->blocks[blockIdx].start; i < f->blocks[blockIdx].end; i++) {
+
+    for (int i = f->blocks[blockIdx].bb.start; i < f->blocks[blockIdx].bb.end; i++)
         svnProcessInstr(&f->instrs[i], &scope, nextVN);
-    }
+
     for (int k = 0; k < 2; k++) {
-        int s = f->blocks[blockIdx].succ[k];
-        if (s >= 0 && !visited[s] && f->blocks[s].predCount == 1) {
+        int s = f->blocks[blockIdx].bb.succ[k];
+        if (s >= 0 && !visited[s] && f->blocks[s].predCount == 1)
             svnProcessBlock(f, s, &scope, nextVN, visited);
-        }
     }
+
     svnScopeDestroy(&scope);
 }
 
 void svn_optimize(IRFunction *f) {
     if (f->blockCount == 0) return;
-    int nextVN = 0;
-    int *visited = calloc((size_t) f->blockCount, sizeof(int));
+    int nextVN  = 0;
+    int *visited = calloc((size_t)f->blockCount, sizeof(int));
     for (int i = 0; i < f->blockCount; i++) {
         if (!visited[i] && (i == 0 || f->blocks[i].predCount != 1))
             svnProcessBlock(f, i, NULL, &nextVN, visited);
