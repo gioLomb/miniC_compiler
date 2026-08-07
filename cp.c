@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 #include "cp.h"
 #include "arena.h"
 
@@ -21,7 +22,6 @@ typedef struct {
     } val;
 } LatVal;
 
-#include <stdint.h>
 #include "hash_table.h"
 
 static unsigned long cp_uint64_hash(const void *key, size_t keySize) {
@@ -262,12 +262,9 @@ static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
 
 /* ---- Jump-to-next detection ------------------------------------------- */
 /*
- * Ritorna 1 se il salto all'istruzione 'jumpIdx' punta a una label
- * raggiungibile cadendo dritto nell'array, attraversando solo altre
- * IR_LABEL (che non generano codice).
- *
- * Cerca solo in AVANTI: back-edge dei loop hanno la label PRIMA del
- * salto, quindi non vengono mai toccati erroneamente.
+ * Ritorna 1 se il salto in posizione jumpIdx punta alla prossima label
+ * raggiungibile cadendo dritto (attraversando sole altre IR_LABEL).
+ * Cerca solo in avanti: back-edge non vengono toccati.
  */
 static int is_jump_to_next(const IRFunction *f, int jumpIdx) {
     int targetLabel = f->instrs[jumpIdx].dst.data.labelId;
@@ -280,6 +277,72 @@ static int is_jump_to_next(const IRFunction *f, int jumpIdx) {
         break;          /* istruzione reale: non è jump-to-next */
     }
     return 0;
+}
+
+/* ---- Eliminazione label orfane ---------------------------------------- */
+/*
+ * Dopo jump-to-next elimination alcune IR_LABEL possono restare senza
+ * nessun salto che le referenzia. Le marca in eliminate[].
+ * Ritorna il numero di label marcate (0 → nessuna modifica).
+ *
+ * Nota: considera solo i salti NON già eliminati (eliminate[i]==0),
+ * per non resuscitare label già rimosso il loro unico referenziatore.
+ */
+static int mark_unreferenced_labels(const IRFunction *f, char *eliminate) {
+    /* Determina il labelId massimo presente come destinazione salto */
+    int maxLabel = -1;
+    for (int i = 0; i < f->count; i++) {
+        if (eliminate[i]) continue;
+        IROp op = f->instrs[i].op;
+        if (op == IR_GOTO || op == IR_IF_FALSE) {
+            int lbl = f->instrs[i].dst.data.labelId;
+            if (lbl > maxLabel) maxLabel = lbl;
+        }
+    }
+
+    if (maxLabel < 0) {
+        /* Nessun salto attivo: tutte le label sono orfane */
+        int count = 0;
+        for (int i = 0; i < f->count; i++) {
+            if (!eliminate[i] && f->instrs[i].op == IR_LABEL) {
+                eliminate[i] = 1;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /* Bitset delle label usate come target */
+    int words = (maxLabel / 64) + 1;
+    uint64_t *used = calloc((size_t)words, sizeof(uint64_t));
+    if (!used) return 0;  /* OOM: lascia invariato, non è critico */
+
+    for (int i = 0; i < f->count; i++) {
+        if (eliminate[i]) continue;
+        IROp op = f->instrs[i].op;
+        if (op == IR_GOTO || op == IR_IF_FALSE) {
+            int lbl = f->instrs[i].dst.data.labelId;
+            if (lbl >= 0 && lbl <= maxLabel)
+                used[lbl >> 6] |= (1ULL << (lbl & 63));
+        }
+    }
+
+    /* Marca IR_LABEL non referenziate */
+    int count = 0;
+    for (int i = 0; i < f->count; i++) {
+        if (eliminate[i] || f->instrs[i].op != IR_LABEL) continue;
+        int lbl = f->instrs[i].dst.data.labelId;
+        int referenced = (lbl >= 0 && lbl <= maxLabel)
+                         ? (int)((used[lbl >> 6] >> (lbl & 63)) & 1ULL)
+                         : 0;
+        if (!referenced) {
+            eliminate[i] = 1;
+            count++;
+        }
+    }
+
+    free(used);
+    return count;
 }
 
 /* ---- cp_optimize ------------------------------------------------------- */
@@ -353,14 +416,24 @@ int cp_optimize(IRFunction *f) {
             IRInstr *in = &f->instrs[i];
 
             /* ---- Jump-to-next elimination ----
-             * Se GOTO o IF_FALSE punta a una label raggiungibile cadendo
-             * dritto nell'array (con sole label intermedie), il salto è un
-             * NOP strutturale: eliminalo. Effetto cascata: la variabile
-             * condizione dell'IF_FALSE diventa dead e DCE la rimuove insieme
-             * al calcolo che la produceva (es. "t1 = i > 5" di un if vuoto).
-             * Cerca solo in avanti: back-edge dei loop non vengono toccati. */
+             * GOTO o IF_FALSE che punta alla label immediatamente successiva
+             * nell'array (separata solo da altre IR_LABEL) è un NOP strutturale.
+             * Eliminarlo può rendere orfane le label che puntava: gestito dopo
+             * il loop da mark_unreferenced_labels(). */
             if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) &&
                 is_jump_to_next(f, i)) {
+                /* Aggiorna predCount del blocco target che perde questo arco */
+                int s = (in->op == IR_GOTO)
+                        ? f->blocks[b].bb.succ[0]
+                        : f->blocks[b].bb.succ[1];
+                if (s >= 0) f->blocks[s].predCount--;
+                /* Rimuovi il succ corrispondente dal blocco */
+                if (in->op == IR_GOTO) {
+                    f->blocks[b].bb.succ[0] = f->blocks[b].bb.succ[1];
+                    f->blocks[b].bb.succ[1] = -1;
+                } else {
+                    f->blocks[b].bb.succ[1] = -1;
+                }
                 eliminate[i] = 1;
                 modified = 1;
                 continue;
@@ -486,6 +559,16 @@ int cp_optimize(IRFunction *f) {
             transferInstr(in, &live, &vm);
         }
     }
+
+    /* ---- Rimozione label orfane ----------------------------------------
+     * Dopo jump-to-next elimination alcune IR_LABEL possono essere rimaste
+     * senza nessun salto che le referenzia. Le eliminiamo ora, prima dello
+     * sweep, per non generare .L2: vuote nell'assembly.
+     * Nota: forziamo modified=1 se troviamo label orfane, anche nel caso in
+     * cui jump-to-next non avesse già settato modified, affinché lo sweep
+     * venga comunque eseguito.                                              */
+    if (mark_unreferenced_labels(f, eliminate) > 0)
+        modified = 1;
 
     /* ---- PASSO 5: Sweep ---- */
     if (modified) {
