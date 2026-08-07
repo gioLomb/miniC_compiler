@@ -59,26 +59,6 @@ static int operandVarId(VarMap *m, Operand op) {
 }
 
 /* ---- Confronto semantico tra Operand ---------------------------------- */
-/*
- * Bug fix: NON usare memcmp su Operand.
- *
- * Operand contiene una union i cui membri hanno dimensioni diverse: int (4
- * byte) e const char* / float (8 byte su 64bit / 4 byte). Il compilatore
- * inserisce byte di padding tra i campi della struct anonima interna
- * (varLevel, varOffset, sourceName) e tra i membri della union per
- * soddisfare i requisiti di allineamento. Tali byte hanno valori
- * arbitrari/indeterminati quando la struct viene costruita campo per campo
- * (es. mkConstInt scrive solo intVal, lasciando il resto della union
- * non inizializzato).
- *
- * Conseguenza pratica: due Operand semanticamente identici (stesso kind,
- * stesso valore) possono differire nei byte di padding -> memcmp restituisce
- * "diversi" -> modified=1 spurio -> il ciclo a punto fisso CP+DCE esegue
- * iterazioni inutili senza produrre alcuna modifica reale al codice.
- *
- * Soluzione: confronto campo per campo solo sui membri significativi per il
- * kind specifico, ignorando completamente i byte di padding.
- */
 static int operand_equal(const Operand *a, const Operand *b) {
     if (a->kind != b->kind) return 0;
     switch (a->kind) {
@@ -248,20 +228,6 @@ static LatVal foldUnary(IROp op, LatVal v) {
     return lat_conflict();
 }
 
-#if CP_DEBUG
-static void printLatVal(const char *prefix, LatVal lv) {
-    switch (lv.state) {
-    case LAT_UNKNOWN:  printf("%s UNKNOWN\n", prefix); break;
-    case LAT_CONFLICT: printf("%s CONFLICT\n", prefix); break;
-    case LAT_CONST:
-        if (lv.isFloat) printf("%s CONST float %g\n", prefix, (double)lv.val.fval);
-        else            printf("%s CONST int %d\n", prefix, lv.val.ival);
-        break;
-    default: printf("%s ???\n", prefix);
-    }
-}
-#endif
-
 /* ---- Trasferimento: aggiorna la mappa simulando un'istruzione ---------- */
 static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
     int id = operandVarId(vm, in->dst);
@@ -292,6 +258,28 @@ static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
     }
 
     map->vals[id] = result;
+}
+
+/* ---- Jump-to-next detection ------------------------------------------- */
+/*
+ * Ritorna 1 se il salto all'istruzione 'jumpIdx' punta a una label
+ * raggiungibile cadendo dritto nell'array, attraversando solo altre
+ * IR_LABEL (che non generano codice).
+ *
+ * Cerca solo in AVANTI: back-edge dei loop hanno la label PRIMA del
+ * salto, quindi non vengono mai toccati erroneamente.
+ */
+static int is_jump_to_next(const IRFunction *f, int jumpIdx) {
+    int targetLabel = f->instrs[jumpIdx].dst.data.labelId;
+    for (int k = jumpIdx + 1; k < f->count; k++) {
+        if (f->instrs[k].op == IR_LABEL) {
+            if (f->instrs[k].dst.data.labelId == targetLabel)
+                return 1;
+            continue;   /* altra label intermedia: continua */
+        }
+        break;          /* istruzione reale: non è jump-to-next */
+    }
+    return 0;
 }
 
 /* ---- cp_optimize ------------------------------------------------------- */
@@ -330,14 +318,14 @@ int cp_optimize(IRFunction *f) {
             int hasPred = 0;
             for (int p = 0; p < nBlocks; p++) {
                 for (int k = 0; k < 2; k++) {
-                    if (f->blocks[p].succ[k] != b) continue;
+                    if (f->blocks[p].bb.succ[k] != b) continue;
                     if (!hasPred) { constMap_copy(&In[b], &Out[p]); hasPred = 1; }
                     else          constMap_meet(&In[b], &Out[p]);
                 }
             }
 
             constMap_copy(&tmp, &In[b]);
-            for (int i = f->blocks[b].start; i < f->blocks[b].end; i++)
+            for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
                 transferInstr(&f->instrs[i], &tmp, &vm);
 
             if (!constMap_equal(&Out[b], &tmp)) {
@@ -351,7 +339,7 @@ int cp_optimize(IRFunction *f) {
     int modified = 0;
     int *instrToBlock = arena_alloc(arena, (size_t)f->count * sizeof(int));
     for (int b = 0; b < nBlocks; b++)
-        for (int i = f->blocks[b].start; i < f->blocks[b].end; i++)
+        for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
             instrToBlock[i] = b;
 
     char *eliminate = arena_alloc(arena, (size_t)f->count * sizeof(char));
@@ -361,8 +349,22 @@ int cp_optimize(IRFunction *f) {
         ConstMap live; constMap_init(&live, numVars, arena);
         constMap_copy(&live, &In[b]);
 
-        for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
+        for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++) {
             IRInstr *in = &f->instrs[i];
+
+            /* ---- Jump-to-next elimination ----
+             * Se GOTO o IF_FALSE punta a una label raggiungibile cadendo
+             * dritto nell'array (con sole label intermedie), il salto è un
+             * NOP strutturale: eliminalo. Effetto cascata: la variabile
+             * condizione dell'IF_FALSE diventa dead e DCE la rimuove insieme
+             * al calcolo che la produceva (es. "t1 = i > 5" di un if vuoto).
+             * Cerca solo in avanti: back-edge dei loop non vengono toccati. */
+            if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) &&
+                is_jump_to_next(f, i)) {
+                eliminate[i] = 1;
+                modified = 1;
+                continue;
+            }
 
             if (in->op == IR_IF_FALSE) {
                 Operand cond = tryFold(in->src1, &live, &vm);
@@ -371,17 +373,17 @@ int cp_optimize(IRFunction *f) {
                                  ? (cond.data.intVal == 0)
                                  : (cond.data.floatVal == 0.0f);
                     int taken  = isZero;
-                    int s0 = f->blocks[b].succ[0];
-                    int s1 = f->blocks[b].succ[1];
+                    int s0 = f->blocks[b].bb.succ[0];
+                    int s1 = f->blocks[b].bb.succ[1];
                     if (taken) {
                         in->op   = IR_GOTO;
                         in->src1 = in->src2 = (Operand){.kind = OPND_NONE};
-                        f->blocks[b].succ[0] = s1;
-                        f->blocks[b].succ[1] = -1;
+                        f->blocks[b].bb.succ[0] = s1;
+                        f->blocks[b].bb.succ[1] = -1;
                         if (s0 >= 0) f->blocks[s0].predCount--;
                     } else {
                         eliminate[i] = 1;
-                        f->blocks[b].succ[1] = -1;
+                        f->blocks[b].bb.succ[1] = -1;
                         if (s1 >= 0) f->blocks[s1].predCount--;
                     }
                     modified = 1;
@@ -392,9 +394,6 @@ int cp_optimize(IRFunction *f) {
                 continue;
             }
 
-            /* Sostituisci src1 e src2 con costanti note.
-             * Confronto con operand_equal (non memcmp) per evitare falsi
-             * positivi causati da byte di padding non inizializzati. */
             Operand ns1 = tryFold(in->src1, &live, &vm);
             Operand ns2 = tryFold(in->src2, &live, &vm);
             if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
@@ -504,7 +503,7 @@ int cp_optimize(IRFunction *f) {
         f->capacity = newCount;
 
         for (int b = 0; b < nBlocks; b++) {
-            int oldStart = f->blocks[b].start, oldEnd = f->blocks[b].end;
+            int oldStart = f->blocks[b].bb.start, oldEnd = f->blocks[b].bb.end;
             int newStart = -1, newEnd = -1;
             for (int i = oldStart; i < oldEnd; i++) {
                 if (map[i] != -1) {
@@ -512,8 +511,8 @@ int cp_optimize(IRFunction *f) {
                     newEnd = map[i] + 1;
                 }
             }
-            f->blocks[b].start = (newStart == -1) ? 0 : newStart;
-            f->blocks[b].end   = (newEnd   == -1) ? 0 : newEnd;
+            f->blocks[b].bb.start = (newStart == -1) ? 0 : newStart;
+            f->blocks[b].bb.end   = (newEnd   == -1) ? 0 : newEnd;
         }
         f->curBlockStart = 0;
     }
