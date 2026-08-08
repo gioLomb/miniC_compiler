@@ -61,25 +61,34 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
         }
     }
 
-    for (int i = 0; i < L->bodyCount && count < MAX_IVARS; i++) {
-        int b = L->body[i];
-        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
-            IRInstr *in = &f->instrs[j];
-            if (in->op != IR_ADD && in->op != IR_SUB) continue;
-            if (!liveness_is_var_or_temp(in->dst.kind)) continue;
-            if (!sameOperand(in->dst, in->src1)) continue;
-            if (in->src2.kind != OPND_CONST_INT) continue;
-            int id = varmap_operand_id(vm, in->dst);
-            if (id < 0 || defCount[id] != 1) continue;
-            int step = in->src2.data.intVal;
-            if (in->op == IR_SUB) step = -step;
-            InductionBase *iv = &ivars[count++];
-            iv->var       = in->dst;
-            iv->varId     = id;
-            iv->step      = step;
-            iv->incrInstr = j;
-        }
+    for (int i = 0; i < L->bodyCount; i++) {
+    int b = L->body[i];
+    for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
+        if (count >= MAX_IVARS) goto done_ivars;   /* limite raggiunto */
+
+        const IRInstr *in = &f->instrs[j];
+
+        /* cerca pattern: dst = dst ± CONST (unica def di dst nel loop) */
+        if ((in->op != IR_ADD && in->op != IR_SUB)  ) continue;
+        if (!liveness_is_var_or_temp(in->dst.kind)  ) continue;
+        if (!sameOperand(in->dst, in->src1)          ) continue;
+        if (in->src2.kind != OPND_CONST_INT          ) continue;
+
+        int id = varmap_operand_id(vm, in->dst);
+        if (id < 0 || defCount[id] != 1             ) continue;
+
+        int step = in->src2.data.intVal;
+        if (in->op == IR_SUB) step = -step;
+
+        ivars[count++] = (InductionBase){
+            .var       = in->dst,
+            .varId     = id,
+            .step      = step,
+            .incrInstr = j,
+        };
     }
+}
+done_ivars:
     return count;
 }
 
@@ -89,33 +98,39 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
     int count = 0;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start;
-             j < f->blocks[b].bb.end && count < MAX_DERIVED; j++) {
+        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end && count < MAX_DERIVED; j++) {
             IRInstr *in = &f->instrs[j];
             if (in->op != IR_MUL) continue;
             if (!liveness_is_var_or_temp(in->dst.kind)) continue;
+            
             for (int v = 0; v < ivarCount; v++) {
                 InductionBase *iv = &ivars[v];
                 int d = 0;
-                if      (sameOperand(in->src1, iv->var) &&
-                         in->src2.kind == OPND_CONST_INT)
+                
+                if (sameOperand(in->src1, iv->var) && in->src2.kind == OPND_CONST_INT)
                     d = in->src2.data.intVal;
-                else if (sameOperand(in->src2, iv->var) &&
-                         in->src1.kind == OPND_CONST_INT)
+                else if (sameOperand(in->src2, iv->var) && in->src1.kind == OPND_CONST_INT)
                     d = in->src1.data.intVal;
-                else continue;
+                else 
+                    continue;
+                    
                 int stride;
                 if (!foldInt(IR_MUL, iv->step, d, &stride)) continue;
+                
                 int dstId = varmap_operand_id(vm, in->dst);
                 if (dstId < 0) continue;
-                InductionDerived *der = &derived[count++];
-                der->mulInstr   = j;
-                der->dstId      = dstId;
-                der->dst        = in->dst;
-                der->multiplier = d;
-                der->stride     = stride;
-                der->srTempId   = (*nextTemp)++;
-                der->baseIdx    = v;
+                
+                // Assegnazione diretta tramite Compound Literal
+                derived[count++] = (InductionDerived){
+                    .mulInstr   = j,
+                    .dstId      = dstId,
+                    .dst        = in->dst,
+                    .multiplier = d,
+                    .stride     = stride,
+                    .srTempId   = (*nextTemp)++,
+                    .baseIdx    = v
+                };
+                
                 break;
             }
         }
@@ -143,8 +158,8 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     IRInstr *newInstrs = malloc((size_t)maxNew * sizeof(IRInstr));
     int newCount = 0;
 
-    int *map = malloc((size_t)nInstrs * sizeof(int));
-    for (int i = 0; i < nInstrs; i++) map[i] = -1;
+    int *oldToNew = malloc((size_t)nInstrs * sizeof(int));
+    for (int i = 0; i < nInstrs; i++) oldToNew[i] = -1;
 
     int phInitStart = -1, phInitEnd = -1;
 
@@ -182,13 +197,13 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             copy.src1.data.tempId = derived[d].srTempId;
             copy.src2.kind        = OPND_NONE;
             copy.loopDepth        = in->loopDepth;
-            map[j] = newCount;
+            oldToNew[j] = newCount;
             newInstrs[newCount++] = copy;
             isDerived = 1;
             break;
         }
         if (!isDerived) {
-            map[j] = newCount;
+            oldToNew[j] = newCount;
             newInstrs[newCount++] = *in;
         }
 
@@ -235,6 +250,8 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     f->count    = newCount;
     f->capacity = newCount;
 
+    /* Aggiorna blocchi — sweep inline con oldToNew[] per body,
+     * phInitStart/phInitEnd per pre-header */
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
             f->blocks[b].bb.start = phInitStart;
@@ -244,10 +261,11 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
         int oldS = f->blocks[b].bb.start, oldE = f->blocks[b].bb.end;
         int newS = -1, newE = -1;
         for (int j = oldS; j < oldE; j++) {
-            if (map[j] == -1) continue;
-            if (newS == -1) newS = map[j];
-            newE = map[j] + 1;
+            if (oldToNew[j] == -1) continue;
+            if (newS == -1) newS = oldToNew[j];
+            newE = oldToNew[j] + 1;
         }
+        /* fallback per blocchi body che iniziano dopo insertAt senza map */
         if (newS == -1 && oldS >= insertAt) {
             newS = oldS + derivedCount;
             newE = oldE + derivedCount;
@@ -256,7 +274,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
         f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
-    free(map);
+    free(oldToNew);
     return 1;
 }
 

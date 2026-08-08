@@ -105,15 +105,11 @@ static LatVal lat_meet(LatVal a, LatVal b) {
 
 static int lat_equal(LatVal a, LatVal b) {
     if (a.state != b.state) return 0;
-    
-    // Se non sono costanti, lo stato identico basta a definirle uguali
     if (a.state != LAT_CONST) return 1;
-    
-    // Se arriviamo qui, sono entrambe LAT_CONST. Controlliamo il tipo e il rispettivo valore.
     if (a.isFloat != b.isFloat) return 0;
-    
     return a.isFloat ? (a.val.fval == b.val.fval) : (a.val.ival == b.val.ival);
 }
+
 /* ---- ConstMap --------------------------------------------------------- */
 
 typedef struct {
@@ -265,35 +261,21 @@ static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
 }
 
 /* ---- Jump-to-next detection ------------------------------------------- */
-/*
- * Ritorna 1 se il salto in posizione jumpIdx punta alla prossima label
- * raggiungibile cadendo dritto (attraversando sole altre IR_LABEL).
- * Cerca solo in avanti: back-edge non vengono toccati.
- */
 static int is_jump_to_next(const IRFunction *f, int jumpIdx) {
     int targetLabel = f->instrs[jumpIdx].dst.data.labelId;
     for (int k = jumpIdx + 1; k < f->count; k++) {
         if (f->instrs[k].op == IR_LABEL) {
             if (f->instrs[k].dst.data.labelId == targetLabel)
                 return 1;
-            continue;   /* altra label intermedia: continua */
+            continue;
         }
-        break;          /* istruzione reale: non è jump-to-next */
+        break;
     }
     return 0;
 }
 
 /* ---- Eliminazione label orfane ---------------------------------------- */
-/*
- * Dopo jump-to-next elimination alcune IR_LABEL possono restare senza
- * nessun salto che le referenzia. Le marca in eliminate[].
- * Ritorna il numero di label marcate (0 → nessuna modifica).
- *
- * Nota: considera solo i salti NON già eliminati (eliminate[i]==0),
- * per non resuscitare label già rimosso il loro unico referenziatore.
- */
 static int mark_unreferenced_labels(const IRFunction *f, char *eliminate) {
-    /* Determina il labelId massimo presente come destinazione salto */
     int maxLabel = -1;
     for (int i = 0; i < f->count; i++) {
         if (eliminate[i]) continue;
@@ -305,7 +287,6 @@ static int mark_unreferenced_labels(const IRFunction *f, char *eliminate) {
     }
 
     if (maxLabel < 0) {
-        /* Nessun salto attivo: tutte le label sono orfane */
         int count = 0;
         for (int i = 0; i < f->count; i++) {
             if (!eliminate[i] && f->instrs[i].op == IR_LABEL) {
@@ -316,10 +297,9 @@ static int mark_unreferenced_labels(const IRFunction *f, char *eliminate) {
         return count;
     }
 
-    /* Bitset delle label usate come target */
     int words = (maxLabel / 64) + 1;
     uint64_t *used = calloc((size_t)words, sizeof(uint64_t));
-    if (!used) return 0;  /* OOM: lascia invariato, non è critico */
+    if (!used) return 0;
 
     for (int i = 0; i < f->count; i++) {
         if (eliminate[i]) continue;
@@ -331,7 +311,6 @@ static int mark_unreferenced_labels(const IRFunction *f, char *eliminate) {
         }
     }
 
-    /* Marca IR_LABEL non referenziate */
     int count = 0;
     for (int i = 0; i < f->count; i++) {
         if (eliminate[i] || f->instrs[i].op != IR_LABEL) continue;
@@ -404,10 +383,6 @@ int cp_optimize(IRFunction *f) {
 
     /* ---- PASSO 4: riscrittura + CFG pruning + folding binario ---- */
     int modified = 0;
-    int *instrToBlock = arena_alloc(arena, (size_t)f->count * sizeof(int));
-    for (int b = 0; b < nBlocks; b++)
-        for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
-            instrToBlock[i] = b;
 
     char *eliminate = arena_alloc(arena, (size_t)f->count * sizeof(char));
     memset(eliminate, 0, (size_t)f->count * sizeof(char));
@@ -419,19 +394,13 @@ int cp_optimize(IRFunction *f) {
         for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++) {
             IRInstr *in = &f->instrs[i];
 
-            /* ---- Jump-to-next elimination ----
-             * GOTO o IF_FALSE che punta alla label immediatamente successiva
-             * nell'array (separata solo da altre IR_LABEL) è un NOP strutturale.
-             * Eliminarlo può rendere orfane le label che puntava: gestito dopo
-             * il loop da mark_unreferenced_labels(). */
+            /* ---- Jump-to-next elimination ---- */
             if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) &&
                 is_jump_to_next(f, i)) {
-                /* Aggiorna predCount del blocco target che perde questo arco */
                 int s = (in->op == IR_GOTO)
                         ? f->blocks[b].bb.succ[0]
                         : f->blocks[b].bb.succ[1];
                 if (s >= 0) f->blocks[s].predCount--;
-                /* Rimuovi il succ corrispondente dal blocco */
                 if (in->op == IR_GOTO) {
                     f->blocks[b].bb.succ[0] = f->blocks[b].bb.succ[1];
                     f->blocks[b].bb.succ[1] = -1;
@@ -564,42 +533,33 @@ int cp_optimize(IRFunction *f) {
         }
     }
 
-    /* ---- Rimozione label orfane ----------------------------------------
-     * Dopo jump-to-next elimination alcune IR_LABEL possono essere rimaste
-     * senza nessun salto che le referenzia. Le eliminiamo ora, prima dello
-     * sweep, per non generare .L2: vuote nell'assembly.
-     * Nota: forziamo modified=1 se troviamo label orfane, anche nel caso in
-     * cui jump-to-next non avesse già settato modified, affinché lo sweep
-     * venga comunque eseguito.                                              */
+    /* ---- Rimozione label orfane ---- */
     if (mark_unreferenced_labels(f, eliminate) > 0) modified = 1;
 
-    /* ---- PASSO 5: Sweep ---- */
+    /* ---- PASSO 5: Sweep — aggiorna blocchi inline, niente map[] ---- */
     if (modified) {
-        int *map = arena_alloc(arena, (size_t)f->count * sizeof(int));
-        for (int i = 0; i < f->count; i++) map[i] = -1;
-
-        IRInstr *newInstrs = malloc((size_t)f->count * sizeof(IRInstr));
+        int nInstrs = f->count;
+        IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
         int newCount = 0;
-        for (int i = 0; i < f->count; i++) {
-            if (!eliminate[i]) { newInstrs[newCount] = f->instrs[i]; map[i] = newCount++; }
-        }
-        free(f->instrs);
-        f->instrs   = newInstrs;
-        f->count    = newCount;
-        f->capacity = newCount;
 
         for (int b = 0; b < nBlocks; b++) {
-            int oldStart = f->blocks[b].bb.start, oldEnd = f->blocks[b].bb.end;
-            int newStart = -1, newEnd = -1;
+            int oldStart = f->blocks[b].bb.start;
+            int oldEnd   = f->blocks[b].bb.end;
+            int newStart = newCount;
+
             for (int i = oldStart; i < oldEnd; i++) {
-                if (map[i] != -1) {
-                    if (newStart == -1) newStart = map[i];
-                    newEnd = map[i] + 1;
-                }
+                if (!eliminate[i])
+                    newInstrs[newCount++] = f->instrs[i];
             }
-            f->blocks[b].bb.start = (newStart == -1) ? 0 : newStart;
-            f->blocks[b].bb.end   = (newEnd   == -1) ? 0 : newEnd;
+
+            f->blocks[b].bb.start = newStart;
+            f->blocks[b].bb.end   = newCount;
         }
+
+        free(f->instrs);
+        f->instrs        = newInstrs;
+        f->count         = newCount;
+        f->capacity      = newCount;
         f->curBlockStart = 0;
     }
 

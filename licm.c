@@ -175,14 +175,9 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     IRInstr *newInstrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
     int newCount = 0;
 
-    int *map = calloc((size_t)nInstrs, sizeof(int));
-    for (int j = 0; j < nInstrs; j++) map[j] = -1;
-
     /* Fase 1: istruzioni prima dell'header */
-    for (int j = 0; j < insertAt; j++) {
-        map[j] = newCount;
+    for (int j = 0; j < insertAt; j++)
         newInstrs[newCount++] = f->instrs[j];
-    }
 
     /* Fase 2: invarianti hoistate → contenuto pre-header */
     int phMovedStart = newCount;
@@ -191,10 +186,19 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     }
     int phNewEnd = newCount;
 
-    /* Fase 3: istruzioni da insertAt in poi, saltando quelle mosse */
+    /* Fase 3: istruzioni da insertAt in poi, saltando quelle mosse.
+     * Sweep inline: aggiorna start/end di ogni blocco mentre si scorre. */
+    int bodyBase = newCount;  /* offset per correggere gli indici dei blocchi body */
+    (void)bodyBase;
+
+    /* Costruiamo prima l'array, poi aggiorniamo i blocchi scorrendo
+     * per blocco (stesso pattern sweep ottimizzato). */
+    int *oldToNew = malloc((size_t)nInstrs * sizeof(int));
+    for (int j = 0; j < nInstrs; j++) oldToNew[j] = -1;
+
     for (int j = insertAt; j < nInstrs; j++) {
         if (doMove[j]) continue;
-        map[j] = newCount;
+        oldToNew[j] = newCount;
         newInstrs[newCount++] = f->instrs[j];
     }
 
@@ -203,6 +207,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     f->count    = newCount;
     f->capacity = newCount;
 
+    /* Aggiorna blocchi usando oldToNew per body, phMovedStart/phNewEnd per pre-header */
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
             f->blocks[b].bb.start = phMovedStart;
@@ -212,16 +217,16 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
         int oldS = f->blocks[b].bb.start, oldE = f->blocks[b].bb.end;
         int newS = -1, newE = -1;
         for (int j = oldS; j < oldE; j++) {
-            if (map[j] != -1) {
-                if (newS == -1) newS = map[j];
-                newE = map[j] + 1;
+            if (oldToNew[j] != -1) {
+                if (newS == -1) newS = oldToNew[j];
+                newE = oldToNew[j] + 1;
             }
         }
         f->blocks[b].bb.start = (newS == -1) ? 0 : newS;
         f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
-    free(doMove); free(inBody); free(map);
+    free(doMove); free(inBody); free(oldToNew);
     return moved;
 }
 

@@ -91,32 +91,28 @@ int dce_optimize(IRFunction *f) {
         }
     }
 
-    /* PASSO 6: Sweep */
-    int *map = arena_alloc(arena, (size_t)nInstrs * sizeof(int));
-    for (int i = 0; i < nInstrs; i++) map[i] = -1;
-
+    /* PASSO 6: Sweep — aggiorna blocchi inline, niente map[] */
     IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
     int newCount = 0;
-    for (int i = 0; i < nInstrs; i++) {
-        if (!eliminate[i]) { newInstrs[newCount] = f->instrs[i]; map[i] = newCount++; }
-    }
-    free(f->instrs);
-    f->instrs   = newInstrs;
-    f->count    = newCount;
-    f->capacity = newCount;
 
     for (int b = 0; b < nBlocks; b++) {
-        int oldStart = f->blocks[b].bb.start, oldEnd = f->blocks[b].bb.end;
-        int newStart = -1, newEnd = -1;
+        int oldStart = f->blocks[b].bb.start;
+        int oldEnd   = f->blocks[b].bb.end;
+        int newStart = newCount;
+
         for (int i = oldStart; i < oldEnd; i++) {
-            if (map[i] != -1) {
-                if (newStart == -1) newStart = map[i];
-                newEnd = map[i] + 1;
-            }
+            if (!eliminate[i])
+                newInstrs[newCount++] = f->instrs[i];
         }
-        f->blocks[b].bb.start = (newStart == -1) ? 0 : newStart;
-        f->blocks[b].bb.end   = (newEnd   == -1) ? 0 : newEnd;
+
+        f->blocks[b].bb.start = newStart;
+        f->blocks[b].bb.end   = newCount;
     }
+
+    free(f->instrs);
+    f->instrs        = newInstrs;
+    f->count         = newCount;
+    f->capacity      = newCount;
     f->curBlockStart = 0;
 
     /* PASSO 7: Pulizia */
