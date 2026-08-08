@@ -35,7 +35,7 @@ static unsigned long cp_uint64_hash(const void *key, size_t keySize) {
 
 typedef struct { Hash_Table *table; int nextId; } VarMap;
 
-static uint64_t cp_make_key(int kind, int a, int b) {
+static inline uint64_t cp_make_key(int kind, int a, int b) {
     uint64_t k = 0;
     k |= (uint64_t)(kind & 0x3)         << 62;
     k |= (uint64_t)(a    & 0x7fffffff)  << 31;
@@ -52,7 +52,7 @@ static int varMap_id(VarMap *m, int kind, int a, int b) {
     return id;
 }
 
-static int operandVarId(VarMap *m, Operand op) {
+static inline int operandVarId(VarMap *m, Operand op) {
     if (op.kind == OPND_VAR)  return varMap_id(m, 0, op.data.varLevel, op.data.varOffset);
     if (op.kind == OPND_TEMP) return varMap_id(m, 1, op.data.tempId, 0);
     return -1;
@@ -77,16 +77,16 @@ static int operand_equal(const Operand *a, const Operand *b) {
 
 /* ---- Operazioni sul reticolo ------------------------------------------ */
 
-static LatVal lat_unknown(void) {
+static inline LatVal lat_unknown(void) {
     LatVal v = {0}; v.state = LAT_UNKNOWN; return v;
 }
-static LatVal lat_const_int(int ival) {
+static inline LatVal lat_const_int(int ival) {
     LatVal v = {0}; v.state = LAT_CONST; v.isFloat = 0; v.val.ival = ival; return v;
 }
-static LatVal lat_const_float(float fval) {
+static inline LatVal lat_const_float(float fval) {
     LatVal v = {0}; v.state = LAT_CONST; v.isFloat = 1; v.val.fval = fval; return v;
 }
-static LatVal lat_conflict(void) {
+static inline LatVal lat_conflict(void) {
     LatVal v = {0}; v.state = LAT_CONFLICT; return v;
 }
 
@@ -105,11 +105,15 @@ static LatVal lat_meet(LatVal a, LatVal b) {
 
 static int lat_equal(LatVal a, LatVal b) {
     if (a.state != b.state) return 0;
+    
+    // Se non sono costanti, lo stato identico basta a definirle uguali
     if (a.state != LAT_CONST) return 1;
+    
+    // Se arriviamo qui, sono entrambe LAT_CONST. Controlliamo il tipo e il rispettivo valore.
     if (a.isFloat != b.isFloat) return 0;
+    
     return a.isFloat ? (a.val.fval == b.val.fval) : (a.val.ival == b.val.ival);
 }
-
 /* ---- ConstMap --------------------------------------------------------- */
 
 typedef struct {
@@ -123,7 +127,7 @@ static void constMap_init(ConstMap *m, int size, Arena *arena) {
     for (int i = 0; i < size; i++) m->vals[i] = lat_unknown();
 }
 
-static void constMap_copy(ConstMap *dst, const ConstMap *src) {
+static inline void constMap_copy(ConstMap *dst, const ConstMap *src) {
     memcpy(dst->vals, src->vals, (size_t)src->size * sizeof(LatVal));
 }
 
@@ -138,7 +142,7 @@ static void constMap_meet(ConstMap *dest, const ConstMap *src) {
         dest->vals[i] = lat_meet(dest->vals[i], src->vals[i]);
 }
 
-static LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm) {
+static inline LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm) {
     int id = operandVarId(vm, op);
     if (id < 0 || id >= m->size) return lat_conflict();
     return m->vals[id];
@@ -154,7 +158,7 @@ static Operand tryFold(Operand op, const ConstMap *m, VarMap *vm) {
 
 /* ---- Helpers per transferInstr ---------------------------------------- */
 
-static LatVal getLatVal(const ConstMap *map, Operand op, VarMap *vm) {
+static inline LatVal getLatVal(const ConstMap *map, Operand op, VarMap *vm) {
     switch (op.kind) {
     case OPND_CONST_INT:   return lat_const_int(op.data.intVal);
     case OPND_CONST_FLOAT: return lat_const_float(op.data.floatVal);
@@ -164,7 +168,7 @@ static LatVal getLatVal(const ConstMap *map, Operand op, VarMap *vm) {
     }
 }
 
-static int isBinaryOp(IROp op) {
+static inline int isBinaryOp(IROp op) {
     switch (op) {
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
@@ -173,7 +177,7 @@ static int isBinaryOp(IROp op) {
     }
 }
 
-static int isComparisonOp(IROp op) {
+static inline int isComparisonOp(IROp op) {
     switch (op) {
     case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
         return 1;
@@ -567,8 +571,7 @@ int cp_optimize(IRFunction *f) {
      * Nota: forziamo modified=1 se troviamo label orfane, anche nel caso in
      * cui jump-to-next non avesse già settato modified, affinché lo sweep
      * venga comunque eseguito.                                              */
-    if (mark_unreferenced_labels(f, eliminate) > 0)
-        modified = 1;
+    if (mark_unreferenced_labels(f, eliminate) > 0) modified = 1;
 
     /* ---- PASSO 5: Sweep ---- */
     if (modified) {

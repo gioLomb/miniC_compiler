@@ -29,13 +29,9 @@ typedef struct {
 } LiveSet;
 
 LiveSet liveset_new    (Arena *arena, int words);
-void    liveset_clear  (LiveSet *s);
 void    liveset_set    (LiveSet *s, int id);
 void    liveset_clrbit (LiveSet *s, int id);
 int     liveset_test   (const LiveSet *s, int id);
-void    liveset_union  (LiveSet *dst, const LiveSet *src);
-void    liveset_union_into(LiveSet *dst, const LiveSet *a, const LiveSet *b);
-void    liveset_diff   (LiveSet *dst, const LiveSet *a, const LiveSet *b);
 int     liveset_equal  (const LiveSet *a, const LiveSet *b);
 void    liveset_copy   (LiveSet *dst, const LiveSet *src);
 

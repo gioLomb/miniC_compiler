@@ -52,13 +52,14 @@ int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node) {
     int isArray, arraySize;
     symtab_parse_decl_text(arena, node->text, &typeName, &name, &isArray, &arraySize);
 
-    Symbol sym = {0};
-    sym.kind = SYM_VAR;
-    sym.dataType = symtab_type_from_string(typeName);
-    sym.isArray = isArray;
-    sym.arraySize = arraySize;
-    sym.scopeLevel = scope->level;
-    sym.offset     = (int) scope->table->size;   /* prossimo slot libero in questo scope */
+    Symbol sym = {
+    .kind       = SYM_VAR,
+    .dataType   = symtab_type_from_string(typeName),
+    .isArray    = isArray,
+    .arraySize  = arraySize,
+    .scopeLevel = scope->level,
+    .offset     = (int)scope->table->size
+    };
 
     if (!symtab_declare(scope, name, &sym)) {
         fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);

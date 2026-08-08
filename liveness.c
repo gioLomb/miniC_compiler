@@ -12,7 +12,7 @@ LiveSet liveset_new(Arena *arena, int words) {
     return s;
 }
 
-void liveset_clear(LiveSet *s) {
+static inline void liveset_clear(LiveSet *s) {
     memset(s->bits, 0, (size_t)s->words * sizeof(uint64_t));
 }
 
@@ -28,15 +28,15 @@ int liveset_test(const LiveSet *s, int id) {
     return (s->bits[id >> 6] >> (id & 63)) & 1ULL;
 }
 
-void liveset_union(LiveSet *dst, const LiveSet *src) {
+static inline void liveset_union(LiveSet *dst, const LiveSet *src) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] |= src->bits[i];
 }
 
-void liveset_union_into(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
+static inline void liveset_union_into(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] | b->bits[i];
 }
 
-void liveset_diff(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
+static inline void liveset_diff(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] & ~b->bits[i];
 }
 
@@ -249,15 +249,23 @@ LivenessResult liveness_compute_mach(const MachFunction *f, const BasicBlock *bl
 /* ---- Predicati (fronte IR) ---------------------------------------------- */
 
 int liveness_defines_dst(IROp op) {
-    switch (op) {
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
-    case IR_NEG: case IR_NOT:
-    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
-    case IR_ASSIGN: case IR_LOAD_ARR: case IR_CALL:
-        return 1;
-    default:
-        return 0;
-    }
+    /* bit i settato = IROp i definisce dst.
+     * IR_ADD=0, IR_SUB=1, IR_MUL=2, IR_DIV=3, IR_MOD=4,
+     * IR_NEG=5, IR_NOT=6,
+     * IR_LT=7, IR_LE=8, IR_GT=9, IR_GE=10, IR_EQ=11, IR_NE=12,
+     * IR_ASSIGN=13, IR_LOAD_ARR=14, IR_STORE_ARR=15(no),
+     * IR_PARAM=16(no), IR_CALL=17, IR_RETURN=18(no),
+     * IR_GOTO=19(no), IR_IF_FALSE=20(no), IR_LABEL=21(no)
+     */
+    static const uint32_t DEFINES_DST_MASK =
+        (1u << IR_ADD)      | (1u << IR_SUB)  | (1u << IR_MUL)  |
+        (1u << IR_DIV)      | (1u << IR_MOD)  | (1u << IR_NEG)  |
+        (1u << IR_NOT)      | (1u << IR_LT)   | (1u << IR_LE)   |
+        (1u << IR_GT)       | (1u << IR_GE)   | (1u << IR_EQ)   |
+        (1u << IR_NE)       | (1u << IR_ASSIGN)                  |
+        (1u << IR_LOAD_ARR) | (1u << IR_CALL);
+
+    return (op < 32) && ((DEFINES_DST_MASK >> op) & 1u);
 }
 
 int liveness_is_var_or_temp(OperandKind kind) {

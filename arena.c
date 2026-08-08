@@ -26,8 +26,7 @@ struct Arena {
 
 static size_t alignUp(size_t n) {
     size_t a = sizeof(void *);
-    size_t remainder = n % a;
-    return (remainder == 0) ? n : (n + a - remainder);
+    return (n + a - 1) & ~(a - 1);
 }
 
 static ArenaBlock *blockCreate(size_t capacity) {
