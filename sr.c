@@ -5,14 +5,28 @@
 #include "liveness.h"
 #include "arena.h"
 
-static int foldInt(IROp op, int a, int b, int *res) {
+/* ---- Helpers ----------------------------------------------------------- */
+
+static inline int foldInt(IROp op, int a, int b, int *res) {
     switch (op) {
     case IR_MUL: *res = a * b; return 1;
     case IR_ADD: *res = a + b; return 1;
     case IR_SUB: *res = a - b; return 1;
-    default:     return 0;
+    default:                   return 0;
     }
 }
+
+static inline int sameOperand(Operand a, Operand b) {
+    if (a.kind != b.kind) return 0;
+    if (a.kind == OPND_VAR)
+        return a.data.varLevel  == b.data.varLevel &&
+               a.data.varOffset == b.data.varOffset;
+    if (a.kind == OPND_TEMP)
+        return a.data.tempId == b.data.tempId;
+    return 0;
+}
+
+/* ---- Strutture --------------------------------------------------------- */
 
 typedef struct {
     Operand var;
@@ -34,15 +48,7 @@ typedef struct {
 #define MAX_IVARS   16
 #define MAX_DERIVED 64
 
-static int sameOperand(Operand a, Operand b) {
-    if (a.kind != b.kind) return 0;
-    if (a.kind == OPND_VAR)
-        return a.data.varLevel  == b.data.varLevel &&
-               a.data.varOffset == b.data.varOffset;
-    if (a.kind == OPND_TEMP)
-        return a.data.tempId == b.data.tempId;
-    return 0;
-}
+/* ---- Ricerca variabili induttive base ---------------------------------- */
 
 static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
                               InductionBase *ivars, Arena *arena) {
@@ -61,66 +67,71 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
         }
     }
 
-    for (int i = 0; i < L->bodyCount; i++) {
-    int b = L->body[i];
-    for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
-        if (count >= MAX_IVARS) goto done_ivars;   /* limite raggiunto */
+    for (int i = 0; i < L->bodyCount && count < MAX_IVARS; i++) {
+        int b = L->body[i];
+        for (int j = f->blocks[b].bb.start;
+             j < f->blocks[b].bb.end && count < MAX_IVARS;
+             j++) {
+            const IRInstr *in = &f->instrs[j];
 
-        const IRInstr *in = &f->instrs[j];
+            /* cerca pattern: dst = dst ± CONST, unica def nel loop */
+            if (in->op != IR_ADD && in->op != IR_SUB)          continue;
+            if (!liveness_is_var_or_temp(in->dst.kind))        continue;
+            if (!sameOperand(in->dst, in->src1))               continue;
+            if (in->src2.kind != OPND_CONST_INT)               continue;
 
-        /* cerca pattern: dst = dst ± CONST (unica def di dst nel loop) */
-        if ((in->op != IR_ADD && in->op != IR_SUB)  ) continue;
-        if (!liveness_is_var_or_temp(in->dst.kind)  ) continue;
-        if (!sameOperand(in->dst, in->src1)          ) continue;
-        if (in->src2.kind != OPND_CONST_INT          ) continue;
+            int id = varmap_operand_id(vm, in->dst);
+            if (id < 0 || defCount[id] != 1)                   continue;
 
-        int id = varmap_operand_id(vm, in->dst);
-        if (id < 0 || defCount[id] != 1             ) continue;
+            int step = in->src2.data.intVal;
+            if (in->op == IR_SUB) step = -step;
 
-        int step = in->src2.data.intVal;
-        if (in->op == IR_SUB) step = -step;
-
-        ivars[count++] = (InductionBase){
-            .var       = in->dst,
-            .varId     = id,
-            .step      = step,
-            .incrInstr = j,
-        };
+            ivars[count++] = (InductionBase){
+                .var       = in->dst,
+                .varId     = id,
+                .step      = step,
+                .incrInstr = j,
+            };
+        }
     }
-}
-done_ivars:
+
     return count;
 }
+
+/* ---- Ricerca variabili induttive derivate ------------------------------ */
 
 static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
                         InductionBase *ivars, int ivarCount,
                         InductionDerived *derived, int *nextTemp) {
     int count = 0;
+
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end && count < MAX_DERIVED; j++) {
-            IRInstr *in = &f->instrs[j];
-            if (in->op != IR_MUL) continue;
-            if (!liveness_is_var_or_temp(in->dst.kind)) continue;
-            
+        for (int j = f->blocks[b].bb.start;
+             j < f->blocks[b].bb.end && count < MAX_DERIVED;
+             j++) {
+            const IRInstr *in = &f->instrs[j];
+
+            if (in->op != IR_MUL)                              continue;
+            if (!liveness_is_var_or_temp(in->dst.kind))        continue;
+
             for (int v = 0; v < ivarCount; v++) {
                 InductionBase *iv = &ivars[v];
                 int d = 0;
-                
+
                 if (sameOperand(in->src1, iv->var) && in->src2.kind == OPND_CONST_INT)
                     d = in->src2.data.intVal;
                 else if (sameOperand(in->src2, iv->var) && in->src1.kind == OPND_CONST_INT)
                     d = in->src1.data.intVal;
-                else 
+                else
                     continue;
-                    
+
                 int stride;
                 if (!foldInt(IR_MUL, iv->step, d, &stride)) continue;
-                
+
                 int dstId = varmap_operand_id(vm, in->dst);
                 if (dstId < 0) continue;
-                
-                // Assegnazione diretta tramite Compound Literal
+
                 derived[count++] = (InductionDerived){
                     .mulInstr   = j,
                     .dstId      = dstId,
@@ -128,61 +139,75 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
                     .multiplier = d,
                     .stride     = stride,
                     .srTempId   = (*nextTemp)++,
-                    .baseIdx    = v
+                    .baseIdx    = v,
                 };
-                
                 break;
             }
         }
     }
+
     return count;
 }
+
+/* ---- Helper: costruisce una IRInstr azzerata con campi minimi ---------- */
+
+static inline IRInstr make_instr(IROp op, Operand dst,
+                                  Operand src1, Operand src2,
+                                  int loopDepth) {
+    return (IRInstr){ .op = op, .dst = dst,
+                      .src1 = src1, .src2 = src2,
+                      .loopDepth = loopDepth };
+}
+
+/* ---- Applicazione della strength reduction ----------------------------- */
 
 static int applyStrengthReduction(IRFunction *f, Loop *L,
                                    InductionBase *ivars, int ivarCount,
                                    InductionDerived *derived, int derivedCount) {
     if (derivedCount == 0) return 0;
 
-    int phIdx   = L->preHeader;
-    int header  = L->header;
-    int nInstrs = f->count;
-    int nBlocks = f->blockCount;
-
+    int phIdx    = L->preHeader;
+    int header   = L->header;
+    int nInstrs  = f->count;
+    int nBlocks  = f->blockCount;
     int insertAt = f->blocks[header].bb.start;
 
-    int outerDepth = f->instrs[insertAt].loopDepth - 1;
-    if (outerDepth < 0) outerDepth = 0;
-    int bodyDepth = f->instrs[insertAt].loopDepth;
+    /* loopDepth del corpo (prima istruzione dell'header) e dell'esterno */
+    int bodyDepth  = f->instrs[insertAt].loopDepth;
+    int outerDepth = bodyDepth > 0 ? bodyDepth - 1 : 0;
 
     int maxNew = nInstrs + derivedCount * (1 + ivarCount);
     IRInstr *newInstrs = malloc((size_t)maxNew * sizeof(IRInstr));
     int newCount = 0;
 
     int *oldToNew = malloc((size_t)nInstrs * sizeof(int));
-    for (int i = 0; i < nInstrs; i++) oldToNew[i] = -1;
+    memset(oldToNew, -1, (size_t)nInstrs * sizeof(int));
 
     int phInitStart = -1, phInitEnd = -1;
 
+    /* Emette l'init SR di tutte le derived variables nel pre-header */
+    #define EMIT_PH_INITS()                                                  \
+        do {                                                                  \
+            phInitStart = newCount;                                           \
+            for (int d = 0; d < derivedCount; d++) {                         \
+                InductionDerived *der = &derived[d];                         \
+                InductionBase    *iv  = &ivars[der->baseIdx];                \
+                newInstrs[newCount++] = make_instr(                          \
+                    IR_MUL,                                                   \
+                    (Operand){ .kind = OPND_TEMP,                            \
+                               .data.tempId = der->srTempId },               \
+                    iv->var,                                                  \
+                    (Operand){ .kind = OPND_CONST_INT,                       \
+                               .data.intVal = der->multiplier },             \
+                    outerDepth);                                              \
+            }                                                                 \
+            phInitEnd = newCount;                                             \
+        } while (0)
+
     for (int j = 0; j < nInstrs; j++) {
 
-        /* inserisci init SR prima dell'header */
-        if (j == insertAt) {
-            phInitStart = newCount;
-            for (int d = 0; d < derivedCount; d++) {
-                InductionDerived *der = &derived[d];
-                InductionBase    *iv  = &ivars[der->baseIdx];
-                IRInstr init; memset(&init, 0, sizeof init);
-                init.op               = IR_MUL;
-                init.dst.kind         = OPND_TEMP;
-                init.dst.data.tempId  = der->srTempId;
-                init.src1             = iv->var;
-                init.src2.kind        = OPND_CONST_INT;
-                init.src2.data.intVal = der->multiplier;
-                init.loopDepth        = outerDepth;
-                newInstrs[newCount++] = init;
-            }
-            phInitEnd = newCount;
-        }
+        /* inserisci init SR prima dell'header (una sola volta) */
+        if (j == insertAt) EMIT_PH_INITS();
 
         IRInstr *in = &f->instrs[j];
 
@@ -190,15 +215,14 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
         int isDerived = 0;
         for (int d = 0; d < derivedCount; d++) {
             if (j != derived[d].mulInstr) continue;
-            IRInstr copy; memset(&copy, 0, sizeof copy);
-            copy.op               = IR_ASSIGN;
-            copy.dst              = derived[d].dst;
-            copy.src1.kind        = OPND_TEMP;
-            copy.src1.data.tempId = derived[d].srTempId;
-            copy.src2.kind        = OPND_NONE;
-            copy.loopDepth        = in->loopDepth;
             oldToNew[j] = newCount;
-            newInstrs[newCount++] = copy;
+            newInstrs[newCount++] = make_instr(
+                IR_ASSIGN,
+                derived[d].dst,
+                (Operand){ .kind = OPND_TEMP,
+                           .data.tempId = derived[d].srTempId },
+                noOperand(),
+                in->loopDepth);
             isDerived = 1;
             break;
         }
@@ -212,46 +236,30 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             if (j != ivars[v].incrInstr) continue;
             for (int d = 0; d < derivedCount; d++) {
                 if (derived[d].baseIdx != v) continue;
-                IRInstr upd; memset(&upd, 0, sizeof upd);
-                upd.op               = IR_ADD;
-                upd.dst.kind         = OPND_TEMP;
-                upd.dst.data.tempId  = derived[d].srTempId;
-                upd.src1.kind        = OPND_TEMP;
-                upd.src1.data.tempId = derived[d].srTempId;
-                upd.src2.kind        = OPND_CONST_INT;
-                upd.src2.data.intVal = derived[d].stride;
-                upd.loopDepth        = bodyDepth;
-                newInstrs[newCount++] = upd;
+                Operand srOp = (Operand){ .kind = OPND_TEMP,
+                                          .data.tempId = derived[d].srTempId };
+                newInstrs[newCount++] = make_instr(
+                    IR_ADD, srOp, srOp,
+                    (Operand){ .kind = OPND_CONST_INT,
+                               .data.intVal = derived[d].stride },
+                    bodyDepth);
             }
         }
     }
 
-    /* caso degenere: insertAt == nInstrs */
-    if (phInitStart == -1) {
-        phInitStart = newCount;
-        for (int d = 0; d < derivedCount; d++) {
-            InductionDerived *der = &derived[d];
-            InductionBase    *iv  = &ivars[der->baseIdx];
-            IRInstr init; memset(&init, 0, sizeof init);
-            init.op               = IR_MUL;
-            init.dst.kind         = OPND_TEMP;
-            init.dst.data.tempId  = der->srTempId;
-            init.src1             = iv->var;
-            init.src2.kind        = OPND_CONST_INT;
-            init.src2.data.intVal = der->multiplier;
-            init.loopDepth        = outerDepth;
-            newInstrs[newCount++] = init;
-        }
-        phInitEnd = newCount;
-    }
+    /* caso degenere: insertAt == nInstrs (loop vuoto, non dovrebbe accadere
+       in pratica, ma meglio gestirlo) */
+    if (phInitStart == -1) EMIT_PH_INITS();
+
+    #undef EMIT_PH_INITS
 
     free(f->instrs);
     f->instrs   = newInstrs;
     f->count    = newCount;
     f->capacity = newCount;
 
-    /* Aggiorna blocchi — sweep inline con oldToNew[] per body,
-     * phInitStart/phInitEnd per pre-header */
+    /* Aggiorna start/end dei blocchi usando oldToNew[] per i blocchi body
+     * e phInitStart/phInitEnd per il pre-header */
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
             f->blocks[b].bb.start = phInitStart;
@@ -278,14 +286,16 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     return 1;
 }
 
+/* ---- Punto di ingresso ------------------------------------------------- */
+
 int sr_optimize(IRFunction *f) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
-    int words   = (nBlocks + 63) / 64;
+    int words   = (nBlocks + BITS_PER_WORD-1) / BITS_PER_WORD;
     Arena *arena = arena_create(0);
 
-    LiveSet *Dom = loop_compute_dominators(f, words, arena);
+    LiveSet *Dom  = loop_compute_dominators(f, words, arena);
     Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
     int      nLoops = loop_find(f, Dom, loops, arena);
     if (nLoops == 0) { arena_destroy(arena); return 0; }
@@ -294,15 +304,15 @@ int sr_optimize(IRFunction *f) {
     LivenessResult  liv     = liveness_compute_ir(f, NULL, livArena);
     VarMap         *vm      = &liv.varMap;
 
+    /* calcola nextTemp in un unico scan su tutte le istruzioni */
     int nextTemp = 0;
     for (int i = 0; i < f->count; i++) {
-        IRInstr *in = &f->instrs[i];
-        if (in->dst.kind  == OPND_TEMP && in->dst.data.tempId  >= nextTemp)
-            nextTemp = in->dst.data.tempId  + 1;
-        if (in->src1.kind == OPND_TEMP && in->src1.data.tempId >= nextTemp)
-            nextTemp = in->src1.data.tempId + 1;
-        if (in->src2.kind == OPND_TEMP && in->src2.data.tempId >= nextTemp)
-            nextTemp = in->src2.data.tempId + 1;
+        const IRInstr *in = &f->instrs[i];
+        const Operand *ops[3] = { &in->dst, &in->src1, &in->src2 };
+        for (int k = 0; k < 3; k++) {
+            if (ops[k]->kind == OPND_TEMP && ops[k]->data.tempId >= nextTemp)
+                nextTemp = ops[k]->data.tempId + 1;
+        }
     }
 
     int totalChanged = 0;
@@ -312,10 +322,13 @@ int sr_optimize(IRFunction *f) {
 
         InductionBase    ivars[MAX_IVARS];
         InductionDerived derived[MAX_DERIVED];
+
         int ivarCount    = findInductionBase(f, L, vm, ivars, arena);
         if (ivarCount == 0) continue;
+
         int derivedCount = findDerived(f, L, vm, ivars, ivarCount, derived, &nextTemp);
         if (derivedCount == 0) continue;
+
         totalChanged += applyStrengthReduction(f, L, ivars, ivarCount,
                                                 derived, derivedCount);
     }
