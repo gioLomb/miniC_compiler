@@ -6,18 +6,20 @@
 #include "arena.h"
 
 /* ---- Purezza ----------------------------------------------------------- */
-static int isPure(IROp op) {
-    switch (op) {
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
-    case IR_NEG: case IR_NOT:
-    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
-    case IR_ASSIGN:
-        return 1;
-    default: return 0;
-    }
+
+static inline int isPure(IROp op) {
+    /* bitmask: evita switch/branch, O(1) */
+    static const unsigned int mask =
+        (1U << IR_ADD)  | (1U << IR_SUB) | (1U << IR_MUL) |
+        (1U << IR_DIV)  | (1U << IR_MOD) | (1U << IR_NEG) |
+        (1U << IR_NOT)  | (1U << IR_LT)  | (1U << IR_LE)  |
+        (1U << IR_GT)   | (1U << IR_GE)  | (1U << IR_EQ)  |
+        (1U << IR_NE)   | (1U << IR_ASSIGN);
+    return (op < 32) && ((mask >> op) & 1U);
 }
 
 /* ---- Conta definizioni dentro il loop ---------------------------------- */
+
 static int *countDefsInLoop(IRFunction *f, Loop *L, VarMap *vm,
                              int numVars, Arena *arena) {
     int *defCount = arena_alloc(arena, (size_t)numVars * sizeof(int));
@@ -68,6 +70,7 @@ static int srcIsInvariant(IRFunction *f, Loop *L, Operand src,
     return 0;
 }
 
+/* Lista di indici istruzione che usano una data variabile */
 typedef struct {
     int *data;
     int  len;
@@ -134,13 +137,13 @@ static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
 
 /* ---- Safety check e movimento ----------------------------------------- */
 
-static int dominatesAllExits(Loop *L, LiveSet *Dom, int blk) {
+static inline int dominatesAllExits(Loop *L, LiveSet *Dom, int blk) {
     for (int i = 0; i < L->exitCount; i++)
         if (!loop_dominates(Dom, blk, L->exits[i])) return 0;
     return 1;
 }
 
-static int instrBlock(IRFunction *f, int j) {
+static inline int instrBlock(IRFunction *f, int j) {
     for (int b = 0; b < f->blockCount; b++)
         if (j >= f->blocks[b].bb.start && j < f->blocks[b].bb.end) return b;
     return -1;
@@ -153,8 +156,13 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     int header  = L->header, phIdx = L->preHeader;
     int moved   = 0;
 
-    char *doMove = calloc((size_t)nInstrs, 1);
-    char *inBody = calloc((size_t)nBlocks, 1);
+    /* buffer temporanei: arena locale per evitare free manuali */
+    Arena *localArena = arena_create(0);
+    char *doMove = arena_alloc(localArena, (size_t)nInstrs);
+    char *inBody = arena_alloc(localArena, (size_t)nBlocks);
+    memset(doMove, 0, (size_t)nInstrs);
+    memset(inBody, 0, (size_t)nBlocks);
+
     for (int i = 0; i < L->bodyCount; i++) inBody[L->body[i]] = 1;
 
     for (int j = 0; j < nInstrs; j++) {
@@ -168,7 +176,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
         doMove[j] = 1; moved++;
     }
 
-    if (!moved) { free(doMove); free(inBody); return 0; }
+    if (!moved) { arena_destroy(localArena); return 0; }
 
     int insertAt = f->blocks[header].bb.start;
 
@@ -186,14 +194,8 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     }
     int phNewEnd = newCount;
 
-    /* Fase 3: istruzioni da insertAt in poi, saltando quelle mosse.
-     * Sweep inline: aggiorna start/end di ogni blocco mentre si scorre. */
-    int bodyBase = newCount;  /* offset per correggere gli indici dei blocchi body */
-    (void)bodyBase;
-
-    /* Costruiamo prima l'array, poi aggiorniamo i blocchi scorrendo
-     * per blocco (stesso pattern sweep ottimizzato). */
-    int *oldToNew = malloc((size_t)nInstrs * sizeof(int));
+    /* Fase 3: istruzioni da insertAt in poi, saltando quelle mosse */
+    int *oldToNew = arena_alloc(localArena, (size_t)nInstrs * sizeof(int));
     for (int j = 0; j < nInstrs; j++) oldToNew[j] = -1;
 
     for (int j = insertAt; j < nInstrs; j++) {
@@ -207,7 +209,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
     f->count    = newCount;
     f->capacity = newCount;
 
-    /* Aggiorna blocchi usando oldToNew per body, phMovedStart/phNewEnd per pre-header */
+    /* Aggiorna blocchi */
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
             f->blocks[b].bb.start = phMovedStart;
@@ -226,11 +228,13 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
         f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
-    free(doMove); free(inBody); free(oldToNew);
+
+    arena_destroy(localArena);
     return moved;
 }
 
 /* ---- Punto di ingresso ------------------------------------------------- */
+
 int licm_optimize(IRFunction *f) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
@@ -238,7 +242,7 @@ int licm_optimize(IRFunction *f) {
     int words   = (nBlocks + 63) / 64;
     Arena *arena = arena_create(0);
 
-    LiveSet *Dom = loop_compute_dominators(f, words, arena);
+    LiveSet *Dom    = loop_compute_dominators(f, words, arena);
     Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
     int      nLoops = loop_find(f, Dom, loops, arena);
     if (nLoops == 0) { arena_destroy(arena); return 0; }

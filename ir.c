@@ -8,6 +8,7 @@
 #include "licm.h"
 #include "sr.h"
 #include "sched.h"
+#include "arena.h"
 
 /* ---- Chiavi a 16 bit per operatori (evita strcmp) ---- */
 #define KEY_AND 0x2626
@@ -23,53 +24,53 @@ static inline unsigned short op_key(const char *s) {
 
 static int nextTemp;
 static int nextLabel;
-static int currentLoopDepth;   /* annidamento loop corrente, reset per funzione */
+static int currentLoopDepth;
+
+/* ---- Costruttori operandi: compound literal, zero campi spuri ---- */
 
 static inline Operand mkTemp(void) {
-    Operand o; o.kind = OPND_TEMP; o.data.tempId = nextTemp++; return o;
+    return (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
 }
 static inline Operand mkLabel(void) {
-    Operand o; o.kind = OPND_LABEL; o.data.labelId = nextLabel++; return o;
+    return (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
 }
 static inline Operand mkVar(const ASTNode *node) {
-    Operand o;
-    o.kind = OPND_VAR;
-    o.data.varLevel   = node->scopeLevel;
-    o.data.varOffset  = node->offset;
-    o.data.sourceName = node->text;
-    return o;
+    return (Operand){ .kind           = OPND_VAR,
+                      .data.varLevel  = node->scopeLevel,
+                      .data.varOffset = node->offset,
+                      .data.sourceName = node->text };
 }
 static inline Operand mkConstInt(int v) {
-    Operand o; o.kind = OPND_CONST_INT; o.data.intVal = v; return o;
+    return (Operand){ .kind = OPND_CONST_INT, .data.intVal = v };
 }
 static inline Operand mkConstFloat(float v) {
-    Operand o; o.kind = OPND_CONST_FLOAT; o.data.floatVal = v; return o;
+    return (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = v };
 }
 static inline Operand mkFunc(const char *name) {
-    Operand o; o.kind = OPND_FUNC; o.data.funcName = name; return o;
+    return (Operand){ .kind = OPND_FUNC, .data.funcName = name };
 }
 Operand noOperand(void) {
-    Operand o; o.kind = OPND_NONE; return o;
+    return (Operand){ .kind = OPND_NONE };
 }
 
 /* ---- Costruzione live del CFG ---- */
+
 static inline int isTerminator(IROp op) {
     const unsigned int mask =
         (1U << IR_GOTO) | (1U << IR_IF_FALSE) | (1U << IR_RETURN);
     return (mask & (1U << op)) != 0;
 }
 
-static void closeBlock(IRFunction *f, int start, int end) {
+static inline void closeBlock(IRFunction *f, int start, int end) {
     if (end <= start) return;
     if (f->blockCount == f->blockCap) {
         f->blockCap = f->blockCap ? f->blockCap * 2 : 16;
         f->blocks = realloc(f->blocks, (size_t)f->blockCap * sizeof(IRBlock));
     }
-    IRBlock *b    = &f->blocks[f->blockCount++];
-    b->bb.start   = start;
-    b->bb.end     = end;
-    b->bb.succ[0] = b->bb.succ[1] = -1;
-    b->predCount  = 0;
+    f->blocks[f->blockCount++] = (IRBlock){
+        .bb       = { .start = start, .end = end, .succ = {-1, -1} },
+        .predCount = 0,
+    };
 }
 
 static void registerLabel(IRFunction *f, int labelId, int futureBlockIdx) {
@@ -99,11 +100,13 @@ static void emit(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2
         f->curBlockStart = idx;
     }
 
-    f->instrs[idx].op        = op;
-    f->instrs[idx].dst       = dst;
-    f->instrs[idx].src1      = src1;
-    f->instrs[idx].src2      = src2;
-    f->instrs[idx].loopDepth = currentLoopDepth;
+    f->instrs[idx] = (IRInstr){
+        .op        = op,
+        .dst       = dst,
+        .src1      = src1,
+        .src2      = src2,
+        .loopDepth = currentLoopDepth,
+    };
     f->count++;
 
     if (op == IR_LABEL)
@@ -125,6 +128,7 @@ static inline void emitLabel(IRFunction *f, Operand label) {
 }
 
 /* ---- Risoluzione del CFG ---- */
+
 static void resolveCFG(IRFunction *f) {
     if (f->curBlockStart < f->count) {
         closeBlock(f, f->curBlockStart, f->count);
@@ -157,7 +161,8 @@ static void resolveCFG(IRFunction *f) {
 }
 
 /* ---- Traduzione ---- */
-static IROp binopToIROp(const char *op) {
+
+static inline IROp binopToIROp(const char *op) {
     if (!op || op[0] == '\0') return IR_ADD;
     unsigned short key =
         (unsigned short)(((unsigned char)op[0] << 8) |
@@ -411,6 +416,8 @@ static IRFunction *irFunction(ASTNode *decl) {
     f->curBlockStart = 0;
     currentLoopDepth = 0;
 
+    /* labelToBlock: array temporaneo, liberato in resolveCFG — nessuna
+       arena necessaria, ciclo di vita confinato a questa funzione */
     ASTNode *body = decl->children[decl->nchildren - 1];
     irStmt(body, f);
 
@@ -458,6 +465,7 @@ IRProgram *ir_generate(ASTNode *program) {
 }
 
 /* ---- Stampa ---- */
+
 static void printOperand(const Operand *o) {
     switch (o->kind) {
     case OPND_NONE:        break;

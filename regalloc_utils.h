@@ -10,10 +10,8 @@
  */
 
 /* Utility functions */
-int regalloc_normalize_phys(int p);
 int regalloc_spill_weight(int loopDepth);
-int regalloc_operand_reg(const MachOperand *o);
-int regalloc_operand_reg2(const MachOperand *o);
+
 
 /* Instruction analysis */
 int  instr_def(const MachInstr *in, int nextVreg);

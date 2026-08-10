@@ -3,17 +3,17 @@
 #include "interference.h"
 #include "regalloc_utils.h"
 
-long tri_idx(int i, int j) {
+static inline long tri_idx(int i, int j) {
     if (i < j) { int t = i; i = j; j = t; }
     return (long)i * (i - 1) / 2 + j;
 }
 
-int ig_has_edge(const IGraph *g, int i, int j) {
+static inline int ig_has_edge(const IGraph *g, int i, int j) {
     long idx = tri_idx(i, j);
     return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
 }
 
-void ig_add_edge(IGraph *g, int i, int j) {
+static void ig_add_edge(IGraph *g, int i, int j) {
     if (i == j || i < 0 || j < 0) return;
     if (ig_has_edge(g, i, j)) return;
     long idx = tri_idx(i, j);

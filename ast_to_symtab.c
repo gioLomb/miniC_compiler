@@ -5,9 +5,11 @@
 
 DataType symtab_type_from_string(const char *typeName) {
     if (!typeName) return T_VOID;
-    if (strcmp(typeName, "int") == 0)   return T_INT;
-    if (strcmp(typeName, "float") == 0) return T_FLOAT;
-    return T_VOID;   /* fallback: copre anche "void" se/quando comparira' */
+    switch (typeName[0]) {
+    case 'i': return T_INT;    /* "int"   */
+    case 'f': return T_FLOAT;  /* "float" */
+    default:  return T_VOID;
+    }
 }
 
 void symtab_parse_decl_text(Arena *arena, const char *text,

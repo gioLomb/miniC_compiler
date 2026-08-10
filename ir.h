@@ -1,10 +1,11 @@
 #ifndef IR_H
 #define IR_H
 
-#define IR_INITIAL_CAPACITY 64
-
 #include "parser/ast.h"
 #include "block.h"
+
+#define IR_INITIAL_CAPACITY 64
+
 
 typedef enum {
     IR_ADD, IR_SUB, IR_MUL, IR_DIV, IR_MOD,

@@ -19,31 +19,29 @@ static const char *phys_name64[] = {
  * Costruttori operandi.
  * ========================================================================= */
 static inline MachOperand mo_none(void) {
-    MachOperand o; o.kind = MO_NONE; return o;
+    return (MachOperand){ .kind = MO_NONE };
 }
 static inline MachOperand mo_vreg(int id) {
-    MachOperand o; o.kind = MO_VREG; o.vregId = id; return o;
+    return (MachOperand){ .kind = MO_VREG, .vregId = id };
 }
 static inline MachOperand mo_phys(MachPhysReg r) {
-    MachOperand o; o.kind = MO_PHYS; o.physReg = (int)r; return o;
+    return (MachOperand){ .kind = MO_PHYS, .physReg = (int)r };
 }
 static inline MachOperand mo_imm(long v) {
-    MachOperand o; o.kind = MO_IMM; o.imm = v; return o;
+    return (MachOperand){ .kind = MO_IMM, .imm = v };
 }
 static inline MachOperand mo_label(int id) {
-    MachOperand o; o.kind = MO_LABEL; o.labelId = id; return o;
+    return (MachOperand){ .kind = MO_LABEL, .labelId = id };
 }
 static inline MachOperand mo_func(const char *name) {
-    MachOperand o; o.kind = MO_FUNC; o.func = name; return o;
+    return (MachOperand){ .kind = MO_FUNC, .func = name };
 }
 static inline MachOperand mo_mem(int base, int index, int scale, int disp) {
-    MachOperand o;
-    o.kind = MO_MEM;
-    o.mem.baseVreg  = base;
-    o.mem.indexVreg = index;
-    o.mem.scale     = scale;
-    o.mem.disp      = disp;
-    return o;
+    return (MachOperand){ .kind = MO_MEM,
+                          .mem  = { .baseVreg  = base,
+                                    .indexVreg = index,
+                                    .scale     = scale,
+                                    .disp      = disp } };
 }
 
 /* =========================================================================
@@ -65,19 +63,20 @@ static MachFunction *mfunc_create(const char *name) {
     return f;
 }
 
-static void mfunc_emit(MachFunction *f, MachOp op,
+static inline void mfunc_emit(MachFunction *f, MachOp op,
                         MachOperand dst, MachOperand src1, MachOperand src2) {
     if (f->count == f->capacity) {
         f->capacity *= 2;
         f->instrs = realloc(f->instrs, (size_t)f->capacity * sizeof(MachInstr));
     }
-    MachInstr *in = &f->instrs[f->count++];
-    in->op        = op;
-    in->dst       = dst;
-    in->src1      = src1;
-    in->src2      = src2;
-    in->scale     = 8;
-    in->loopDepth = g_curLoopDepth;   /* propaga depth dall'IRInstr corrente */
+    f->instrs[f->count++] = (MachInstr){
+        .op        = op,
+        .dst       = dst,
+        .src1      = src1,
+        .src2      = src2,
+        .scale     = 8,
+        .loopDepth = g_curLoopDepth,
+    };
 }
 
 static inline int mfunc_new_vreg(MachFunction *f) { return f->nextVreg++; }
@@ -108,7 +107,7 @@ static int vmap_get_or_create(VarMap *vm, MachFunction *f,
     }
     return id;
 }
-static int operand_to_vreg(const Operand *op, VarMap *vm, MachFunction *f) {
+static inline int operand_to_vreg(const Operand *op, VarMap *vm, MachFunction *f) {
     if (op->kind == OPND_VAR)
         return vmap_get_or_create(vm, f, 0, op->data.varLevel, op->data.varOffset);
     if (op->kind == OPND_TEMP)
@@ -139,7 +138,7 @@ static int load_operand(const Operand *op, VarMap *vm, MachFunction *f) {
     }
 }
 
-static MachOperand operand_to_mach(const Operand *op, VarMap *vm,
+static inline MachOperand operand_to_mach(const Operand *op, VarMap *vm,
                                     MachFunction *mf) {
     switch (op->kind) {
     case OPND_CONST_INT:   return mo_imm(op->data.intVal);
@@ -150,7 +149,7 @@ static MachOperand operand_to_mach(const Operand *op, VarMap *vm,
     }
 }
 
-static IROp flip_cmp(IROp op) {
+static inline IROp flip_cmp(IROp op) {
     switch (op) {
     case IR_LT: return IR_GT; case IR_GT: return IR_LT;
     case IR_LE: return IR_GE; case IR_GE: return IR_LE;
@@ -158,7 +157,7 @@ static IROp flip_cmp(IROp op) {
     }
 }
 
-static MachOp comparison_to_setcc(IROp cmpOp) {
+static inline MachOp comparison_to_setcc(IROp cmpOp) {
     switch (cmpOp) {
     case IR_LT: return MACH_SETL;  case IR_LE: return MACH_SETLE;
     case IR_GT: return MACH_SETG;  case IR_GE: return MACH_SETGE;
@@ -171,8 +170,7 @@ static MachOp comparison_to_setcc(IROp cmpOp) {
 static const MachPhysReg ARG_REGS[] = {
     PHYS_RDI, PHYS_RSI, PHYS_RDX, PHYS_RCX, PHYS_R8, PHYS_R9
 };
-#define NUM_ARG_REGS 6
-#define MAX_PARAMS   64
+
 
 /* =========================================================================
  * Selezione istruzioni per singola funzione.

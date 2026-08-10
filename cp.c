@@ -59,7 +59,7 @@ static inline int operandVarId(VarMap *m, Operand op) {
 }
 
 /* ---- Confronto semantico tra Operand ---------------------------------- */
-static int operand_equal(const Operand *a, const Operand *b) {
+static inline int operand_equal(const Operand *a, const Operand *b) {
     if (a->kind != b->kind) return 0;
     switch (a->kind) {
     case OPND_NONE:        return 1;
@@ -90,7 +90,7 @@ static inline LatVal lat_conflict(void) {
     LatVal v = {0}; v.state = LAT_CONFLICT; return v;
 }
 
-static LatVal lat_meet(LatVal a, LatVal b) {
+static inline LatVal lat_meet(LatVal a, LatVal b) {
     if (a.state == LAT_UNKNOWN) return b;
     if (b.state == LAT_UNKNOWN) return a;
     if (a.state == LAT_CONFLICT || b.state == LAT_CONFLICT) return lat_conflict();
@@ -103,7 +103,7 @@ static LatVal lat_meet(LatVal a, LatVal b) {
     return lat_conflict();
 }
 
-static int lat_equal(LatVal a, LatVal b) {
+static inline int lat_equal(LatVal a, LatVal b) {
     if (a.state != b.state) return 0;
     if (a.state != LAT_CONST) return 1;
     if (a.isFloat != b.isFloat) return 0;
@@ -127,7 +127,7 @@ static inline void constMap_copy(ConstMap *dst, const ConstMap *src) {
     memcpy(dst->vals, src->vals, (size_t)src->size * sizeof(LatVal));
 }
 
-static int constMap_equal(const ConstMap *a, const ConstMap *b) {
+static inline int constMap_equal(const ConstMap *a, const ConstMap *b) {
     for (int i = 0; i < a->size; i++)
         if (!lat_equal(a->vals[i], b->vals[i])) return 0;
     return 1;
@@ -144,7 +144,7 @@ static inline LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm) {
     return m->vals[id];
 }
 
-static Operand tryFold(Operand op, const ConstMap *m, VarMap *vm) {
+static inline Operand tryFold(Operand op, const ConstMap *m, VarMap *vm) {
     if (op.kind != OPND_VAR && op.kind != OPND_TEMP) return op;
     LatVal lv = constMap_get(m, op, vm);
     if (lv.state != LAT_CONST) return op;

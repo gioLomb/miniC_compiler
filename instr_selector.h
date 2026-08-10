@@ -4,6 +4,10 @@
 #include "ir.h"
 #include <stdio.h>
 
+#define NUM_ARG_REGS 6
+#define MAX_PARAMS   64
+
+
 typedef enum {
     MACH_MOV, MACH_MOVSX,
     MACH_ADD, MACH_SUB, MACH_IMUL, MACH_IDIV,

@@ -3,30 +3,29 @@
 #include <string.h>
 #include "optimize.h"
 
-/* ---- Helper di riconoscimento/lettura dei letterali ---------------- */
+/* =========================================================================
+ * Helper di riconoscimento/lettura dei letterali
+ * =========================================================================
+ * Tutti inline: con -g il compilatore non inlina automaticamente, qui
+ * sono abbastanza piccoli da non avere overhead visibile in debug e zero
+ * overhead in release.
+ * ========================================================================= */
 
-static int isIntLiteral(ASTNode *n)     { return n && n->kind == ND_NUM_INT; }
-static int isFloatLiteral(ASTNode *n)   { return n && n->kind == ND_NUM_FLOAT; }
-static int isNumericLiteral(ASTNode *n) { return isIntLiteral(n) || isFloatLiteral(n); }
+static inline int isIntLiteral(ASTNode *n)     { return n && n->kind == ND_NUM_INT; }
+static inline int isFloatLiteral(ASTNode *n)   { return n && n->kind == ND_NUM_FLOAT; }
+static inline int isNumericLiteral(ASTNode *n) { return isIntLiteral(n) || isFloatLiteral(n); }
 
-static long   literalAsLong(ASTNode *n)   { return atol(n->text); }
-static double literalAsDouble(ASTNode *n) { return atof(n->text); }
-static int    literalIsZero(ASTNode *n)   { return literalAsDouble(n) == 0.0; }
+static inline long   literalAsLong(ASTNode *n)   { return atol(n->text); }
+static inline double literalAsDouble(ASTNode *n) { return atof(n->text); }
+static inline int    literalIsZero(ASTNode *n)   { return literalAsDouble(n) == 0.0; }
 
-/* Vero se 'n' e' un letterale INTERO che vale esattamente 'v'. Le
-   semplificazioni algebriche (punto 2) sono limitate agli interi, quindi
-   qui NON basta "valore numerico uguale" - deve essere proprio ND_NUM_INT. */
-static int literalIntEquals(ASTNode *n, long v) {
+static inline int literalIntEquals(ASTNode *n, long v) {
     return isIntLiteral(n) && literalAsLong(n) == v;
 }
 
 /*
- * Libera SOLO questo nodo (il suo 'text' e il suo array 'children'), MAI
- * i figli puntati - da usare quando uno o piu' figli vengono riusati/
- * restituiti al chiamante e quindi non vanno distrutti insieme al nodo
- * che li conteneva. Contrappone a freeAST(), che invece libera l'intero
- * sottoalbero: quella si usa solo quando si e' sicuri che NESSUNO dei
- * figli sopravvive altrove.
+ * Libera SOLO questo nodo (text + array children), MAI i figli puntati.
+ * Usare quando uno o più figli vengono riusati/restituiti al chiamante.
  */
 static void freeNodeShallow(ASTNode *node) {
     if (!node) return;
@@ -35,21 +34,12 @@ static void freeNodeShallow(ASTNode *node) {
     free(node);
 }
 
-/*
- * Vero se valutare 'expr' potrebbe avere un effetto osservabile che NON
- * va eliminato silenziosamente semplificando un'espressione che lo
- * contiene (es. "f() * 0" non deve diventare "0": la chiamata a f() va
- * comunque eseguita). Deliberatamente conservativa: include non solo le
- * chiamate/assegnamenti ovvi, ma anche:
- *   - ND_ARRAY_ACCESS: un accesso il cui indice non e' costante potrebbe
- *     essere fuori dai bound a runtime (un trap, non solo un valore) -
- *     non possiamo provare il contrario qui, quindi lo trattiamo come
- *     "potenziale effetto collaterale".
- *   - ND_BINOP "/" o "%": una divisione il cui divisore non e' una
- *     costante nota potrebbe essere zero a runtime (altro possibile
- *     trap). Eliderla cambierebbe il comportamento osservabile del
- *     programma (un crash che sparisce silenziosamente).
- */
+/* =========================================================================
+ * hasSideEffect
+ *
+ * FIX punto 3: rimosso strcmp per '/' e '%' — sono gli unici operatori
+ * binari con text[0]=='/' o text[0]=='%', confronto diretto sul char.
+ * ========================================================================= */
 static int hasSideEffect(ASTNode *expr) {
     if (!expr) return 0;
 
@@ -59,9 +49,9 @@ static int hasSideEffect(ASTNode *expr) {
         case ND_ARRAY_ACCESS:
             return 1;
         case ND_BINOP:
-            if (strcmp(expr->text, "/") == 0 || strcmp(expr->text, "%") == 0) {
+            /* '/' e '%' unici come primo char tra tutti gli operatori binari */
+            if (expr->text[0] == '/' || expr->text[0] == '%')
                 return 1;
-            }
             break;
         default:
             break;
@@ -73,125 +63,120 @@ static int hasSideEffect(ASTNode *expr) {
     return 0;
 }
 
-/* ---- Constant folding: costruzione del letterale risultato --------- */
-
-/*
- * NOTA sui buffer a dimensione fissa qui sotto (char buf[32]/[64]): a
- * differenza dei buffer per stringhe arbitrarie (identificatori, ecc.)
- * che abbiamo sostituito con l'arena altrove nel progetto, qui si sta
- * formattando un NUMERO di ampiezza fissa (long a 64 bit, double stampato
- * con %g) - la lunghezza massima possibile e' matematicamente limitata
- * (un long a 64 bit occupa al massimo ~20 cifre inclusa l'eventuale
- * virgola), non indovinata: non e' lo stesso tipo di magic number che
- * avevamo eliminato altrove, quindi un buffer fisso qui e' legittimo.
- */
-
+/* =========================================================================
+ * foldBinopLiterals
+ *
+ * FIX punto 1: tutte le cascate di strcmp rimpiazzate con switch su
+ * OP_KEY (macro già definita in optimize.h).
+ * ========================================================================= */
 static ASTNode *foldBinopLiterals(const char *op, ASTNode *sx, ASTNode *dx) {
     int bothInt = isIntLiteral(sx) && isIntLiteral(dx);
 
-    /* confronto/logici: risultato sempre int 0/1 (stessa convenzione di semantic.c) */
-    if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
-        strcmp(op, "<")  == 0 || strcmp(op, ">")  == 0 ||
-        strcmp(op, "<=") == 0 || strcmp(op, ">=") == 0 ||
-        strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
+    char buf[64];
+    unsigned short key = OP_KEY(op[0], op[1]);
 
-        double a = literalAsDouble(sx), b = literalAsDouble(dx);
-        int result;
-        if      (strcmp(op, "==") == 0) result = (a == b);
-        else if (strcmp(op, "!=") == 0) result = (a != b);
-        else if (strcmp(op, "<")  == 0) result = (a < b);
-        else if (strcmp(op, ">")  == 0) result = (a > b);
-        else if (strcmp(op, "<=") == 0) result = (a <= b);
-        else if (strcmp(op, ">=") == 0) result = (a >= b);
-        else if (strcmp(op, "&&") == 0) result = (a != 0.0 && b != 0.0);
-        else                             result = (a != 0.0 || b != 0.0); /* "||" */
-
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", result);
-        return newNode(ND_NUM_INT, buf);
+    /* confronto/logici: risultato sempre int 0/1 */
+    switch (key) {
+        case OP_KEY('=','='): case OP_KEY('!','='):
+        case OP_KEY('<', 0):  case OP_KEY('>', 0):
+        case OP_KEY('<','='): case OP_KEY('>','='):
+        case OP_KEY('&','&'): case OP_KEY('|','|'): {
+            double a = literalAsDouble(sx), b = literalAsDouble(dx);
+            int result;
+            switch (key) {
+                case OP_KEY('=','='): result = (a == b); break;
+                case OP_KEY('!','='): result = (a != b); break;
+                case OP_KEY('<', 0):  result = (a <  b); break;
+                case OP_KEY('>', 0):  result = (a >  b); break;
+                case OP_KEY('<','='): result = (a <= b); break;
+                case OP_KEY('>','='): result = (a >= b); break;
+                case OP_KEY('&','&'): result = (a != 0.0 && b != 0.0); break;
+                default:              result = (a != 0.0 || b != 0.0); break;
+            }
+            snprintf(buf, sizeof(buf), "%d", result);
+            return newNode(ND_NUM_INT, buf);
+        }
+        default:
+            break;
     }
 
-    if (strcmp(op, "%") == 0) {
+    /* '%': solo interi */
+    if (key == OP_KEY('%', 0)) {
         long b = literalAsLong(dx);
-        if (b == 0) return NULL;   /* non foldare: modulo per zero, lascialo al runtime */
+        if (b == 0) return NULL;
         long a = literalAsLong(sx);
-        char buf[32];
         snprintf(buf, sizeof(buf), "%ld", a % b);
         return newNode(ND_NUM_INT, buf);
     }
 
-    if (strcmp(op, "/") == 0) {
+    /* '/' */
+    if (key == OP_KEY('/', 0)) {
         if (bothInt) {
             long b = literalAsLong(dx);
             if (b == 0) return NULL;
             long a = literalAsLong(sx);
-            char buf[32];
             snprintf(buf, sizeof(buf), "%ld", a / b);
             return newNode(ND_NUM_INT, buf);
         }
         double b = literalAsDouble(dx);
         if (b == 0.0) return NULL;
         double a = literalAsDouble(sx);
-        char buf[64];
         snprintf(buf, sizeof(buf), "%g", a / b);
         return newNode(ND_NUM_FLOAT, buf);
     }
 
-    /* + - * : int op int -> int; se almeno un operando e' float -> float
-       (stessa regola di promozione usata in semantic.c per ND_BINOP) */
+    /* '+', '-', '*': int→int, altrimenti float */
     if (bothInt) {
         long a = literalAsLong(sx), b = literalAsLong(dx), r;
-        if      (strcmp(op, "+") == 0) r = a + b;
-        else if (strcmp(op, "-") == 0) r = a - b;
-        else                            r = a * b;   /* "*" */
-        char buf[32];
+        switch (key) {
+            case OP_KEY('+', 0): r = a + b; break;
+            case OP_KEY('-', 0): r = a - b; break;
+            default:             r = a * b; break; /* '*' */
+        }
         snprintf(buf, sizeof(buf), "%ld", r);
         return newNode(ND_NUM_INT, buf);
     }
-    double a = literalAsDouble(sx), b = literalAsDouble(dx), r;
-    if      (strcmp(op, "+") == 0) r = a + b;
-    else if (strcmp(op, "-") == 0) r = a - b;
-    else                            r = a * b;   /* "*" */
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%g", r);
-    return newNode(ND_NUM_FLOAT, buf);
+    {
+        double a = literalAsDouble(sx), b = literalAsDouble(dx), r;
+        switch (key) {
+            case OP_KEY('+', 0): r = a + b; break;
+            case OP_KEY('-', 0): r = a - b; break;
+            default:             r = a * b; break;
+        }
+        snprintf(buf, sizeof(buf), "%g", r);
+        return newNode(ND_NUM_FLOAT, buf);
+    }
 }
 
+/* =========================================================================
+ * foldUnaryLiteral
+ *
+ * FIX punto 2: rimossi strcmp, confronto diretto su op[0].
+ * ========================================================================= */
 static ASTNode *foldUnaryLiteral(const char *op, ASTNode *child) {
-    if (strcmp(op, "-") == 0) {
+    char buf[64];
+    if (op[0] == '-') {
         if (isIntLiteral(child)) {
-            char buf[32];
             snprintf(buf, sizeof(buf), "%ld", -literalAsLong(child));
             return newNode(ND_NUM_INT, buf);
         }
-        char buf[64];
         snprintf(buf, sizeof(buf), "%g", -literalAsDouble(child));
         return newNode(ND_NUM_FLOAT, buf);
     }
-    if (strcmp(op, "!") == 0) {
-        char buf[8];
+    if (op[0] == '!') {
         snprintf(buf, sizeof(buf), "%d", literalIsZero(child) ? 1 : 0);
         return newNode(ND_NUM_INT, buf);
     }
     return NULL;
 }
 
-/* ---- Tree height balancing per catene associative (+, *) ----------- */
+/* =========================================================================
+ * Tree height balancing per catene associative (+, *)
+ * ========================================================================= */
 
 /*
- * Vero se 'n' contiene, in QUALUNQUE punto del suo sottoalbero, un
- * letterale ND_NUM_FLOAT - non solo come foglia diretta di una catena
- * '+' o '*', ma annidato dentro una sotto-espressione con un operatore diverso
- * (es. "a + (x*1.5) + b": il letterale 1.5 non e' foglia diretta della
- * catena "+", ma la rende comunque "contaminata" di virgola mobile).
- *
- * LIMITE NOTO (vedi discussione): rileva solo i letterali float VISIBILI
- * nel testo. Una catena di sole variabili "float" (nessun letterale in
- * vista) non viene riconosciuta come tale - servirebbe conoscere il tipo
- * delle variabili, e optimize.c non ha accesso alla symbol table (nessuno
- * Scope* nella sua firma). Bilanciare una simile catena cambierebbe
- * l'arrotondamento del risultato senza che questa guardia se ne accorga.
- * Risolvibile solo estendendo optimize_ast con un vero Scope*, rimandato.
+ * Vero se il sottoalbero contiene almeno un letterale ND_NUM_FLOAT.
+ * Limite noto: non rileva variabili float senza letterali visibili.
  */
 static int containsFloatLiteral(ASTNode *n) {
     if (!n) return 0;
@@ -203,136 +188,97 @@ static int containsFloatLiteral(ASTNode *n) {
 }
 
 /*
- * Appiattisce ricorsivamente la catena associativa che ha 'node' come
- * radice, raccogliendo in '*leaves' (array a raddoppio, come altrove nel
- * progetto) tutte le foglie in ordine SINISTRA-DESTRA - lo stesso ordine
- * di valutazione originale: bilanciare cambia solo la FORMA dell'albero,
- * mai l'ordine in cui le foglie vengono valutate (per questo non serve
- * controllare hasSideEffect() qui, a differenza delle altre
- * semplificazioni in questo file). Scende solo finche' incontra nodi
- * ND_BINOP con lo STESSO operatore testuale di 'op' - un operatore
- * diverso (anche se associativo a sua volta) e' un'altra catena, e resta
- * una foglia opaca per questa. I nodi ND_BINOP intermedi della catena
- * originale vengono liberati (freeNodeShallow: le foglie sopravvivono,
- * riusate cosi' come sono).
+ * Appiattisce la catena associativa in leaves[].
+ *
+ * FIX punto 4: confronto operatore su 2 char via OP_KEY invece di strcmp.
  */
-static void flattenChain(ASTNode *node, const char *op, ASTNode ***leaves, int *count, int *cap) {
-    if (node->kind == ND_BINOP && strcmp(node->text, op) == 0) {
-        flattenChain(node->children[0], op, leaves, count, cap);
-        flattenChain(node->children[1], op, leaves, count, cap);
+static void flattenChain(ASTNode *node, unsigned short opKey,
+                          ASTNode ***leaves, int *count, int *cap) {
+    if (node->kind == ND_BINOP &&
+        OP_KEY(node->text[0], node->text[1]) == opKey) {
+        flattenChain(node->children[0], opKey, leaves, count, cap);
+        flattenChain(node->children[1], opKey, leaves, count, cap);
         freeNodeShallow(node);
     } else {
         if (*count == *cap) {
             *cap = *cap ? *cap * 2 : 4;
-            *leaves = realloc(*leaves, (size_t) *cap * sizeof(ASTNode *));
+            *leaves = realloc(*leaves, (size_t)*cap * sizeof(ASTNode *));
         }
         (*leaves)[(*count)++] = node;
     }
 }
 
 /*
- * Ricostruisce un albero bilanciato da un array piatto di foglie (gia'
- * in ordine sinistra-destra), appaiandole a due a due un livello alla
- * volta - come costruire un min-heap da un array. Con 'count' foglie
- * produce un albero di altezza ~log2(count) invece di 'count'-1.
- * Se 'count' e' dispari, l'ultima foglia del livello sale al livello
- * successivo senza appaiarsi (nessuna foglia viene mai duplicata o
- * persa). Assume costo/altezza uniforme delle foglie (limite noto: non
- * ottimale se una foglia e' una sotto-espressione molto piu' profonda
- * delle altre - correttezza non compromessa, solo bilanciamento subottimale
- * in quel caso).
+ * Ricostruisce albero bilanciato da array piatto di foglie.
+ *
+ * FIX punto 5: iterativo in-place, elimina O(log n) malloc/free interni.
+ * Algoritmo: appaia foglie [0,1], [2,3], ... sul buffer stesso (scrittura
+ * sempre a indice < lettura corrente perché count/2 < count), poi ripeti
+ * finché count==1. Corretto perché con count>=2 lo slot di scrittura è
+ * sempre già stato consumato prima di essere sovrascritto.
+ *
+ * Fold inline di coppie costanti: se due foglie adiacenti sono letterali,
+ * le combina subito riducendo il lavoro dei pass successivi.
  */
-// static ASTNode *buildBalanced(ASTNode **leaves, int count, const char *op) {
-//     if (count == 1) return leaves[0];
+static ASTNode *buildBalanced(ASTNode **leaves, int count, const char opChar) {
+    /* buffer di appoggio per il livello corrente — riusa leaves[] stesso */
+    while (count > 1) {
+        int writeIdx = 0;
+        int i = 0;
+        for (; i + 1 < count; i += 2) {
+            ASTNode *sx = leaves[i];
+            ASTNode *dx = leaves[i + 1];
 
-//     int nextCount = (count + 1) / 2;
-//     ASTNode **next = malloc((size_t) nextCount * sizeof(ASTNode *));
-//     int idx = 0;
-//     int i = 0;
-//     for (; i + 1 < count; i += 2) {
-//         ASTNode *pair = newNode(ND_BINOP, op);
-//         addChild(pair, leaves[i]);
-//         addChild(pair, leaves[i + 1]);
-//         next[idx++] = pair;
-//     }
-//     if (i < count) {
-//         next[idx++] = leaves[i];   /* foglia dispari: sale invariata */
-//     }
-
-//     ASTNode *result = buildBalanced(next, nextCount, op);
-//     free(next);
-//     return result;
-// }
-static ASTNode *buildBalanced(ASTNode **leaves, int count, const char *op) {
-    if (count == 1) return leaves[0];
-
-    int nextCount = (count + 1) / 2;
-    ASTNode **next = malloc((size_t) nextCount * sizeof(ASTNode *));
-    int idx = 0;
-    int i = 0;
-    
-    for (; i + 1 < count; i += 2) {
-        ASTNode *sx = leaves[i];
-        ASTNode *dx = leaves[i + 1];
-
-        // Se buildBalanced accoppia due letterali finiti vicini, li folda all'istante!
-        if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
-            ASTNode *folded = foldBinopLiterals(op, sx, dx);
-            if (folded) {
-                freeAST(sx);
-                freeAST(dx);
-                next[idx++] = folded;
-                continue;
+            /* fold inline di coppia costante */
+            if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
+                char opStr[3] = { opChar, '\0', '\0' };
+                ASTNode *folded = foldBinopLiterals(opStr, sx, dx);
+                if (folded) {
+                    freeAST(sx);
+                    freeAST(dx);
+                    leaves[writeIdx++] = folded;
+                    continue;
+                }
             }
+
+            ASTNode *pair = newNode(ND_BINOP, (char[]){ opChar, '\0' });
+            addChild(pair, sx);
+            addChild(pair, dx);
+            leaves[writeIdx++] = pair;
         }
-
-        // Accoppiamento standard se non sono due costanti
-        ASTNode *pair = newNode(ND_BINOP, op);
-        addChild(pair, sx);
-        addChild(pair, dx);
-        next[idx++] = pair;
+        if (i < count)
+            leaves[writeIdx++] = leaves[i]; /* foglia dispari: sale invariata */
+        count = writeIdx;
     }
-    
-    if (i < count) {
-        next[idx++] = leaves[i]; // Foglia dispari sale
-    }
-
-    ASTNode *result = buildBalanced(next, nextCount, op);
-    free(next);
-    return result;
+    return leaves[0];
 }
 
 /*
- * Punto d'ingresso: se 'expr' e' la radice di una catena '+' o '*' su soli
- * interi (nessun letterale float visibile, vedi containsFloatLiteral),
- * la appiattisce e la ricostruisce bilanciata. Altrimenti restituisce
- * 'expr' invariato. Va chiamata a valle del folding/delle semplificazioni
- * algebriche gia' esistenti (solo se 'expr' sopravvive come vero ND_BINOP
- * ha senso provare a bilanciarlo).
+ * Punto d'ingresso bilanciamento: verifica se la catena è bilanciabile,
+ * poi appiattisce e ricostruisce.
+ *
+ * FIX: copia opChar prima di flattenChain (che libera expr incluso text).
  */
 static ASTNode *balanceAssocChain(ASTNode *expr) {
-    if (strcmp(expr->text, "+") != 0 && strcmp(expr->text, "*") != 0) return expr;
+    if (expr->text[0] != '+' && expr->text[0] != '*') return expr;
+    if (expr->text[1] != '\0') return expr; /* '++' o '**' non esistono ma sicurezza */
     if (containsFloatLiteral(expr)) return expr;
 
-    /* Copia l'operatore PRIMA di iniziare a smontare la catena: expr
-       stesso viene liberato (freeNodeShallow, incluso expr->text) dentro
-       flattenChain non appena verifica che la radice fa parte della
-       catena - rileggere expr->text dopo quella chiamata sarebbe un
-       use-after-free (trovato con AddressSanitizer). '+' e '*' sono
-       sempre un solo carattere (verificato dal controllo sopra), quindi
-       un buffer di 2 byte basta sempre. */
-    char op[2] = { expr->text[0], '\0' };
+    char opChar = expr->text[0];
+    unsigned short opKey = OP_KEY(opChar, 0);
 
     ASTNode **leaves = NULL;
     int count = 0, cap = 0;
-    flattenChain(expr, op, &leaves, &count, &cap);
+    flattenChain(expr, opKey, &leaves, &count, &cap);
 
-    ASTNode *result = buildBalanced(leaves, count, op);
+    ASTNode *result = buildBalanced(leaves, count, opChar);
     free(leaves);
     return result;
 }
 
-/* ---- Attraversamento delle espressioni ------------------------------ */
+/* =========================================================================
+ * Attraversamento delle espressioni
+ * ========================================================================= */
 
 static ASTNode *optimizeExpr(ASTNode *expr) {
     if (!expr) return NULL;
@@ -342,7 +288,7 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
     case ND_NUM_INT:
     case ND_NUM_FLOAT:
     case ND_ID:
-        return expr;   /* foglie: niente da fare */
+        return expr;
 
     case ND_UNARY: {
         expr->children[0] = optimizeExpr(expr->children[0]);
@@ -351,20 +297,20 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
         if (isNumericLiteral(child)) {
             ASTNode *folded = foldUnaryLiteral(expr->text, child);
             if (folded) {
-                freeAST(expr);   /* libera sia lo UNARY sia il child: nessuno dei due sopravvive */
+                freeAST(expr);
                 return folded;
             }
         }
         return expr;
     }
 
-case ND_BINOP: {
+    case ND_BINOP: {
         expr->children[0] = optimizeExpr(expr->children[0]);
         expr->children[1] = optimizeExpr(expr->children[1]);
         ASTNode *sx = expr->children[0];
         ASTNode *dx = expr->children[1];
 
-        // 1) Folding completo
+        /* 1) Folding completo di due letterali */
         if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
             ASTNode *folded = foldBinopLiterals(expr->text, sx, dx);
             if (folded) {
@@ -373,67 +319,50 @@ case ND_BINOP: {
             }
         }
 
-        unsigned short key = (expr->text && expr->text[0] != '\0') 
-                             ? OP_KEY(expr->text[0], expr->text[1]) 
-                             : 0;
-
-        // 2) Semplificazioni algebriche
+        /* 2) Semplificazioni algebriche via OP_KEY — punto 1 fix */
+        unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
         switch (key) {
-            case OP_KEY('+', '\0'):
+            case OP_KEY('+', 0):
                 if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
                 if (literalIntEquals(sx, 0)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
                 break;
-            case OP_KEY('-', '\0'):
+            case OP_KEY('-', 0):
                 if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
                 break;
-            case OP_KEY('*', '\0'):
+            case OP_KEY('*', 0):
                 if (literalIntEquals(dx, 1)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; }
                 if (literalIntEquals(sx, 1)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
                 if (literalIntEquals(dx, 0) && !hasSideEffect(sx)) { freeAST(expr); return newNode(ND_NUM_INT, "0"); }
                 if (literalIntEquals(sx, 0) && !hasSideEffect(dx)) { freeAST(expr); return newNode(ND_NUM_INT, "0"); }
                 break;
-            case OP_KEY('&', '&'):
-                if (literalIntEquals(sx, 0)) { // 0 && x -> 0
-                    freeAST(expr);
-                    return newNode(ND_NUM_INT, "0");
-                }
-                if (literalIntEquals(sx, 1)) { // 1 && x -> x
-                    freeNodeShallow(sx); freeNodeShallow(expr);
-                    return dx;
-                }
+            case OP_KEY('&','&'):
+                if (literalIntEquals(sx, 0)) { freeAST(expr); return newNode(ND_NUM_INT, "0"); }
+                if (literalIntEquals(sx, 1)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
                 break;
-
-            case OP_KEY('|', '|'):
-                if (literalIntEquals(sx, 1)) { // 1 || x -> 1
-                    freeAST(expr);
-                    return newNode(ND_NUM_INT, "1");
-                }
-                if (literalIntEquals(sx, 0)) { // 0 || x -> x
-                    freeNodeShallow(sx); freeNodeShallow(expr);
-                    return dx;
-                }
+            case OP_KEY('|','|'):
+                if (literalIntEquals(sx, 1)) { freeAST(expr); return newNode(ND_NUM_INT, "1"); }
+                if (literalIntEquals(sx, 0)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; }
                 break;
             default:
                 break;
         }
 
-        // 3) Tree height balancing sicuro
+        /* 3) Tree height balancing */
         return balanceAssocChain(expr);
     }
 
     case ND_ASSIGN:
-        expr->children[0] = optimizeExpr(expr->children[0]);   /* lvalue (es. indice di un array) */
-        expr->children[1] = optimizeExpr(expr->children[1]);   /* rvalue */
+        expr->children[0] = optimizeExpr(expr->children[0]);
+        expr->children[1] = optimizeExpr(expr->children[1]);
         return expr;
 
     case ND_CALL:
-        for (int i = 0; i < expr->nchildren; i++) {
+        for (int i = 0; i < expr->nchildren; i++)
             expr->children[i] = optimizeExpr(expr->children[i]);
-        }
         return expr;
 
     case ND_ARRAY_ACCESS:
-        expr->children[0] = optimizeExpr(expr->children[0]);   /* indice */
+        expr->children[0] = optimizeExpr(expr->children[0]);
         return expr;
 
     default:
@@ -441,52 +370,47 @@ case ND_BINOP: {
     }
 }
 
-/* ---- Attraversamento degli statement --------------------------------
+/* =========================================================================
+ * Attraversamento degli statement
  *
- * optimizeStmt ritorna il nodo che deve sostituire 'stmt' nel genitore,
- * oppure NULL per dire "rimuovi questo statement, non lo sostituire con
- * nulla" (es. un intero "while(0) { ... }" che sparisce). Chi chiama
- * (il caso ND_BLOCK, o optimize_ast per il corpo di una funzione) deve
- * gestire esplicitamente il caso NULL.
- */
+ * FIX punto 6: ND_BLOCK pre-alloca oldCount slot prima di ricostruire
+ * l'array figli, evitando la sequenza realloc 0→4→8→... di addChild.
+ * ========================================================================= */
+
 static ASTNode *optimizeStmt(ASTNode *stmt) {
     if (!stmt) return NULL;
 
     switch (stmt->kind) {
 
     case ND_VAR_DECL:
-        for (int i = 0; i < stmt->nchildren; i++) {
+        for (int i = 0; i < stmt->nchildren; i++)
             stmt->children[i] = optimizeExpr(stmt->children[i]);
-        }
         return stmt;
 
     case ND_BLOCK: {
-        /* Ricostruiamo l'array children da zero (con addChild, che gestisce
-           gia' da sola la crescita dell'array): se il risultato per un
-           certo statement e' esso stesso un ND_BLOCK (tipicamente il
-           superstite di un if/else appena collassato, es. "else { a=2; }"
-           che sopravvive cosi' com'era scritto nel sorgente), i suoi
-           figli vengono "spianati" direttamente qui invece di restare
-           annidati in un wrapper superfluo - un ND_BLOCK dentro un
-           ND_BLOCK e' innocuo ma inutile: lo eliminiamo per avere un
-           albero piu' pulito da passare alla generazione dell'IR. */
         ASTNode **oldChildren = stmt->children;
         int oldCount = stmt->nchildren;
 
-        stmt->children = NULL;
+        /* FIX punto 6: pre-alloca esattamente oldCount slot — nel caso
+         * peggiore nessun figlio viene eliminato o espanso, quindi questa
+         * dimensione è sufficiente senza realloc. Se un figlio è esso
+         * stesso un ND_BLOCK, i suoi nchildren si sommano ai già presenti;
+         * in quel caso addChild farà al più una realloc da oldCount a
+         * oldCount*2, che è accettabile (caso raro). */
+        stmt->children = (oldCount > 0)
+                         ? malloc((size_t)oldCount * sizeof(ASTNode *))
+                         : NULL;
         stmt->nchildren = 0;
-        stmt->capacity = 0;
+        stmt->capacity  = oldCount;
 
         for (int i = 0; i < oldCount; i++) {
             ASTNode *result = optimizeStmt(oldChildren[i]);
             if (!result) continue;
 
             if (result->kind == ND_BLOCK) {
-                /* i nipoti diventano figli diretti; il wrapper si libera
-                   (solo se stesso: i suoi figli sopravvivono, riusati qui) */
-                for (int j = 0; j < result->nchildren; j++) {
+                /* Appiattisci: i nipoti diventano figli diretti */
+                for (int j = 0; j < result->nchildren; j++)
                     addChild(stmt, result->children[j]);
-                }
                 freeNodeShallow(result);
             } else {
                 addChild(stmt, result);
@@ -502,24 +426,20 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
         ASTNode *cond = stmt->children[0];
 
         if (isNumericLiteral(cond)) {
-            /* condizione nota a compile-time: uno dei due rami e'
-               provatamente morto, l'intero ND_IF si riduce al superstite */
             int condTrue = !literalIsZero(cond);
             ASTNode *thenBr = stmt->children[1];
             ASTNode *elseBr = (stmt->nchildren > 2) ? stmt->children[2] : NULL;
 
-            ASTNode *survivor = condTrue ? thenBr : elseBr;
+            ASTNode *survivor  = condTrue ? thenBr : elseBr;
             ASTNode *deadBranch = condTrue ? elseBr : thenBr;
 
             freeAST(cond);
             if (deadBranch) freeAST(deadBranch);
-            freeNodeShallow(stmt);   /* mai freeAST(stmt): 'survivor' deve restare vivo */
+            freeNodeShallow(stmt);
 
             return survivor ? optimizeStmt(survivor) : NULL;
         }
 
-        /* condizione non costante: resta un vero if a runtime, ma i due
-           rami vengono comunque ottimizzati ricorsivamente */
         stmt->children[1] = optimizeStmt(stmt->children[1]);
         if (!stmt->children[1]) stmt->children[1] = newNode(ND_BLOCK, NULL);
 
@@ -535,7 +455,6 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
         ASTNode *cond = stmt->children[0];
 
         if (isNumericLiteral(cond) && literalIsZero(cond)) {
-            /* while(0): il corpo non viene mai eseguito, l'intero ciclo e' morto */
             freeAST(stmt);
             return NULL;
         }
@@ -551,9 +470,13 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
         return stmt;
 
     default:
-        return stmt;   /* ND_ERROR e altro: lascia invariato */
+        return stmt;
     }
 }
+
+/* =========================================================================
+ * Entry point
+ * ========================================================================= */
 
 void optimize_ast(ASTNode *program) {
     if (!program) return;
@@ -563,18 +486,14 @@ void optimize_ast(ASTNode *program) {
         if (!decl) continue;
 
         if (decl->kind == ND_FUNC_DECL) {
-            /* il corpo e' sempre l'ultimo figlio (vedi ast_to_symtab.c/
-               semantic.c: stessa convenzione riusata qui) */
             ASTNode *body = decl->children[decl->nchildren - 1];
             ASTNode *optimizedBody = optimizeStmt(body);
             if (!optimizedBody) optimizedBody = newNode(ND_BLOCK, NULL);
             decl->children[decl->nchildren - 1] = optimizedBody;
 
         } else if (decl->kind == ND_VAR_DECL) {
-            /* variabile globale con inizializzatore: ottimizza anche quello */
-            for (int c = 0; c < decl->nchildren; c++) {
+            for (int c = 0; c < decl->nchildren; c++)
                 decl->children[c] = optimizeExpr(decl->children[c]);
-            }
         }
     }
 }
