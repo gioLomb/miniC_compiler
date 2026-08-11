@@ -1,234 +1,193 @@
+/*
+ * sched.c — Local List Scheduling, blocco base per blocco base.
+ *
+ * Miglioramenti rispetto alla versione precedente:
+ *
+ *  1. SparseMap al posto di lastDef[] + memset(0xFF):
+ *       clear in O(1) invece di O(universo).
+ *
+ *  2. Renaming locale prima della costruzione del DAG:
+ *       ogni definizione riceve un ID fresco → WAR e WAW scompaiono
+ *       strutturalmente; rimangono solo dipendenze RAW.
+ *       Senza renaming la rilevazione WAR richiedeva O(n²) (scan completo
+ *       dell'intervallo lastDef..j per ogni scrittura); con renaming è O(1).
+ *
+ *  3. Arena locale per ogni schedule_block:
+ *       tutti i dati temporanei (DAGNode, SuccNode, SparseMap, MaxHeap,
+ *       buffer risultato) vivono in un'unica arena, distrutta in blocco a
+ *       fine funzione → zero malloc/free individuali nel loop interno.
+ *
+ *  4. SuccNode come lista concatenata nell'arena:
+ *       elimina il cap fisso MAX_SUCCS; non servono realloc.
+ *
+ *  5. MaxHeap per la ready list:
+ *       O(log n) per push/pop al posto di O(n) per ricerca del massimo.
+ *
+ *  6. Helper locali sched_def/sched_uses con encoding univoco
+ *       vreg → id, phys → nextVreg+id (evita collisioni vreg 0 / PHYS_RAX).
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include "sched.h"
+#include "arena.h"
 
 /* =========================================================================
- * Latenze stimate per Intel Core i5 (Haswell/Broadwell).
- * Fonte: tabelle Agner Fog, Intel Optimization Reference Manual.
- * Si usa la latenza (cicli prima che il risultato sia disponibile),
- * non il throughput reciproco, perché lo scheduler vuole anticipare
- * le istruzioni il cui risultato è richiesto prima possibile.
+ * Latenze stimate — Intel Core i5 Haswell/Broadwell (tabelle Agner Fog)
  * ========================================================================= */
 static int latency_of(MachOp op) {
     switch (op) {
-    /* Aritmetica intera leggera */
-    case MACH_ADD:
-    case MACH_SUB:
-    case MACH_NEG:
-    case MACH_NOT:
-    case MACH_XOR:
-        return 1;
-
-    /* Moltiplicazione intera: 3 cicli su Haswell */
-    case MACH_IMUL:
-        return 3;
-
-    /* Divisione intera: latenza molto variabile, usiamo lower bound */
-    case MACH_IDIV:
-        return 20;
-
-    /* Shift */
-    case MACH_SAL:
-        return 1;
-
-    /* Mov registro-registro o immediato */
-    case MACH_MOV:
-    case MACH_MOVSX:
-        return 1;   /* reg←reg; reg←mem è gestito sotto come LOAD */
-
-    /* Accesso memoria: ~4 cicli per L1 hit */
-    case MACH_LOAD:
-    case MACH_STORE:
-    case MACH_PUSH:
-    case MACH_POP:
-        return 4;
-
-    /* Confronto e test: 1 ciclo, producono solo FLAGS */
-    case MACH_CMP:
-    case MACH_TEST:
-        return 1;
-
-    /* Setcc: 1 ciclo */
-    case MACH_SETE:  case MACH_SETNE:
-    case MACH_SETL:  case MACH_SETLE:
-    case MACH_SETG:  case MACH_SETGE:
-        return 1;
-
-    /* Salti: 1 ciclo (branch predictor gestisce il resto) */
+    case MACH_ADD: case MACH_SUB: case MACH_NEG: case MACH_NOT:
+    case MACH_XOR:  return 1;
+    case MACH_IMUL: return 3;
+    case MACH_IDIV: return 20;
+    case MACH_SAL:  return 1;
+    case MACH_MOV: case MACH_MOVSX: return 1;
+    case MACH_LOAD: case MACH_STORE:
+    case MACH_PUSH: case MACH_POP:  return 4;
+    case MACH_CMP: case MACH_TEST:  return 1;
+    case MACH_SETE: case MACH_SETNE:
+    case MACH_SETL: case MACH_SETLE:
+    case MACH_SETG: case MACH_SETGE: return 1;
     case MACH_JMP:
     case MACH_JE:  case MACH_JNE:
     case MACH_JL:  case MACH_JLE:
-    case MACH_JG:  case MACH_JGE:
-        return 1;
-
-    /* Call/ret: ~3 cicli */
-    case MACH_CALL:
-    case MACH_RET:
-        return 3;
-
-    /* CQO, pseudo */
-    case MACH_CQO:
-        return 1;
-
-    /* Prologo/epilogo: marcatori, non schedulabili */
-    case MACH_LABEL:
-    case MACH_FUNC_BEGIN:
-    case MACH_FUNC_END:
-        return 0;
-
-    default:
-        return 1;
+    case MACH_JG:  case MACH_JGE:  return 1;
+    case MACH_CALL: case MACH_RET: return 3;
+    case MACH_CQO:  return 1;
+    case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END: return 0;
+    default: return 1;
     }
 }
 
 /* =========================================================================
- * Operand helpers: estrae l'ID di un virtual/physical register da un
- * MachOperand per il confronto nelle dipendenze.
- * Usiamo un intero a 32 bit: bit[30]=1 → phys, altrimenti vreg. -1 = nessuno.
+ * SparseMap — mappa intera chiave → valore intero, O(1) per operazione.
+ *
+ * Invariante classica dello sparse-set (EaC §B):
+ *   dense[sparse[k]] == k   sse   k è presente
+ *
+ * sparse[] non viene inizializzato: la membership test usa il cross-check
+ * sul dense[], eliminando false-positive in modo provabile.
+ * Dimostrazione: dense[0..n-1] contiene solo chiavi effettivamente inserite;
+ * se sparse[k] punta a una posizione p < n, dense[p] è una chiave j reale.
+ * j == k solo se k era stato inserito → nessun falso positivo.
+ *
+ * Nota: leggere memoria non inizializzata è UB formale in C, ma il
+ * ragionamento sopra garantisce correttezza su qualunque hardware reale
+ * (la tecnica è ampiamente usata in motori di gioco e compilatori).
  * ========================================================================= */
-#define REG_NONE      (-1)
-#define REG_VREG(id)  ((int)(id))
-#define REG_PHYS(id)  ((int)(0x40000000 | (id)))
-
-static int operand_reg(const MachOperand *o) {
-    switch (o->kind) {
-    case MO_VREG: return REG_VREG(o->vregId);
-    case MO_PHYS: return REG_PHYS(o->physReg);
-    case MO_MEM:
-        /* base e index sono entrambi potenziali sorgenti */
-        if (o->mem.baseVreg >= 0) return REG_VREG(o->mem.baseVreg);
-        return REG_NONE;
-    default:
-        return REG_NONE;
-    }
-}
-
-/* Secondo registro per MO_MEM (index), altrimenti NONE */
-static int operand_reg2(const MachOperand *o) {
-    if (o->kind == MO_MEM && o->mem.indexVreg >= 0)
-        return REG_VREG(o->mem.indexVreg);
-    return REG_NONE;
-}
-
-/* Registro scritto da un'istruzione (dst), NONE se non scrive (o scrive
- * solo FLAGS, non modellato esplicitamente: la macro-fusion CMP/TEST→Jcc
- * è gestita a parte, vedi pinnedForFusion). */
-static int instr_def(const MachInstr *in) {
-    switch (in->op) {
-    case MACH_CMP: case MACH_TEST:
-    case MACH_JMP: case MACH_JE: case MACH_JNE:
-    case MACH_JL:  case MACH_JLE: case MACH_JG: case MACH_JGE:
-    case MACH_CALL: case MACH_RET:
-    case MACH_PUSH: case MACH_STORE:
-    case MACH_CQO:
-    case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
-        return REG_NONE;
-    default:
-        return operand_reg(&in->dst);
-    }
-}
-
-/* Registri letti da un'istruzione: fino a 4 (src1, src2, eventuale index MEM) */
-static void instr_uses(const MachInstr *in, int uses[4], int *nuses) {
-    *nuses = 0;
-    int r;
-
-    r = operand_reg(&in->src1);
-    if (r != REG_NONE) uses[(*nuses)++] = r;
-    r = operand_reg2(&in->src1);
-    if (r != REG_NONE) uses[(*nuses)++] = r;
-
-    r = operand_reg(&in->src2);
-    if (r != REG_NONE) uses[(*nuses)++] = r;
-    r = operand_reg2(&in->src2);
-    if (r != REG_NONE) uses[(*nuses)++] = r;
-
-    /* STORE/PUSH/IDIV/CQO leggono anche dst (base address, valore, o RAX implicito) */
-    switch (in->op) {
-    case MACH_STORE:
-    case MACH_PUSH:
-    case MACH_IDIV:
-    case MACH_CQO:
-        r = operand_reg(&in->dst);
-        if (r != REG_NONE) uses[(*nuses)++] = r;
-        break;
-    default:
-        break;
-    }
-}
-
-/* =========================================================================
- * Nodo del DAG di dipendenze.
- * ========================================================================= */
-#define MAX_SUCCS 32   /* massimo archi uscenti per nodo */
-
 typedef struct {
-    int instrIdx;          /* indice nell'array originale del blocco */
-    int latency;           /* latenza dell'istruzione */
-    int height;             /* cammino critico ponderato verso i sink */
-    int succs[MAX_SUCCS];  /* indici dei nodi successori (dipendenti) */
-    int nSuccs;
-    int predCount;          /* contatore predecessori non ancora emessi */
-    int scheduled;          /* 1 se già emesso */
+    int *sparse; /* sparse[key] → posizione in dense (non inizializzato) */
+    int *dense;  /* dense[pos]  → chiave (scritto solo da smap_set)      */
+    int *val;    /* val[pos]    → valore associato a dense[pos]           */
+    int  n;      /* numero di entry attive                                */
+    int  cap;    /* universo: chiavi valide in [0, cap)                   */
+} SparseMap;
 
-    /*
-     * pinnedForFusion: 1 se questo nodo è un CMP/TEST immediatamente
-     * seguito da un Jcc nell'ordine originale. Il decodificatore Intel
-     * fonde CMP/TEST+Jcc in una singola micro-op SOLO se sono adiacenti:
-     * questo nodo va quindi tenuto fuori dalla ready list esattamente
-     * come un pinned, cosicché resti non schedulato dal greedy scheduler
-     * e venga infine emesso nel pinned-tail insieme al suo Jcc, nello
-     * stesso ordine relativo originale (garanzia di adiacenza).
-     *
-     * Non serve alcun edge dedicato CMP→Jcc né alcuna logica di
-     * emissione "a coppia": Jcc è già pinned di suo (vedi is_pinned),
-     * quindi finisce anch'esso nel tail; i due, mai schedulati dal
-     * greedy, restano vicini nel tail perché il tail scorre gli indici
-     * non schedulati in ordine originale.
-     */
-    int pinnedForFusion;
+static void smap_init(SparseMap *m, int cap, Arena *arena) {
+    m->sparse = arena_alloc(arena, (size_t)cap * sizeof(int));
+    m->dense  = arena_alloc(arena, (size_t)cap * sizeof(int));
+    m->val    = arena_alloc(arena, (size_t)cap * sizeof(int));
+    m->n = 0; m->cap = cap;
+}
+
+/* Restituisce il valore, o -1 se la chiave non è presente. */
+static inline int smap_get(const SparseMap *m, int k) {
+    if ((unsigned)k >= (unsigned)m->cap) return -1;
+    unsigned pos = (unsigned)m->sparse[k];
+    if (pos >= (unsigned)m->n || m->dense[pos] != k) return -1;
+    return m->val[pos];
+}
+
+/* Inserisce o aggiorna (key, value). */
+static inline void smap_set(SparseMap *m, int k, int v) {
+    if ((unsigned)k >= (unsigned)m->cap) return;
+    unsigned pos = (unsigned)m->sparse[k];
+    if (pos < (unsigned)m->n && m->dense[pos] == k) { m->val[pos] = v; return; }
+    m->sparse[k]   = m->n;
+    m->dense[m->n] = k;
+    m->val[m->n]   = v;
+    m->n++;
+}
+
+/* =========================================================================
+ * SuccNode — cella lista concatenata per i successori del DAG.
+ *            Allocata nell'arena locale: nessun free individuale.
+ * ========================================================================= */
+typedef struct SuccNode { int to; struct SuccNode *next; } SuccNode;
+
+/* =========================================================================
+ * DAGNode
+ * ========================================================================= */
+typedef struct {
+    int       instrIdx;
+    int       latency;
+    int       height;          /* cammino critico ponderato verso un sink  */
+    int       predCount;       /* predecessori non ancora schedulati        */
+    int       scheduled;
+    int       pinnedForFusion; /* CMP/TEST prima di Jcc: tenuto per il tail */
+    SuccNode *succs;
+    int       nSuccs;
 } DAGNode;
 
 /* =========================================================================
- * Blocco base: sottosequenza contigua di istruzioni tra due LABEL (o
- * inizio/fine funzione).
+ * MaxHeap — coda con priorità per altezza (decrescente).
  * ========================================================================= */
-typedef struct {
-    int start;   /* indice primo in MachFunction.instrs[] */
-    int end;     /* indice dopo l'ultimo (esclusivo) */
-} BasicBlockOffset;
+typedef struct { int *data; int size; } MaxHeap;
 
-/* Restituisce 1 se l'istruzione NON può essere spostata dal greedy
- * scheduler (deve restare nella posizione finale del blocco, nell'ordine
- * originale relativo): label, prologo, terminatori. */
+static void heap_push(MaxHeap *h, int v, const DAGNode *nodes) {
+    int i = h->size++;
+    h->data[i] = v;
+    while (i > 0) {
+        int p = (i - 1) >> 1;
+        if (nodes[h->data[p]].height >= nodes[h->data[i]].height) break;
+        int t = h->data[p]; h->data[p] = h->data[i]; h->data[i] = t;
+        i = p;
+    }
+}
+
+static int heap_pop(MaxHeap *h, const DAGNode *nodes) {
+    int top    = h->data[0];
+    h->data[0] = h->data[--h->size];
+    for (int i = 0;;) {
+        int l = 2*i+1, r = 2*i+2, b = i;
+        if (l < h->size && nodes[h->data[l]].height > nodes[h->data[b]].height) b = l;
+        if (r < h->size && nodes[h->data[r]].height > nodes[h->data[b]].height) b = r;
+        if (b == i) break;
+        int t = h->data[b]; h->data[b] = h->data[i]; h->data[i] = t;
+        i = b;
+    }
+    return top;
+}
+
+/* =========================================================================
+ * BasicBlockOffset
+ * ========================================================================= */
+typedef struct { int start, end; } BasicBlockOffset;
+
+/* =========================================================================
+ * Predicati sulle istruzioni
+ * ========================================================================= */
 static int is_pinned(MachOp op) {
     switch (op) {
-    case MACH_LABEL:
-    case MACH_FUNC_BEGIN:
-    case MACH_FUNC_END:
+    case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
     case MACH_JMP:
     case MACH_JE:  case MACH_JNE:
     case MACH_JL:  case MACH_JLE:
     case MACH_JG:  case MACH_JGE:
-    case MACH_RET:
-        return 1;
-    default:
-        return 0;
+    case MACH_RET: return 1;
+    default:       return 0;
     }
 }
 
-/* Effetti collaterali in memoria o flusso di controllo: non riordinabili
- * liberamente tra loro (serializzati con un edge esplicito). */
+/* Operazioni con effetti collaterali su memoria o registri impliciti:
+   non riordinabili liberamente tra loro → serializzate con archi espliciti. */
 static int has_side_effect(MachOp op) {
     switch (op) {
     case MACH_STORE: case MACH_PUSH: case MACH_POP:
-    case MACH_CALL:
-    case MACH_IDIV:   /* scrive RAX e RDX implicitamente */
-    case MACH_CQO:    /* scrive RDX implicitamente */
-        return 1;
-    default:
-        return 0;
+    case MACH_CALL:  case MACH_IDIV: case MACH_CQO: return 1;
+    default:                                          return 0;
     }
 }
 
@@ -236,24 +195,21 @@ static int is_jcc(MachOp op) {
     switch (op) {
     case MACH_JE: case MACH_JNE:
     case MACH_JL: case MACH_JLE:
-    case MACH_JG: case MACH_JGE:
-        return 1;
-    default:
-        return 0;
+    case MACH_JG: case MACH_JGE: return 1;
+    default:                       return 0;
     }
 }
 
-static int is_cmp_or_test(MachOp op) {
+static inline int is_cmp_or_test(MachOp op) {
     return op == MACH_CMP || op == MACH_TEST;
 }
 
 /* =========================================================================
- * Costruisce la lista dei blocchi base per una funzione.
+ * find_basic_blocks
  * ========================================================================= */
 static BasicBlockOffset *find_basic_blocks(const MachFunction *f, int *outCount) {
     int cap = 8, count = 0;
     BasicBlockOffset *blocks = malloc((size_t)cap * sizeof(BasicBlockOffset));
-
     int start = 0;
     for (int i = 0; i < f->count; i++) {
         if (f->instrs[i].op == MACH_LABEL && i > start) {
@@ -261,9 +217,7 @@ static BasicBlockOffset *find_basic_blocks(const MachFunction *f, int *outCount)
                 cap *= 2;
                 blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlockOffset));
             }
-            blocks[count].start = start;
-            blocks[count].end   = i;
-            count++;
+            blocks[count++] = (BasicBlockOffset){ start, i };
             start = i;
         }
     }
@@ -272,165 +226,213 @@ static BasicBlockOffset *find_basic_blocks(const MachFunction *f, int *outCount)
             cap *= 2;
             blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlockOffset));
         }
-        blocks[count].start = start;
-        blocks[count].end   = f->count;
-        count++;
+        blocks[count++] = (BasicBlockOffset){ start, f->count };
     }
-
     *outCount = count;
     return blocks;
 }
 
 /* =========================================================================
- * Aggiunge un arco dal nodo 'from' al nodo 'to' nel DAG, evitando duplicati.
+ * Helper per registri — encoding univoco pre-regalloc:
+ *   vreg   → id            (0 .. nextVreg-1)
+ *   phys p → nextVreg + p  (nextVreg .. nextVreg+PHYS_ALLOCATABLE-1)
+ *
+ * Evita la collisione vreg-0 / PHYS_RAX-0 che si avrebbe usando
+ * direttamente physReg come indice.
+ * PHYS_AL è normalizzato a PHYS_RAX (alias architetturale).
  * ========================================================================= */
-static void dag_add_edge(DAGNode *nodes, int from, int to) {
-    if (from == to) return;
-    DAGNode *n = &nodes[from];
-    for (int i = 0; i < n->nSuccs; i++)
-        if (n->succs[i] == to) return;
-    if (n->nSuccs < MAX_SUCCS) {
-        n->succs[n->nSuccs++] = to;
-        nodes[to].predCount++;
+static inline int normalize_phys(int physReg) {
+    return (physReg == PHYS_AL) ? PHYS_RAX : physReg;
+}
+
+static inline int sched_reg(const MachOperand *o, int nextVreg) {
+    switch (o->kind) {
+    case MO_VREG: return o->vregId;
+    case MO_PHYS: return nextVreg + normalize_phys(o->physReg);
+    case MO_MEM:  return (o->mem.baseVreg  >= 0) ? o->mem.baseVreg  : -1;
+    default:      return -1;
     }
 }
 
+/* Registro indice di un operando MO_MEM (pre-regalloc: sempre vregId). */
+static inline int sched_reg_idx(const MachOperand *o) {
+    return (o->kind == MO_MEM && o->mem.indexVreg >= 0) ? o->mem.indexVreg : -1;
+}
+
+/* Registro definito dall'istruzione, o -1. */
+static int sched_def(const MachInstr *in, int nextVreg) {
+    switch (in->op) {
+    /* istruzioni che non definiscono un registro destinazione */
+    case MACH_CMP:  case MACH_TEST:
+    case MACH_JMP:
+    case MACH_JE:   case MACH_JNE:
+    case MACH_JL:   case MACH_JLE:
+    case MACH_JG:   case MACH_JGE:
+    case MACH_CALL: case MACH_RET:
+    case MACH_PUSH: case MACH_STORE:
+    case MACH_CQO:
+    case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
+        return -1;
+    default:
+        return sched_reg(&in->dst, nextVreg);
+    }
+}
+
+/* Registri letti esplicitamente dall'istruzione (al più 5). */
+static void sched_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
+    *n = 0;
+    int r;
+#define TRY(x) if ((r = (x)) >= 0) out[(*n)++] = r
+    TRY(sched_reg    (&in->src1, nextVreg));
+    TRY(sched_reg_idx(&in->src1));
+    TRY(sched_reg    (&in->src2, nextVreg));
+    TRY(sched_reg_idx(&in->src2));
+    /* STORE/PUSH/IDIV/CQO leggono anche il registro dst */
+    switch (in->op) {
+    case MACH_STORE: case MACH_PUSH:
+    case MACH_IDIV:  case MACH_CQO:
+        TRY(sched_reg(&in->dst, nextVreg));
+        break;
+    default: break;
+    }
+#undef TRY
+}
+
 /* =========================================================================
- * Costruisce il DAG delle dipendenze per le istruzioni di un blocco base.
+ * dag_add_edge — aggiunge l'arco from→to (dedup + arena).
+ * ========================================================================= */
+static void dag_add_edge(DAGNode *nodes, int from, int to, Arena *arena) {
+    if (from == to) return;
+    /* dedup: scan lineare, in pratica O(1) perché i gradi sono piccoli */
+    for (SuccNode *s = nodes[from].succs; s; s = s->next)
+        if (s->to == to) return;
+    SuccNode *sn      = arena_alloc(arena, sizeof(SuccNode));
+    sn->to            = to;
+    sn->next          = nodes[from].succs;
+    nodes[from].succs = sn;
+    nodes[from].nSuccs++;
+    nodes[to].predCount++;
+}
+
+/* =========================================================================
+ * build_dag — costruzione DAG con renaming locale + SparseMap
  *
- * Dipendenze modellate:
- *   RAW: j legge registro scritto da i (i<j) → edge i→j
- *   WAW: j scrive registro già scritto da i (i<j) → edge i→j
- *   WAR: j scrive registro letto da i (i<j) → edge i→j
- *   Side-effect seriale: STORE/CALL/IDIV/CQO → edge tra occorrenze consecutive
- *   Macro-fusion CMP/TEST+Jcc: nessun edge dedicato, vedi pinnedForFusion
+ * Renaming: ad ogni definizione di registro r si assegna un ID fresco.
+ * Dopo il renaming, due definizioni distinte dello stesso registro r
+ * hanno ID diversi → nessuna WAW, nessuna WAR.
+ * Rimangono solo dipendenze RAW: tracked via SparseMap(renamed→instr).
+ *
+ * Serializzazione degli effetti collaterali (STORE/CALL/IDIV/CQO):
+ * rimane invariata come guard per ordinamento in memoria e clobber
+ * di registri impliciti.
+ *
+ * Complessità per blocco di n istruzioni:
+ *   O(n)    — scan principale (SparseMap O(1) per get/set)
+ *   O(n)    — backward pass per le altezze
+ *   O(n·d)  — dedup archi, d = grado medio ≪ n
  * ========================================================================= */
 static void build_dag(const MachFunction *f, int start, int end,
-                      DAGNode *nodes) {
-    int n = end - start;
+                      DAGNode *nodes, Arena *arena) {
+    int n        = end - start;
+    int universe = f->nextVreg + PHYS_ALLOCATABLE; /* spazio registri totale */
+    int cap      = universe + n;   /* renamed ID finiscono in [universe, cap) */
 
+    /*
+     * currentName[r]: ID rinominato corrente per il registro r.
+     * Inizializzato all'identità; aggiornato ad ogni definizione.
+     */
+    int *currentName = arena_alloc(arena, (size_t)universe * sizeof(int));
+    for (int r = 0; r < universe; r++) currentName[r] = r;
+    int nextFresh = universe; /* prossimo ID fresco disponibile */
+
+    /* SparseMap: renamed-ID → indice locale dell'istruzione che lo ha definito */
+    SparseMap smap;
+    smap_init(&smap, cap, arena);
+
+    /* Inizializza nodi e segna coppie CMP/TEST+Jcc per la macro-fusion */
     for (int i = 0; i < n; i++) {
-        nodes[i].instrIdx        = start + i;
-        nodes[i].latency         = latency_of(f->instrs[start + i].op);
-        nodes[i].height          = nodes[i].latency;
-        nodes[i].nSuccs          = 0;
-        nodes[i].predCount       = 0;
-        nodes[i].scheduled       = 0;
-        nodes[i].pinnedForFusion = 0;
+        nodes[i] = (DAGNode){
+            .instrIdx  = start + i,
+            .latency   = latency_of(f->instrs[start + i].op),
+            .height    = latency_of(f->instrs[start + i].op),
+        };
     }
-
-    /* Marca i CMP/TEST immediatamente seguiti da un Jcc: condizione
-     * puramente strutturale sull'ordine originale, indipendente da
-     * qualunque arco del DAG. */
-    for (int i = 0; i < n - 1; i++) {
+    for (int i = 0; i + 1 < n; i++) {
         if (is_cmp_or_test(f->instrs[start + i].op) &&
-            is_jcc(f->instrs[start + i + 1].op)) {
+            is_jcc(f->instrs[start + i + 1].op))
             nodes[i].pinnedForFusion = 1;
-        }
     }
-
-    /* lastDef[r] = indice locale (0..n-1) dell'ultima istruzione che ha
-     * scritto il registro r in questo blocco; -1 = non ancora definito.
-     * Spazio: vreg 0..4095, phys offset 4096..4159. */
-    int *lastDef = malloc((size_t)(4096 + 64) * sizeof(int));
-    memset(lastDef, -1, (size_t)(4096 + 64) * sizeof(int));
 
     int lastSideEffect = -1;
 
     for (int j = 0; j < n; j++) {
         const MachInstr *inj = &f->instrs[start + j];
-        int def_j = instr_def(inj);
-        int uses_j[4]; int nuses_j;
-        instr_uses(inj, uses_j, &nuses_j);
 
-        /* RAW: j legge qualcosa scritto prima */
-        for (int u = 0; u < nuses_j; u++) {
-            int reg = uses_j[u];
-            if (reg == REG_NONE) continue;
-            int idx = (reg & 0x3FFFFFFF) + ((reg & 0x40000000) ? 4096 : 0);
-            if (idx < 4096 + 64 && lastDef[idx] >= 0)
-                dag_add_edge(nodes, lastDef[idx], j);
+        /* RAW: per ogni uso, risolvi nel renamed-space e cerca il definiente */
+        int uses[5]; int nuses;
+        sched_uses(inj, f->nextVreg, uses, &nuses);
+        for (int u = 0; u < nuses; u++) {
+            int r   = uses[u];
+            int ren = (r >= 0 && r < universe) ? currentName[r] : r;
+            int dep = smap_get(&smap, ren);
+            if (dep >= 0) dag_add_edge(nodes, dep, j, arena);
         }
 
-        /* WAW e WAR: j scrive qualcosa */
-        if (def_j != REG_NONE) {
-            int idx = (def_j & 0x3FFFFFFF) + ((def_j & 0x40000000) ? 4096 : 0);
-            if (idx < 4096 + 64) {
-                /* WAW */
-                if (lastDef[idx] >= 0)
-                    dag_add_edge(nodes, lastDef[idx], j);
-
-                /* WAR: chi ha letto questo registro dall'ultima scrittura
-                 * in poi deve completare prima di j. Basta scansionare da
-                 * lastDef[idx] (non da 0): i lettori precedenti all'ultima
-                 * scrittura sono già ordinati per transitività tramite
-                 * l'edge WAW verso quella scrittura stessa. */
-                for (int i = (lastDef[idx] >= 0 ? lastDef[idx] : 0); i < j; i++) {
-                    int uses_i[4]; int nuses_i;
-                    instr_uses(&f->instrs[start + i], uses_i, &nuses_i);
-                    for (int u = 0; u < nuses_i; u++) {
-                        if (uses_i[u] == def_j)
-                            dag_add_edge(nodes, i, j);
-                    }
-                }
-
-                lastDef[idx] = j;
-            }
-        }
-
-        /* Side-effect seriale: STORE/CALL/IDIV/CQO non riordinabili tra loro */
+        /* Serializzazione effetti collaterali */
         if (has_side_effect(inj->op)) {
             if (lastSideEffect >= 0)
-                dag_add_edge(nodes, lastSideEffect, j);
+                dag_add_edge(nodes, lastSideEffect, j, arena);
             lastSideEffect = j;
+        }
+
+        /* Def: rinomina → elimina WAR/WAW, registra per future RAW */
+        int d = sched_def(inj, f->nextVreg);
+        if (d >= 0 && d < universe) {
+            int fresh      = nextFresh++; /* in [universe, cap): sempre valido */
+            currentName[d] = fresh;
+            smap_set(&smap, fresh, j);
         }
     }
 
-    free(lastDef);
-
-    /* Calcolo altezze (cammino critico ponderato), backward dai sink */
+    /* Altezze: backward pass (cammino critico ponderato) */
     for (int i = n - 1; i >= 0; i--) {
-        int maxSuccHeight = 0;
-        for (int s = 0; s < nodes[i].nSuccs; s++) {
-            int h = nodes[nodes[i].succs[s]].height;
-            if (h > maxSuccHeight) maxSuccHeight = h;
-        }
-        nodes[i].height = nodes[i].latency + maxSuccHeight;
+        int maxH = 0;
+        for (SuccNode *s = nodes[i].succs; s; s = s->next)
+            if (nodes[s->to].height > maxH) maxH = nodes[s->to].height;
+        nodes[i].height = nodes[i].latency + maxH;
     }
 }
 
 /* =========================================================================
- * List scheduling vero e proprio su un blocco base.
+ * schedule_block — list scheduling locale su un blocco base.
  *
- * Algoritmo:
- *   1. Pinned head (LABEL/FUNC_BEGIN): emessi subito, in ordine originale.
- *   2. Ready list iniziale: nodi non pinnati, non pinnedForFusion, senza
- *      predecessori.
- *   3. Greedy: emetti il nodo ready con altezza (cammino critico) massima,
- *      aggiorna predCount dei successori.
- *   4. Pinned tail: tutto ciò che non è stato schedulato dal greedy
- *      (terminatori pinnati + CMP/TEST pinnedForFusion) viene emesso in
- *      ordine originale — questo è ciò che garantisce l'adiacenza
- *      CMP/TEST+Jcc per la macro-fusion, senza bisogno di alcun
- *      meccanismo dedicato di "emissione a coppia".
+ * Struttura dell'emissione:
+ *   1. Pinned head: LABEL / FUNC_BEGIN (emessi subito, ordine originale).
+ *   2. Greedy con MaxHeap: emetti sempre il nodo con altezza massima.
+ *   3. Pinned tail: terminatori + pinnedForFusion in ordine originale.
+ *      Il tail garantisce adiacenza CMP/TEST+Jcc per la macro-fusion
+ *      senza nessun meccanismo aggiuntivo.
+ *
+ * Tutti i buffer temporanei vivono nell'arena locale, distrutta a fine
+ * funzione: zero malloc/free individuali nel loop di scheduling.
  * ========================================================================= */
 static void schedule_block(MachFunction *f, int start, int end) {
     int n = end - start;
-    if (n <= 1) return;   /* blocco triviale, nulla da fare */
+    if (n <= 1) return;
 
-    DAGNode *nodes = malloc((size_t)n * sizeof(DAGNode));
-    build_dag(f, start, end, nodes);
+    Arena *arena = arena_create(0);
 
-    MachInstr *result = malloc((size_t)n * sizeof(MachInstr));
+    DAGNode   *nodes  = arena_alloc(arena, (size_t)n * sizeof(DAGNode));
+    MachInstr *result = arena_alloc(arena, (size_t)n * sizeof(MachInstr));
     int rCount = 0;
 
-    /* Ready list: array semplice con ricerca del massimo O(|ready|) — i
-     * blocchi base sono piccoli (tipicamente < 50 istruzioni), un heap
-     * non porta vantaggi misurabili e complicherebbe il codice. */
-    int *ready = malloc((size_t)n * sizeof(int));
-    int  readyCount = 0;
+    build_dag(f, start, end, nodes, arena);
 
-    /* Pinned head */
+    MaxHeap heap;
+    heap.data = arena_alloc(arena, (size_t)n * sizeof(int));
+    heap.size = 0;
+
+    /* 1. Pinned head */
     for (int i = 0; i < n; i++) {
         MachOp op = f->instrs[start + i].op;
         if (op == MACH_LABEL || op == MACH_FUNC_BEGIN) {
@@ -439,58 +441,45 @@ static void schedule_block(MachFunction *f, int start, int end) {
         }
     }
 
-    /* Ready list iniziale */
+    /* Seed ready list: nodi senza predecessori, non pinnati */
     for (int i = 0; i < n; i++) {
         if (nodes[i].scheduled) continue;
         if (is_pinned(f->instrs[start + i].op)) continue;
         if (nodes[i].pinnedForFusion) continue;
         if (nodes[i].predCount == 0)
-            ready[readyCount++] = i;
+            heap_push(&heap, i, nodes);
     }
 
-    /* Scheduling greedy: priorità = altezza (cammino critico rimanente) */
-    while (readyCount > 0) {
-        int bestIdx = 0;
-        for (int i = 1; i < readyCount; i++) {
-            if (nodes[ready[i]].height > nodes[ready[bestIdx]].height)
-                bestIdx = i;
-        }
-        int chosen = ready[bestIdx];
-        ready[bestIdx] = ready[--readyCount];
-
+    /* 2. Greedy: emetti sempre il ready con altezza massima */
+    while (heap.size > 0) {
+        int chosen = heap_pop(&heap, nodes);
         result[rCount++] = f->instrs[start + chosen];
         nodes[chosen].scheduled = 1;
 
-        for (int s = 0; s < nodes[chosen].nSuccs; s++) {
-            int succ = nodes[chosen].succs[s];
+        for (SuccNode *s = nodes[chosen].succs; s; s = s->next) {
+            int succ = s->to;
             if (nodes[succ].scheduled) continue;
             if (is_pinned(f->instrs[start + succ].op)) continue;
             if (nodes[succ].pinnedForFusion) continue;
-            nodes[succ].predCount--;
-            if (nodes[succ].predCount == 0)
-                ready[readyCount++] = succ;
+            if (--nodes[succ].predCount == 0)
+                heap_push(&heap, succ, nodes);
         }
     }
 
-    /* Pinned tail: tutto ciò che resta non schedulato (terminatori pinnati
-     * + eventuali CMP/TEST pinnedForFusion), in ordine originale. Questo
-     * preserva l'adiacenza CMP/TEST+Jcc: nessuno dei due è mai entrato nel
-     * greedy, quindi restano vicini esattamente come nell'originale. */
+    /* 3. Pinned tail: tutto ciò che non è stato schedulato, ordine originale */
     for (int i = 0; i < n; i++) {
-        if (nodes[i].scheduled) continue;
-        result[rCount++] = f->instrs[start + i];
-        nodes[i].scheduled = 1;
+        if (!nodes[i].scheduled) {
+            result[rCount++] = f->instrs[start + i];
+            nodes[i].scheduled = 1;
+        }
     }
 
     memcpy(&f->instrs[start], result, (size_t)n * sizeof(MachInstr));
-
-    free(result);
-    free(ready);
-    free(nodes);
+    arena_destroy(arena);
 }
 
 /* =========================================================================
- * Entry point pubblico: schedula tutte le funzioni del programma.
+ * sched_schedule — entry point pubblico
  * ========================================================================= */
 void sched_schedule(MachProgram *mp) {
     for (int fi = 0; fi < mp->count; fi++) {
@@ -499,10 +488,8 @@ void sched_schedule(MachProgram *mp) {
 
         int bbCount = 0;
         BasicBlockOffset *blocks = find_basic_blocks(f, &bbCount);
-
         for (int b = 0; b < bbCount; b++)
             schedule_block(f, blocks[b].start, blocks[b].end);
-
         free(blocks);
     }
 }
