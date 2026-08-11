@@ -387,11 +387,16 @@ static void build_dag(const MachFunction *f, int start, int end,
 
         /* Def: rinomina → elimina WAR/WAW, registra per future RAW */
         int d = sched_def(inj, f->nextVreg);
-        if (d >= 0 && d < universe) {
-            int fresh      = nextFresh++; /* in [universe, cap): sempre valido */
-            currentName[d] = fresh;
-            smap_set(&smap, fresh, j);
-        }
+if (d >= 0 && d < universe) {
+    /* WAW: nuova def dipende da vecchia def stesso registro */
+    int oldRenamed = currentName[d];
+    int prevDef = smap_get(&smap, oldRenamed);
+    if (prevDef >= 0) dag_add_edge(nodes, prevDef, j, arena);
+
+    int fresh = nextFresh++;
+    currentName[d] = fresh;
+    smap_set(&smap, fresh, j);
+}
     }
 
     /* Altezze: backward pass (cammino critico ponderato) */
