@@ -18,5 +18,10 @@ int main() {
         i = i + 1;
     }
 
-    return t+a;
+    // i = 5;
+    // if(i<10){
+    //     return a;
+    // }
+
+    return a;
 }

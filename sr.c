@@ -112,8 +112,8 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
              j++) {
             const IRInstr *in = &f->instrs[j];
 
-            if (in->op != IR_MUL)                              continue;
-            if (!liveness_is_var_or_temp(in->dst.kind))        continue;
+            if (in->op != IR_MUL) continue;
+            if (!liveness_is_var_or_temp(in->dst.kind)) continue;
 
             for (int v = 0; v < ivarCount; v++) {
                 InductionBase *iv = &ivars[v];

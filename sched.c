@@ -433,9 +433,7 @@ static void schedule_block(MachFunction *f, int start, int end) {
 
     build_dag(f, start, end, nodes, arena);
 
-    MaxHeap heap;
-    heap.data = arena_alloc(arena, (size_t)n * sizeof(int));
-    heap.size = 0;
+    MaxHeap heap = {.data = arena_alloc(arena, (size_t)n * sizeof(int)),.size = 0};
 
     /* 1. Pinned head */
     for (int i = 0; i < n; i++) {

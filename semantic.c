@@ -5,7 +5,7 @@
 #include "ast_to_symtab.h"
 
 /* Nome leggibile di un DataType, solo per messaggi d'errore. */
-static const char *typeName(DataType t) {
+static inline const char *typeName(DataType t) {
     switch (t) {
         case T_INT:   return "int";
         case T_FLOAT: return "float";
@@ -20,7 +20,7 @@ static const char *typeName(DataType t) {
  * Il contrario (float -> int, narrowing) e' sempre un errore, cosi'
  * come qualunque altra combinazione diversa dall'identita'.
  */
-static int assignCompatible(DataType target, DataType value) {
+static inline int assignCompatible(DataType target, DataType value) {
     if (target == value) return 1;
     if (target == T_FLOAT && value == T_INT) return 1;
     return 0;
@@ -29,12 +29,7 @@ static int assignCompatible(DataType target, DataType value) {
 static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors);
 
 /*
- * ND_ID / ND_ARRAY_ACCESS condividono la stessa logica di lookup: qui
- * factorizzata per non duplicarla. 'wantArray' indica quale dei due casi
- * stiamo verificando (1 = ND_ARRAY_ACCESS, 0 = ND_ID). 'outSym', se non
- * NULL, riceve il Symbol trovato quando il lookup ha successo — serve
- * al chiamante ND_ARRAY_ACCESS per leggere arraySize (bound-check
- * statico) senza rifare un secondo symtab_lookup identico.
+ * ND_ID / ND_ARRAY_ACCESS condividono la stessa logica di lookup.
  */
 static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol *outSym, int *errors) {
     Symbol sym;
@@ -66,38 +61,18 @@ static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol 
 
 /*
  * Se 'expr' e' una costante intera nota GIA' in fase di compilazione,
- * scrive il suo valore in *out e ritorna 1. Altrimenti (una variabile,
- * una chiamata, un'espressione con operandi non costanti...) ritorna 0:
- * quell'indice si potra' verificare solo a runtime - fuori portata di
- * un'analisi statica, e non e' un errore in se': significa solo "qui non
- * possiamo dire nulla in anticipo".
+ * scrive il suo valore in *out e ritorna 1. Altrimenti ritorna 0.
  *
- * Riconosce, ricorsivamente:
- *   - un letterale ("3")
- *   - un meno unario applicato a un'altra costante ("-1", "- -2")
- *   - un BINOP aritmetico (+ - * / %) tra due sotto-espressioni a loro
- *     volta costanti (es. "2+3", "(2+3)*4"): questo e' cio' che permette
- *     al bound-check qui sotto di riconoscere "arr[2+3]" come l'indice
- *     costante 5, non solo un letterale scritto gia' cosi' nel sorgente.
- *     Divisione/modulo per un divisore che risulta zero NON vengono
- *     considerati costanti (ritorna 0): e' la stessa scelta conservativa
- *     fatta nel modulo di ottimizzazione (optimize.c) per lo stesso
- *     identico motivo - non inventare un valore per un'operazione che a
- *     runtime fallirebbe comunque.
- *
- * NOTA: questa funzione duplica intenzionalmente una piccola parte della
- * logica di folding gia' presente in optimize.c, invece di dipendere da
- * quel modulo: semantic.c deve restare utilizzabile da solo (es. da
- * test_semantic, che non collega optimize.c), e il folding qui serve
- * solo a rendere il bound-check piu' preciso - non e' un'ottimizzazione
- * dell'albero, non modifica l'AST.
+ * Usa confronto diretto su op[0] invece di strcmp: tutti gli operatori
+ * sono caratteri singoli (o due char per >=, <=, ==, != — ma qui
+ * interessano solo +, -, *, /, % che sono sempre un solo char).
  */
 static int constIntValue(ASTNode *expr, long *out) {
     if (expr->kind == ND_NUM_INT) {
         *out = atol(expr->text);
         return 1;
     }
-    if (expr->kind == ND_UNARY && strcmp(expr->text, "-") == 0) {
+    if (expr->kind == ND_UNARY && expr->text[0] == '-' && expr->text[1] == '\0') {
         long inner;
         if (constIntValue(expr->children[0], &inner)) {
             *out = -inner;
@@ -110,33 +85,30 @@ static int constIntValue(ASTNode *expr, long *out) {
         if (!constIntValue(expr->children[0], &a)) return 0;
         if (!constIntValue(expr->children[1], &b)) return 0;
 
-        if (strcmp(expr->text, "+") == 0) { *out = a + b; return 1; }
-        if (strcmp(expr->text, "-") == 0) { *out = a - b; return 1; }
-        if (strcmp(expr->text, "*") == 0) { *out = a * b; return 1; }
-        if (strcmp(expr->text, "/") == 0) {
-            if (b == 0) return 0;   /* divisione per zero: non provabile qui, lascialo al runtime */
+        /* Tutti gli operatori aritmetici sono un solo char: confronto diretto */
+        switch (expr->text[0]) {
+        case '+': *out = a + b; return 1;
+        case '-': *out = a - b; return 1;
+        case '*': *out = a * b; return 1;
+        case '/':
+            if (b == 0) return 0;
             *out = a / b;
             return 1;
-        }
-        if (strcmp(expr->text, "%") == 0) {
+        case '%':
             if (b == 0) return 0;
             *out = a % b;
             return 1;
+        default:
+            /* confronto/logici: non rilevanti come indice, non foldati qui */
+            return 0;
         }
-        return 0;   /* confronto/logici: non rilevanti come indice, non foldati qui */
     }
     return 0;
 }
 
 /*
  * Attraversa un'espressione, risolvendo ogni nome incontrato e
- * verificando la compatibilita' dei tipi. Restituisce il DataType
- * risultante dell'espressione (T_VOID in caso di errore, cosi' che gli
- * errori non si propaghino a cascata in falsi positivi sui livelli
- * superiori: un T_VOID non fa mai scattare un ulteriore errore di tipo,
- * dato che assignCompatible/i confronti espliciti lo trattano come
- * "sconosciuto" e le chiamate successive lo accettano implicitamente
- * solo per non moltiplicare i messaggi per un singolo errore reale).
+ * verificando la compatibilita' dei tipi.
  */
 static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
     if (!expr) return T_VOID;
@@ -164,11 +136,6 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         Symbol sym;
         DataType elemType = checkNameUse(expr, scope, 1, &sym, errors);
 
-        /* Bound-check statico: solo se l'indice e' una costante intera
-           nota adesso (letterale, eventualmente con un meno unario).
-           Un indice calcolato a runtime (variabile, espressione) non
-           puo' essere verificato qui - richiederebbe un controllo nel
-           codice generato, non un'analisi statica. */
         long constValue;
         if (elemType != T_VOID && constIntValue(idx, &constValue)) {
             if (constValue < 0 || constValue >= sym.arraySize) {
@@ -199,9 +166,6 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
             (*errors)++;
         }
 
-        /* verifica comunque ogni argomento (per riportare piu' errori in
-           un colpo solo), confrontando col parametro corrispondente solo
-           se il lookup e' andato a buon fine e l'indice e' in range */
         for (int i = 0; i < expr->nchildren; i++) {
             DataType argType = checkExpr(expr->children[i], scope, errors);
             if (found && i < sym.paramCount) {
@@ -244,7 +208,11 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         DataType lt = checkExpr(expr->children[0], scope, errors);
         DataType rt = checkExpr(expr->children[1], scope, errors);
 
-        if (strcmp(expr->text, "%") == 0) {
+        /*
+         * '%' e' sempre un solo char: confronto diretto su text[0].
+         * Gli operatori binari del linguaggio con text[0]=='%' sono solo '%'.
+         */
+        if (expr->text[0] == '%' && expr->text[1] == '\0') {
             if (lt != T_VOID && lt != T_INT) { (*errors)++; }
             if (rt != T_VOID && rt != T_INT) { (*errors)++; }
             if ((lt != T_VOID && lt != T_INT) || (rt != T_VOID && rt != T_INT)) {
@@ -253,24 +221,44 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
             return T_INT;
         }
 
-        /* confronto/logici: il risultato e' sempre un booleano (int) */
-        if (strcmp(expr->text, "==") == 0 || strcmp(expr->text, "!=") == 0 ||
-            strcmp(expr->text, "<")  == 0 || strcmp(expr->text, ">")  == 0 ||
-            strcmp(expr->text, "<=") == 0 || strcmp(expr->text, ">=") == 0 ||
-            strcmp(expr->text, "&&") == 0 || strcmp(expr->text, "||") == 0) {
+        /*
+         * Confronto/logici: il risultato e' sempre un booleano (int).
+         * Tutti questi operatori si distinguono per i primi due char:
+         *   "==" text[0]='=' text[1]='='
+         *   "!=" text[0]='!' text[1]='='
+         *   "<"  text[0]='<' text[1]='\0'
+         *   ">"  text[0]='>' text[1]='\0'
+         *   "<=" text[0]='<' text[1]='='
+         *   ">=" text[0]='>' text[1]='='
+         *   "&&" text[0]='&' text[1]='&'
+         *   "||" text[0]='|' text[1]='|'
+         */
+        switch (expr->text[0]) {
+        case '=': /* "==" */
+        case '!': /* "!=" */
+        case '&': /* "&&" */
+        case '|': /* "||" */
             return T_INT;
+        case '<': /* "<" o "<=" */
+        case '>': /* ">" o ">=" */
+            return T_INT;
+        default:
+            break;
         }
 
-        /* aritmetici (+ - * /): int op int -> int, altrimenti (se almeno
-           un operando e' float) -> float. T_VOID (gia' segnalato piu'
-           in basso) non genera un ulteriore errore qui. */
+        /* Aritmetici (+, -, *, /): int op int -> int, altrimenti -> float */
         if (lt == T_VOID || rt == T_VOID) return T_VOID;
         if (lt == T_FLOAT || rt == T_FLOAT) return T_FLOAT;
         return T_INT;
     }
 
     case ND_UNARY:
-        if (strcmp(expr->text, "!") == 0) {
+        /*
+         * '!' e'-' sono sempre un solo char.
+         * '!' -> risultato int (booleano)
+         * '-' -> preserva tipo operando
+         */
+        if (expr->text[0] == '!' && expr->text[1] == '\0') {
             checkExpr(expr->children[0], scope, errors);
             return T_INT;
         }
@@ -278,7 +266,6 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         return checkExpr(expr->children[0], scope, errors);
 
     default:
-        /* non dovrebbe capitare in un'espressione ben formata dal parser */
         fprintf(stderr, "Errore interno: nodo inatteso in un'espressione\n");
         (*errors)++;
         return T_VOID;
@@ -286,18 +273,7 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
 }
 
 /*
- * Attraversamento ricorsivo di uno statement: fonde quello che prima
- * era walkStmt (Pass 2: dichiarazione di variabili, apertura scope sui
- * ND_BLOCK) con la verifica delle espressioni al suo interno.
- *
- * Punto delicato invariato rispetto alla vecchia Pass 2: SOLO ND_BLOCK
- * apre un nuovo scope. ND_IF/ND_WHILE ricorrono sui rami passando lo
- * stesso 'scope' ricevuto, senza mai chiamare scope_create(): uno
- * statement senza graffe non introduce un livello di scoping.
- *
- * 'returnType' e' il tipo di ritorno della funzione in cui ci troviamo
- * (serve a ND_RETURN); si propaga invariato attraverso ricorsione,
- * esattamente come lo scope.
+ * Attraversamento ricorsivo di uno statement.
  */
 static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *arena, int *errors) {
     if (!stmt) return;
@@ -305,22 +281,18 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
     switch (stmt->kind) {
 
     case ND_VAR_DECL: {
-        /* dichiara nello scope CORRENTE: non ne apre uno nuovo */
         if (!symtab_declare_from_decl_text(arena, scope, stmt)) {
             (*errors)++;
             break;
         }
-        if (stmt->nchildren == 0) break;   /* nessun inizializzatore */
+        if (stmt->nchildren == 0) break;
 
-        /* Ricava tipo/isArray/arraySize dallo stesso testo appena usato
-           per dichiarare il simbolo: piu' semplice che rifare un lookup. */
         char *typeNameBuf, *varName;
         int isArray, arraySize;
         symtab_parse_decl_text(arena, stmt->text, &typeNameBuf, &varName, &isArray, &arraySize);
         DataType declType = symtab_type_from_string(typeNameBuf);
 
         if (!isArray) {
-            /* scalare: esattamente un figlio (garantito dal parser) */
             DataType t = checkExpr(stmt->children[0], scope, errors);
             if (t != T_VOID && !assignCompatible(declType, t)) {
                 fprintf(stderr,
@@ -329,9 +301,6 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
                 (*errors)++;
             }
         } else {
-            /* array: un figlio per elemento, in ordine; troppi
-               inizializzatori rispetto alla dimensione dichiarata e' un
-               bound-check statico esattamente come per ND_ARRAY_ACCESS */
             if (stmt->nchildren > arraySize) {
                 fprintf(stderr,
                         "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
@@ -352,7 +321,6 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
     }
 
     case ND_BLOCK: {
-        /* l'UNICO caso che apre un nuovo scope */
         Scope *blockScope = scope_create(scope);
         for (int i = 0; i < stmt->nchildren; i++) {
             checkStmt(stmt->children[i], blockScope, returnType, arena, errors);
@@ -361,16 +329,16 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
     }
 
     case ND_IF:
-        checkExpr(stmt->children[0], scope, errors);                        /* condizione */
-        checkStmt(stmt->children[1], scope, returnType, arena, errors);      /* then */
+        checkExpr(stmt->children[0], scope, errors);
+        checkStmt(stmt->children[1], scope, returnType, arena, errors);
         if (stmt->nchildren > 2) {
-            checkStmt(stmt->children[2], scope, returnType, arena, errors); /* else, se presente */
+            checkStmt(stmt->children[2], scope, returnType, arena, errors);
         }
         break;
 
     case ND_WHILE:
-        checkExpr(stmt->children[0], scope, errors);                        /* condizione */
-        checkStmt(stmt->children[1], scope, returnType, arena, errors);      /* body */
+        checkExpr(stmt->children[0], scope, errors);
+        checkStmt(stmt->children[1], scope, returnType, arena, errors);
         break;
 
     case ND_RETURN: {
@@ -388,17 +356,13 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
         break;
 
     default:
-        /* ND_ERROR e altro: ignora */
         break;
     }
 }
 
 /*
- * Ex Pass 2, driver: per ogni ND_FUNC_DECL crea lo scope dei parametri
- * (figlio di 'global'), vi dichiara i parametri, ricava il tipo di
- * ritorno dalla propria signature (gia' nota da Pass 1, ma qui la
- * rileggiamo dal testo del nodo perche' e' piu' semplice che tornare a
- * cercarla nello scope globale) e attraversa il corpo con checkStmt.
+ * Driver: per ogni ND_FUNC_DECL crea lo scope dei parametri, vi dichiara
+ * i parametri, ricava il tipo di ritorno e attraversa il corpo.
  */
 static void checkFunctionBody(ASTNode *decl, Scope *global, Arena *arena, int *errors) {
     char *typeNameBuf, *funcName;
@@ -409,16 +373,12 @@ static void checkFunctionBody(ASTNode *decl, Scope *global, Arena *arena, int *e
 
     Scope *fnScope = scope_create(global);
 
-    /* tutti i figli tranne l'ultimo sono ND_PARAM: l'ultimo e' il Block */
     int paramCount = decl->nchildren - 1;
     for (int p = 0; p < paramCount; p++) {
-        /* un parametro duplicato e' una redeclaration nello stesso
-           scope: symtab_declare la rifiuta gia' da sola, qui si
-           controlla solo il valore di ritorno */
         if (!symtab_declare_from_decl_text(arena, fnScope, decl->children[p])) (*errors)++;
     }
 
-    ASTNode *body = decl->children[decl->nchildren - 1];   /* ND_BLOCK */
+    ASTNode *body = decl->children[decl->nchildren - 1];
     checkStmt(body, fnScope, returnType, arena, errors);
 }
 
