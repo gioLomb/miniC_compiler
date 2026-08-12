@@ -62,8 +62,7 @@ static void collectBody(IRFunction *f, int header, int tail,
     int (*preds)[2] = arena_alloc(arena, (size_t)n * 2 * sizeof(int));
     memset(inBody,    0, (size_t)n);
     memset(predCount, 0, (size_t)n * sizeof(int));
-    for (int b = 0; b < n; b++) preds[b][0] = preds[b][1] = -1;
-
+    memset(preds,    -1, (size_t)n * 2 * sizeof(int));
     for (int b = 0; b < n; b++)
         for (int k = 0; k < 2; k++) {
             int s = f->blocks[b].bb.succ[k];

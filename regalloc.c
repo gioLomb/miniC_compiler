@@ -6,6 +6,7 @@
 #include "interference.h"
 #include "regalloc_utils.h"
 #include "arena.h"
+#include "bucket.h"   /* modulo per i bucket con arena interna */
 
 /* =========================================================================
  * Bitset helpers — usati da SpillSet per is_spilled O(1)
@@ -119,73 +120,14 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount) {
 }
 
 /* =========================================================================
- * Buckets for Simplify (Briggs-optimistic)
- *
- * OPT: aggiunto campo 'nonempty' (bitmask uint32_t, k<=14 bucket) per
- * rendere bucket_pop_any_low O(1) con __builtin_ctz invece di O(k).
- * ========================================================================= */
-
-typedef struct {
-    int     *head;
-    int     *bnext;
-    int     *bprev;
-    int     *inBucket;
-    int      k;
-    uint32_t nonempty;   /* bit i settato ↔ head[i] != -1 */
-} Buckets;
-
-static Buckets buckets_create(int nextVreg, int k) {
-    Buckets b;
-    b.k        = k;
-    b.nonempty = 0;
-    b.head     = malloc((size_t)k * sizeof(int));
-    memset(b.head, -1, k * sizeof(b.head[0]));
-    b.bnext    = malloc((size_t)(nextVreg ? nextVreg : 1) * sizeof(int));
-    b.bprev    = malloc((size_t)(nextVreg ? nextVreg : 1) * sizeof(int));
-    b.inBucket = calloc((size_t)(nextVreg ? nextVreg : 1), sizeof(int));
-    return b;
-}
-
-static void buckets_free(Buckets *b) {
-    free(b->head);
-    free(b->bnext);
-    free(b->bprev);
-    free(b->inBucket);
-}
-
-static inline void bucket_insert(Buckets *b, int v, int d) {
-    b->bprev[v]  = -1;
-    b->bnext[v]  = b->head[d];
-    if (b->head[d] >= 0) b->bprev[b->head[d]] = v;
-    b->head[d]   = v;
-    b->inBucket[v] = 1;
-    b->nonempty |= (1u << d);
-}
-
-static inline void bucket_remove(Buckets *b, int v, int d) {
-    if (b->bprev[v] >= 0) b->bnext[b->bprev[v]] = b->bnext[v];
-    else                  b->head[d]             = b->bnext[v];
-    if (b->bnext[v] >= 0) b->bprev[b->bnext[v]] = b->bprev[v];
-    b->inBucket[v] = 0;
-    if (b->head[d] < 0) b->nonempty &= ~(1u << d);
-}
-
-/* OPT: O(1) con __builtin_ctz sulla bitmask nonempty */
-static inline int bucket_pop_any_low(Buckets *b, int *outD) {
-    if (!b->nonempty) return -1;
-    *outD = __builtin_ctz(b->nonempty);
-    return b->head[*outD];
-}
-
-/* =========================================================================
- * Simplify (Briggs-optimistic)
+ * Simplify (Briggs-optimistic) – ora usa il modulo bucket con arena interna
  * ========================================================================= */
 
 static int simplify(IGraph *g, int nextVreg, int **outStack) {
     *outStack = malloc((size_t)(nextVreg ? nextVreg : 1) * sizeof(int));
     int stackLen  = 0;
     int k         = PHYS_ALLOCATABLE;
-    Buckets buckets = buckets_create(nextVreg, k);
+    Buckets buckets = buckets_create(nextVreg, k);   /* arena creata internamente */
     int remaining = nextVreg;
 
     for (int v = 0; v < nextVreg; v++)
@@ -228,14 +170,12 @@ static int simplify(IGraph *g, int nextVreg, int **outStack) {
         }
     }
 
-    buckets_free(&buckets);
+    buckets_free(&buckets);   /* distrugge l'arena interna */
     return stackLen;
 }
 
 /* =========================================================================
  * Select colors
- *
- * OPT: scelta colore con __builtin_ctz(~forbidden) invece di loop O(k).
  * ========================================================================= */
 
 static int select_colors(IGraph *g, int nextVreg, int *stack,
@@ -254,13 +194,11 @@ static int select_colors(IGraph *g, int nextVreg, int *stack,
                 forbidden |= (1u << g->color[w]);
         }
 
-        /* maschera bit validi: solo PHYS_ALLOCATABLE colori disponibili */
         const uint32_t valid_mask = (1u << PHYS_ALLOCATABLE) - 1u;
         uint32_t available = (~forbidden) & valid_mask;
 
         int chosen = -1;
         if (g->crossesCall[v]) {
-            /* preferisci callee-saved: bit [PHYS_CALLER_SAVED_COUNT .. PHYS_ALLOCATABLE-1] */
             uint32_t callee_avail = available >> PHYS_CALLER_SAVED_COUNT;
             if (callee_avail)
                 chosen = PHYS_CALLER_SAVED_COUNT + __builtin_ctz(callee_avail);
@@ -282,10 +220,9 @@ static int select_colors(IGraph *g, int nextVreg, int *stack,
 }
 
 /* =========================================================================
- * Spill code insertion
+ * Spill code insertion – con arena locale per slot e cache
  * ========================================================================= */
 
-/* OPT: memset per -1 (0xFF byte valido per int -1 in two's complement) */
 static inline void invalidate_cache(int *cache, int n) {
     memset(cache, 0xFF, (size_t)n * sizeof(int));
 }
@@ -314,20 +251,22 @@ static void spill_insert(MachFunction *f, const int *spilled, int nSpilled,
                           int *frameOff) {
     int origNextVreg = f->nextVreg;
 
-    /* slot[v] = offset stack per il vreg spillato v; -1 se non spillato */
-    int *slot = malloc((size_t)origNextVreg * sizeof(int));
-    memset(slot, -1, origNextVreg * sizeof(slot[0]));
-        for (int i = 0; i < nSpilled; i++) {
+    /* Arena locale per slot e cache */
+    Arena *spillArena = arena_create(0);
+
+    int *slot = arena_alloc(spillArena, (size_t)origNextVreg * sizeof(int));
+    memset(slot, -1, (size_t)origNextVreg * sizeof(int));
+
+    for (int i = 0; i < nSpilled; i++) {
         *frameOff      += 8;
         slot[spilled[i]] = *frameOff;
     }
 
-    /* OPT: SpillSet O(1) invece di is_spilled() O(nSpilled) */
     SpillSet ss;
     spillset_init(&ss, origNextVreg);
     for (int i = 0; i < nSpilled; i++) spillset_set(&ss, spilled[i]);
 
-    int *cache = malloc((size_t)origNextVreg * sizeof(int));
+    int *cache = arena_alloc(spillArena, (size_t)origNextVreg * sizeof(int));
     invalidate_cache(cache, origNextVreg);
 
     int maxNew        = f->count * 3 + 16;
@@ -415,15 +354,13 @@ static void spill_insert(MachFunction *f, const int *spilled, int nSpilled,
     f->instrs   = newInstrs;
     f->count    = newCount;
     f->capacity = maxNew;
-    free(slot);
-    free(cache);
+
+    arena_destroy(spillArena);   /* libera slot e cache */
     spillset_free(&ss);
 }
 
 /* =========================================================================
  * Finalize + remove identity moves — fusi in un unico passaggio
- *
- * OPT: prima erano due loop separati su f->instrs; ora uno solo.
  * ========================================================================= */
 
 static inline void rewrite_phys(MachOperand *o, const int *color) {
@@ -439,7 +376,6 @@ static inline void rewrite_mem_operands(MachOperand *op, const int *color) {
     if (op->mem.indexVreg >= 0) op->mem.indexVreg = color[op->mem.indexVreg];
 }
 
-/* Colora tutti i vreg e scarta i MOV identità in un unico passaggio */
 static void finalize_and_remove_identity(MachFunction *f, const int *color) {
     int newCount = 0;
     for (int i = 0; i < f->count; i++) {
@@ -451,7 +387,6 @@ static void finalize_and_remove_identity(MachFunction *f, const int *color) {
         rewrite_mem_operands(&in->dst,  color);
         rewrite_mem_operands(&in->src1, color);
 
-        /* salta MOV reg→stesso reg */
         if (in->op == MACH_MOV
             && in->dst.kind  == MO_PHYS
             && in->src1.kind == MO_PHYS
@@ -465,9 +400,6 @@ static void finalize_and_remove_identity(MachFunction *f, const int *color) {
 
 /* =========================================================================
  * Save/restore callee-saved
- *
- * OPT: eliminato count_rets() separato; conta i RET durante la scansione
- * per usedMask, evitando un secondo giro completo sulla lista istruzioni.
  * ========================================================================= */
 
 static inline int is_callee_saved(int physReg) {
@@ -478,7 +410,6 @@ static void save_restore_callee(MachFunction *f) {
     uint32_t usedMask = 0;
     int retCount      = 0;
 
-    /* unico passaggio: raccoglie callee-saved usati E conta RET */
     for (int i = 0; i < f->count; i++) {
         MachInstr *in = &f->instrs[i];
         if (in->dst.kind == MO_PHYS && is_callee_saved(in->dst.physReg))
@@ -543,7 +474,7 @@ static void regalloc_function(MachFunction *f) {
         Arena *livArena = arena_create(0);
         LivenessResult liv = liveness_compute_mach(f, blocks, nBlocks, livArena);
 
-        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter,livArena);
+        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter, livArena);
 
         int *stack    = NULL;
         int  stackLen = simplify(&g, f->nextVreg, &stack);
@@ -552,16 +483,22 @@ static void regalloc_function(MachFunction *f) {
         int  nSpilled = select_colors(&g, f->nextVreg, stack, stackLen, spilled);
 
         if (nSpilled == 0) {
-            /* OPT: finalize + remove identity in un unico passaggio */
             finalize_and_remove_identity(f, g.color);
-            free(stack); free(spilled); ig_free(&g);
-            arena_destroy(livArena); free(blocks);
+            free(stack);
+            free(spilled);
+            ig_free(&g);
+            arena_destroy(livArena);
+            free(blocks);
             break;
         }
 
         spill_insert(f, spilled, nSpilled, &frameOff);
-        free(stack); free(spilled); ig_free(&g);
-        arena_destroy(livArena); free(blocks);
+
+        free(stack);
+        free(spilled);
+        ig_free(&g);
+        arena_destroy(livArena);
+        free(blocks);
     }
 
     save_restore_callee(f);

@@ -2,204 +2,27 @@
 #include <string.h>
 #include "cp.h"
 #include "arena.h"
-#include "liveness.h"   /* per VarMap e varmap_init/varmap_destroy */
+#include "varmap.h"
+#include "constmap.h"
 
-/* ---- Reticolo dei valori ----------------------------------------------- */
-#define LAT_UNKNOWN  0
-#define LAT_CONST    1
-#define LAT_CONFLICT 2
-
-typedef struct {
-    int state;
-    int isFloat;
-    union {
-        int   ival;
-        float fval;
-    } val;
-} LatVal;
-
-#include <stdint.h>
-#include "hash_table.h"
-
-static uint64_t cp_make_key(int kind, int a, int b) {
-    uint64_t k = 0;
-    k |= (uint64_t)(kind & 0x3)         << 62;
-    k |= (uint64_t)(a    & 0x7fffffff)  << 31;
-    k |= (uint64_t)(b    & 0x7fffffff);
-    return k;
-}
-
-static int varMap_id(VarMap *m, int kind, int a, int b) {
-    uint64_t key = cp_make_key(kind, a, b);
-    int id;
-    if (ht_get(m->table, &key, sizeof key, &id, sizeof id)) return id;
-    id = m->nextId++;
-    ht_set(m->table, &key, sizeof key, &id, sizeof id);
-    return id;
-}
-
-static int operandVarId(VarMap *m, Operand op) {
-    if (op.kind == OPND_VAR)  return varMap_id(m, 0, op.data.varLevel, op.data.varOffset);
-    if (op.kind == OPND_TEMP) return varMap_id(m, 1, op.data.tempId, 0);
-    return -1;
-}
-
-/* ---- LatVal helpers ---------------------------------------------------- */
-static inline LatVal lat_unknown(void) {
-    LatVal v = {0}; v.state = LAT_UNKNOWN; return v;
-}
-static inline LatVal lat_const_int(int ival) {
-    LatVal v = {0}; v.state = LAT_CONST; v.isFloat = 0; v.val.ival = ival; return v;
-}
-static inline LatVal lat_const_float(float fval) {
-    LatVal v = {0}; v.state = LAT_CONST; v.isFloat = 1; v.val.fval = fval; return v;
-}
-static inline LatVal lat_conflict(void) {
-    LatVal v = {0}; v.state = LAT_CONFLICT; return v;
-}
-
-static LatVal lat_meet(LatVal a, LatVal b) {
-    if (a.state == LAT_UNKNOWN) return b;
-    if (b.state == LAT_UNKNOWN) return a;
-    if (a.state == LAT_CONFLICT || b.state == LAT_CONFLICT) return lat_conflict();
-    if (a.isFloat != b.isFloat) return lat_conflict();
-    if (a.isFloat) {
-        if (a.val.fval == b.val.fval) return a;
-    } else {
-        if (a.val.ival == b.val.ival) return a;
+/* ---- Helpers per la fase di riscrittura -------------------------------- */
+static inline int operand_equal(const Operand *a, const Operand *b) {
+    if (a->kind != b->kind) return 0;
+    if (a->kind == OPND_CONST_INT)  return a->data.intVal == b->data.intVal;
+    if (a->kind == OPND_CONST_FLOAT) return a->data.floatVal == b->data.floatVal;
+    if (a->kind == OPND_VAR) {
+        return a->data.varLevel == b->data.varLevel &&
+               a->data.varOffset == b->data.varOffset;
     }
-    return lat_conflict();
+    if (a->kind == OPND_TEMP) return a->data.tempId == b->data.tempId;
+    if (a->kind == OPND_LABEL) return a->data.labelId == b->data.labelId;
+    if (a->kind == OPND_FUNC) return strcmp(a->data.funcName, b->data.funcName) == 0;
+    return 1; /* OPND_NONE */
 }
 
-static inline int lat_equal(LatVal a, LatVal b) {
-    if (a.state != b.state) return 0;
-    if (a.state != LAT_CONST) return 1;
-    if (a.isFloat != b.isFloat) return 0;
-    return a.isFloat ? (a.val.fval == b.val.fval) : (a.val.ival == b.val.ival);
-}
-
-/* ---- ConstMap ---------------------------------------------------------- */
-typedef struct {
-    LatVal *vals;
-    int     size;
-} ConstMap;
-
-static void constMap_init(ConstMap *m, int size, Arena *arena) {
-    m->size = size;
-    m->vals = arena_alloc(arena, (size_t)size * sizeof(LatVal));
-    for (int i = 0; i < size; i++) m->vals[i] = lat_unknown();
-}
-
-static void constMap_copy(ConstMap *dst, const ConstMap *src) {
-    memcpy(dst->vals, src->vals, (size_t)src->size * sizeof(LatVal));
-}
-
-static int constMap_equal(const ConstMap *a, const ConstMap *b) {
-    for (int i = 0; i < a->size; i++)
-        if (!lat_equal(a->vals[i], b->vals[i])) return 0;
-    return 1;
-}
-
-static void constMap_meet(ConstMap *dest, const ConstMap *src) {
-    for (int i = 0; i < dest->size; i++)
-        dest->vals[i] = lat_meet(dest->vals[i], src->vals[i]);
-}
-
-static LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm) {
-    int id = operandVarId(vm, op);
-    if (id < 0 || id >= m->size) return lat_conflict();
-    return m->vals[id];
-}
-
-static Operand tryFold(Operand op, const ConstMap *m, VarMap *vm) {
-    if (op.kind != OPND_VAR && op.kind != OPND_TEMP) return op;
-    LatVal lv = constMap_get(m, op, vm);
-    if (lv.state != LAT_CONST) return op;
-    if (lv.isFloat) {
-        Operand o; o.kind = OPND_CONST_FLOAT; o.data.floatVal = lv.val.fval; return o;
-    } else {
-        Operand o; o.kind = OPND_CONST_INT;   o.data.intVal   = lv.val.ival; return o;
-    }
-}
-
-/* ---- Helpers per transferInstr ----------------------------------------- */
-static LatVal getLatVal(const ConstMap *map, Operand op, VarMap *vm) {
-    switch (op.kind) {
-    case OPND_CONST_INT:   return lat_const_int(op.data.intVal);
-    case OPND_CONST_FLOAT: return lat_const_float(op.data.floatVal);
-    case OPND_VAR:
-    case OPND_TEMP:        return constMap_get(map, op, vm);
-    default:               return lat_conflict();
-    }
-}
-
-static int isBinaryOp(IROp op) {
-    switch (op) {
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
-    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
-        return 1;
-    default: return 0;
-    }
-}
-
-static int isComparisonOp(IROp op) {
-    switch (op) {
-    case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
-        return 1;
-    default: return 0;
-    }
-}
-
-static int foldBinaryInt(IROp op, int a, int b, int *res) {
-    switch (op) {
-    case IR_ADD: *res = a + b;                       return 1;
-    case IR_SUB: *res = a - b;                       return 1;
-    case IR_MUL: *res = a * b;                       return 1;
-    case IR_DIV: if (!b) return 0; *res = a / b;     return 1;
-    case IR_MOD: if (!b) return 0; *res = a % b;     return 1;
-    case IR_LT:  *res = (a <  b);                    return 1;
-    case IR_LE:  *res = (a <= b);                    return 1;
-    case IR_GT:  *res = (a >  b);                    return 1;
-    case IR_GE:  *res = (a >= b);                    return 1;
-    case IR_EQ:  *res = (a == b);                    return 1;
-    case IR_NE:  *res = (a != b);                    return 1;
-    default:                                          return 0;
-    }
-}
-
-static int foldBinaryFloat(IROp op, float a, float b, float *res) {
-    switch (op) {
-    case IR_ADD: *res = a + b;                            return 1;
-    case IR_SUB: *res = a - b;                            return 1;
-    case IR_MUL: *res = a * b;                            return 1;
-    case IR_DIV: if (b == 0.0f) return 0; *res = a / b;  return 1;
-    case IR_LT:  *res = (float)(a <  b);                  return 1;
-    case IR_LE:  *res = (float)(a <= b);                  return 1;
-    case IR_GT:  *res = (float)(a >  b);                  return 1;
-    case IR_GE:  *res = (float)(a >= b);                  return 1;
-    case IR_EQ:  *res = (float)(a == b);                  return 1;
-    case IR_NE:  *res = (float)(a != b);                  return 1;
-    default:                                               return 0;
-    }
-}
-
-static LatVal foldUnary(IROp op, LatVal v) {
-    if (v.state != LAT_CONST) return lat_conflict();
-    if (!v.isFloat) {
-        int i = v.val.ival;
-        if (op == IR_NEG) return lat_const_int(-i);
-        if (op == IR_NOT) return lat_const_int(!i);
-    } else {
-        float f = v.val.fval;
-        if (op == IR_NEG) return lat_const_float(-f);
-        if (op == IR_NOT) return lat_const_int(f == 0.0f ? 1 : 0);
-    }
-    return lat_conflict();
-}
-
-/* ---- transferInstr (invariata) ------------------------------------------ */
+/* ---- transferInstr: aggiorna la ConstMap con l'istruzione data --------- */
 static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
-    int id = operandVarId(vm, in->dst);
+    int id = varmap_operand_id(vm, in->dst);
     if (id < 0 || id >= map->size) return;
 
     LatVal result = lat_conflict();
@@ -229,29 +52,14 @@ static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
     map->vals[id] = result;
 }
 
-/* ---- Helpers per la fase di riscrittura -------------------------------- */
-static inline int operand_equal(const Operand *a, const Operand *b) {
-    if (a->kind != b->kind) return 0;
-    if (a->kind == OPND_CONST_INT)  return a->data.intVal == b->data.intVal;
-    if (a->kind == OPND_CONST_FLOAT) return a->data.floatVal == b->data.floatVal;
-    if (a->kind == OPND_VAR) {
-        return a->data.varLevel == b->data.varLevel &&
-               a->data.varOffset == b->data.varOffset;
-    }
-    if (a->kind == OPND_TEMP) return a->data.tempId == b->data.tempId;
-    if (a->kind == OPND_LABEL) return a->data.labelId == b->data.labelId;
-    if (a->kind == OPND_FUNC) return strcmp(a->data.funcName, b->data.funcName) == 0;
-    return 1; /* OPND_NONE */
-}
-
 /* ---- PASSO 1: Build VarMap --------------------------------------------- */
 static void cp_build_varmap(IRFunction *f, VarMap *vm) {
     varmap_init(vm);
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
-        operandVarId(vm, in->dst);
-        operandVarId(vm, in->src1);
-        operandVarId(vm, in->src2);
+        varmap_operand_id(vm, in->dst);
+        varmap_operand_id(vm, in->src1);
+        varmap_operand_id(vm, in->src2);
     }
 }
 
@@ -429,7 +237,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
 
         /* ---- IF_FALSE folding ---- */
         if (in->op == IR_IF_FALSE) {
-            Operand cond = tryFold(in->src1, &live, vm);
+            Operand cond = constMap_try_fold(in->src1, &live, vm);
             if (cond.kind == OPND_CONST_INT || cond.kind == OPND_CONST_FLOAT) {
                 int isZero = (cond.kind == OPND_CONST_INT)
                              ? (cond.data.intVal == 0)
@@ -458,8 +266,8 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
         }
 
         /* ---- Sostituisci operandi con costanti note ---- */
-        Operand ns1 = tryFold(in->src1, &live, vm);
-        Operand ns2 = tryFold(in->src2, &live, vm);
+        Operand ns1 = constMap_try_fold(in->src1, &live, vm);
+        Operand ns2 = constMap_try_fold(in->src2, &live, vm);
         if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
         if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
 
