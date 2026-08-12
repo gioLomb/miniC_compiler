@@ -13,9 +13,11 @@ static inline int ig_has_edge(const IGraph *g, int i, int j) {
     return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
 }
 
+/* adj.data: unica allocazione fuori dall'arena, cresce per archi aggiunti */
 static void ig_add_edge(IGraph *g, int i, int j) {
     if (i == j || i < 0 || j < 0) return;
     if (ig_has_edge(g, i, j)) return;
+
     long idx = tri_idx(i, j);
     g->matrix[idx >> 6] |= 1ULL << (idx & 63);
 
@@ -37,42 +39,50 @@ static void ig_add_edge(IGraph *g, int i, int j) {
     g->degree[j]++;
 }
 
+/* Libera solo adj.data; tutto il resto e' nell'arena del caller */
 void ig_free(IGraph *g) {
     for (int i = 0; i < g->n; i++)
         free(g->adj[i].data);
-    free(g->adj);
-    free(g->matrix);
-    free(g->degree);
-    free(g->color);
-    free(g->active);
-    free(g->excl);
-    free(g->spillCost);
-    free(g->crossesCall);
 }
 
-/* Riceve BasicBlock* (ex RBlock*): layout identico, tipo unificato */
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
-                int nextVreg, const LiveSet *liveAfter) {
+                int nextVreg, const LiveSet *liveAfter, Arena *arena) {
     int totalNodes = nextVreg + PHYS_ALLOCATABLE;
+
     IGraph g;
     g.n = totalNodes;
-    long nbits = (long)totalNodes * (totalNodes - 1) / 2;
-    g.matrix      = calloc((size_t)((nbits + 63) / 64 + 1), sizeof(uint64_t));
-    g.adj         = calloc((size_t)totalNodes, sizeof(AdjList));
-    g.degree      = calloc((size_t)totalNodes, sizeof(int));
-    g.color       = malloc((size_t)totalNodes * sizeof(int));
-    g.active      = malloc((size_t)totalNodes * sizeof(int));
-    g.excl        = calloc((size_t)totalNodes, sizeof(uint32_t));
-    g.spillCost   = calloc((size_t)totalNodes, sizeof(int));
-    g.crossesCall = calloc((size_t)totalNodes, 1);
+
+    /* --- Matrice triangolare di adiacenza -------------------------------- */
+    long   nbits       = (long)totalNodes * (totalNodes - 1) / 2;
+    size_t matrixWords = (size_t)((nbits + 63) / 64 + 1);
+    g.matrix = arena_alloc(arena, matrixWords * sizeof(uint64_t));
+    memset(g.matrix, 0, matrixWords * sizeof(uint64_t));
+
+    /* --- Array di AdjList struct (adj[i].data resta NULL, malloc separato) */
+    g.adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
+    memset(g.adj, 0, (size_t)totalNodes * sizeof(AdjList));
+
+    /* --- Array interi paralleli ------------------------------------------ */
+    g.degree      = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.color       = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.active      = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.excl        = arena_alloc(arena, (size_t)totalNodes * sizeof(uint32_t));
+    g.spillCost   = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.crossesCall = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
+
+    memset(g.degree,      0, (size_t)totalNodes * sizeof(int));
+    memset(g.excl,        0, (size_t)totalNodes * sizeof(uint32_t));
+    memset(g.spillCost,   0, (size_t)totalNodes * sizeof(int));
+    memset(g.crossesCall, 0, (size_t)totalNodes * sizeof(char));
 
     for (int i = 0; i < totalNodes; i++) {
         g.color[i]  = -1;
-        g.active[i] = 1;
+        g.active[i] =  1;
     }
     for (int p = 0; p < PHYS_ALLOCATABLE; p++)
         g.color[nextVreg + p] = p;
 
+    /* ---- Costruzione archi + spill cost --------------------------------- */
     int tmpArr[16];
     for (int b = 0; b < nBlocks; b++) {
         for (int i = blocks[b].start; i < blocks[b].end; i++) {
@@ -92,36 +102,41 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
             instr_defs(in, nextVreg, defs, &nd);
             instr_implicit_defs(in, nextVreg, idefs, &nid);
 
+            int id;
+
             for (int d = 0; d < nd; d++) {
-                LIVESET_FOREACH(&liveAfter[i], id)
+                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
+                     LIVESET_NEXT(&it, &id); )
                     ig_add_edge(&g, defs[d], id);
-                LIVESET_FOREACH_END
             }
+
             for (int d = 0; d < nid; d++) {
-                LIVESET_FOREACH(&liveAfter[i], id)
+                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
+                     LIVESET_NEXT(&it, &id); )
                     ig_add_edge(&g, idefs[d], id);
-                LIVESET_FOREACH_END
             }
 
             if (in->op == MACH_CALL) {
-                LIVESET_FOREACH(&liveAfter[i], id)
+                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
+                     LIVESET_NEXT(&it, &id); ) {
                     if (id < nextVreg) {
                         g.excl[id] |= ((1U << PHYS_CALLER_SAVED_COUNT) - 1);
                         g.crossesCall[id] = 1;
                     }
-                LIVESET_FOREACH_END
+                }
             } else if (in->op == MACH_IDIV || in->op == MACH_CQO) {
                 uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
-                LIVESET_FOREACH(&liveAfter[i], id)
+                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
+                     LIVESET_NEXT(&it, &id); )
                     if (id < nextVreg) g.excl[id] |= mask;
-                LIVESET_FOREACH_END
             } else if (regalloc_is_setcc(in->op)) {
                 uint32_t mask = (1U << PHYS_RAX);
-                LIVESET_FOREACH(&liveAfter[i], id)
+                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
+                     LIVESET_NEXT(&it, &id); )
                     if (id < nextVreg) g.excl[id] |= mask;
-                LIVESET_FOREACH_END
             }
         }
     }
+
     return g;
 }

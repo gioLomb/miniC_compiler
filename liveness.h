@@ -35,15 +35,53 @@ int     liveset_test   (const LiveSet *s, int id);
 int     liveset_equal  (const LiveSet *a, const LiveSet *b);
 void    liveset_copy   (LiveSet *dst, const LiveSet *src);
 
-/* Itera solo i bit a 1 (costo proporzionale ai bit settati). */
-#define LIVESET_FOREACH(s, idvar) \
-    for (int _w = 0; _w < (s)->words; _w++) { \
-        uint64_t _bits = (s)->bits[_w]; \
-        while (_bits) { \
-            int _b = __builtin_ctzll(_bits); \
-            int idvar = (_w << 6) + _b; \
-            _bits &= (_bits - 1);
-#define LIVESET_FOREACH_END } }
+/* ---- LiveSetIter: iteratore sui bit settati ----------------------------
+ *
+ * Sostituisce le vecchie macro LIVESET_FOREACH / LIVESET_FOREACH_END.
+ *
+ * Uso:
+ *   int id;
+ *   for (LiveSetIter it = LIVESET_ITER(s); LIVESET_NEXT(&it, &id); )
+ *       ... usa id ...
+ *
+ * Vantaggi rispetto alle vecchie macro a due parti:
+ *   - parentesi sempre bilanciate, nessun END da ricordare
+ *   - debugger e breakpoint funzionano normalmente
+ *   - nessuna collisione di nomi interni con variabili del call-site
+ *   - garantito inline (macro), zero dipendenza dall'ottimizzatore
+ * ----------------------------------------------------------------------- */
+
+typedef struct {
+    const LiveSet *s;
+    int            word;
+    uint64_t       bits;
+} LiveSetIter;
+
+/* Inizializza l'iteratore sul LiveSet 's'. */
+#define LIVESET_ITER(s) \
+    { (s), 0, ((s)->words > 0 ? (s)->bits[0] : 0ULL) }
+
+/*
+ * Avanza l'iteratore e scrive il prossimo id in *out_id.
+ * Restituisce 1 se trovato, 0 se esaurito.
+ * 's' in LIVESET_ITER e 'it'/'out_id' in LIVESET_NEXT sono valutati
+ * una sola volta: nessun rischio di doppia valutazione.
+ */
+#define LIVESET_NEXT(it, out_id)                                    \
+    (liveset_iter_next_impl((it), (out_id)))
+
+/* Implementazione interna — non usare direttamente, usa LIVESET_NEXT. */
+static inline int liveset_iter_next_impl(LiveSetIter *it, int *out_id) {
+    while (it->bits == 0) {
+        it->word++;
+        if (it->word >= it->s->words) return 0;
+        it->bits = it->s->bits[it->word];
+    }
+    int b    = __builtin_ctzll(it->bits);
+    *out_id  = (it->word << 6) + b;
+    it->bits &= it->bits - 1;   /* clear lowest set bit */
+    return 1;
+}
 
 /* ---- Motore di dataflow generico ---------------------------------------- */
 
@@ -93,9 +131,6 @@ LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *
 
 /* ---- Fronte codice macchina (regalloc/interference) --------------------- */
 
-/*
- * Riceve BasicBlock* (ex RBlock*) al posto del vecchio tipo dedicato.
- */
 LivenessResult liveness_compute_mach(const MachFunction *f, const BasicBlock *blocks,
                                       int nBlocks, Arena *arena);
 

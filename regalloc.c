@@ -543,7 +543,7 @@ static void regalloc_function(MachFunction *f) {
         Arena *livArena = arena_create(0);
         LivenessResult liv = liveness_compute_mach(f, blocks, nBlocks, livArena);
 
-        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter);
+        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter,livArena);
 
         int *stack    = NULL;
         int  stackLen = simplify(&g, f->nextVreg, &stack);

@@ -144,8 +144,7 @@ static void resolveCFG(IRFunction *f) {
         } else if (op == IR_IF_FALSE) {
             f->blocks[b].bb.succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
             int lbl = f->instrs[last].dst.data.labelId - f->labelBase;
-            f->blocks[b].bb.succ[1] =
-                (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
+            f->blocks[b].bb.succ[1] = (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
         } else if (op != IR_RETURN) {
             f->blocks[b].bb.succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
         }
