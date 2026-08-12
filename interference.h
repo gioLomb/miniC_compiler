@@ -7,6 +7,8 @@
 #include "regalloc_utils.h"
 #include "arena.h"
 
+#define MAX_INSTR_OPERANDS 16
+#define MAX_EXPLICIT_DEFS 8
 typedef struct {
     int  len;
     int  cap;

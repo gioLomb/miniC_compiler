@@ -7,7 +7,7 @@
 int main() {
     int a = 3;
     int b = 5;
-    int i;
+    int i = 1;
     int t = 0;
 
     // a e b non cambiano nel loop, quindi a+b è invariante.

@@ -40,11 +40,14 @@ REGALLOC_SRC    := regalloc.c
 VARMAP_SRC := varmap.c
 BUCKET_SRC := bucket.c
 CONSTMAP_SRC := constmap.c
+RA_COLOR_SRC    := ra_color.c
+RA_SPILL_SRC    := ra_spill.c
+SCHED_DAG_SRC := sched_dag.c
 COMMON_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
                $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC)  $(VARMAP_SRC) $(LIVENESS_SRC) $(CONSTMAP_SRC) \
-               $(CP_SRC) $(LICM_SRC) $(LOOP_SRC) $(SR_SRC) $(SCHED_SRC) \
-               $(INSTR_SEL_SRC) $(INTERFERENCE_SRC) $(REGALLOC_UTILS_SRC) $(BUCKET_SRC) $(REGALLOC_SRC)
+               $(CP_SRC) $(LICM_SRC) $(LOOP_SRC) $(SR_SRC) $(SCHED_DAG_SRC) $(SCHED_SRC) \
+               $(INSTR_SEL_SRC) $(INTERFERENCE_SRC) $(RA_COLOR_SRC) $(RA_SPILL_SRC) $(REGALLOC_UTILS_SRC) $(BUCKET_SRC) $(REGALLOC_SRC)
 
 MINICC_SRCS      := $(COMMON_SRCS) parser/main.c
 TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c

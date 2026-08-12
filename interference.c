@@ -85,7 +85,7 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
         g.color[nextVreg + p] = p;
 
     /* ---- Costruzione archi + spill cost --------------------------------- */
-    int tmpArr[16];
+    int tmpArr[LIVENESS_MAX_IDS];
     for (int b = 0; b < nBlocks; b++) {
         for (int i = blocks[b].start; i < blocks[b].end; i++) {
             const MachInstr *in = &f->instrs[i];
@@ -100,7 +100,7 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
             for (int k = 0; k < n; k++)
                 if (tmpArr[k] < nextVreg) g.spillCost[tmpArr[k]] += w;
 
-            int defs[8], nd, idefs[16], nid;
+            int defs[MAX_EXPLICIT_DEFS], nd, idefs[LIVENESS_MAX_IDS], nid;
             instr_defs(in, nextVreg, defs, &nd);
             instr_implicit_defs(in, nextVreg, idefs, &nid);
 
