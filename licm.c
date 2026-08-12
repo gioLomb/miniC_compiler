@@ -196,8 +196,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     /* Fase 3: istruzioni da insertAt in poi, saltando quelle mosse */
     int *oldToNew = arena_alloc(localArena, (size_t)nInstrs * sizeof(int));
-    for (int j = 0; j < nInstrs; j++) oldToNew[j] = -1;
-
+    memset(oldToNew, -1, nInstrs * sizeof(oldToNew[0]));
     for (int j = insertAt; j < nInstrs; j++) {
         if (doMove[j]) continue;
         oldToNew[j] = newCount;

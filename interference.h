@@ -1,6 +1,7 @@
 #ifndef INTERFERENCE_H
 #define INTERFERENCE_H
 
+#include <stdbool.h>
 #include "liveness.h"
 #include "instr_selector.h"
 #include "regalloc_utils.h"
@@ -18,12 +19,10 @@ typedef struct {
     AdjList  *adj;
     int      *degree;
     int      *color;
-    int      *active;
+    bool     *active;      /* solo 0/1: bool permette memset e risparmia memoria */
     uint32_t *excl;
     int      *spillCost;
     char     *crossesCall;
-    /* nessun campo Arena*: il caller possiede l'arena e la distrugge
-       insieme all'IGraph (vedi regalloc.c: ig_free + arena_destroy accoppiati) */
 } IGraph;
 
 /*

@@ -139,7 +139,7 @@ static Buckets buckets_create(int nextVreg, int k) {
     b.k        = k;
     b.nonempty = 0;
     b.head     = malloc((size_t)k * sizeof(int));
-    for (int d = 0; d < k; d++) b.head[d] = -1;
+    memset(b.head, -1, k * sizeof(b.head[0]));
     b.bnext    = malloc((size_t)(nextVreg ? nextVreg : 1) * sizeof(int));
     b.bprev    = malloc((size_t)(nextVreg ? nextVreg : 1) * sizeof(int));
     b.inBucket = calloc((size_t)(nextVreg ? nextVreg : 1), sizeof(int));
@@ -316,8 +316,8 @@ static void spill_insert(MachFunction *f, const int *spilled, int nSpilled,
 
     /* slot[v] = offset stack per il vreg spillato v; -1 se non spillato */
     int *slot = malloc((size_t)origNextVreg * sizeof(int));
-    for (int i = 0; i < origNextVreg; i++) slot[i] = -1;
-    for (int i = 0; i < nSpilled; i++) {
+    memset(slot, -1, origNextVreg * sizeof(slot[0]));
+        for (int i = 0; i < nSpilled; i++) {
         *frameOff      += 8;
         slot[spilled[i]] = *frameOff;
     }

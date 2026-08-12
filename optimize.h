@@ -3,6 +3,8 @@
 
 #include "parser/ast.h"
 
+#define INT_BUF_SIZE  (CHAR_BIT * sizeof(long) / 3 + 3)
+#define FLOAT_BUF_SIZE (DECIMAL_DIG + 8)
 #define OP_KEY(c1, c2) ((unsigned short)(((unsigned char)(c1) << 8) | (unsigned char)(c2)))
 /*
  * Ottimizzazioni a livello di AST, eseguite DOPO semantic_check() e PRIMA

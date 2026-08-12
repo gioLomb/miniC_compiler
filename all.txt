@@ -655,7 +655,7 @@ int cp_optimize(IRFunction *f) {
                         in->src1 = in->src2 = (Operand){.kind = OPND_NONE};
                         /* dst rimane il labelId del bersaglio */
                         f->blocks[b].succ[0] = s1;
-                        f->blocks[b].succ[1] = -1;
+                        f->blocks[b].succ[1;
                         if (s0 >= 0) f->blocks[s0].predCount--;
                     } else {
                         /* Salto mai preso: elimina IF_FALSE, fallthrough resta */

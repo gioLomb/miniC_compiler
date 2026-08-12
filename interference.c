@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "interference.h"
 #include "regalloc_utils.h"
 
@@ -13,7 +14,6 @@ static inline int ig_has_edge(const IGraph *g, int i, int j) {
     return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
 }
 
-/* adj.data: unica allocazione fuori dall'arena, cresce per archi aggiunti */
 static void ig_add_edge(IGraph *g, int i, int j) {
     if (i == j || i < 0 || j < 0) return;
     if (ig_has_edge(g, i, j)) return;
@@ -39,7 +39,6 @@ static void ig_add_edge(IGraph *g, int i, int j) {
     g->degree[j]++;
 }
 
-/* Libera solo adj.data; tutto il resto e' nell'arena del caller */
 void ig_free(IGraph *g) {
     for (int i = 0; i < g->n; i++)
         free(g->adj[i].data);
@@ -58,27 +57,30 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
     g.matrix = arena_alloc(arena, matrixWords * sizeof(uint64_t));
     memset(g.matrix, 0, matrixWords * sizeof(uint64_t));
 
-    /* --- Array di AdjList struct (adj[i].data resta NULL, malloc separato) */
+    /* --- Array di AdjList struct ----------------------------------------- */
     g.adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
     memset(g.adj, 0, (size_t)totalNodes * sizeof(AdjList));
 
     /* --- Array interi paralleli ------------------------------------------ */
     g.degree      = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
     g.color       = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.active      = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.active      = arena_alloc(arena, (size_t)totalNodes * sizeof(bool));
     g.excl        = arena_alloc(arena, (size_t)totalNodes * sizeof(uint32_t));
     g.spillCost   = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
     g.crossesCall = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
 
-    memset(g.degree,      0, (size_t)totalNodes * sizeof(int));
-    memset(g.excl,        0, (size_t)totalNodes * sizeof(uint32_t));
-    memset(g.spillCost,   0, (size_t)totalNodes * sizeof(int));
-    memset(g.crossesCall, 0, (size_t)totalNodes * sizeof(char));
+    memset(g.degree,      0,    (size_t)totalNodes * sizeof(int));
+    memset(g.excl,        0,    (size_t)totalNodes * sizeof(uint32_t));
+    memset(g.spillCost,   0,    (size_t)totalNodes * sizeof(int));
+    memset(g.crossesCall, 0,    (size_t)totalNodes * sizeof(char));
 
-    for (int i = 0; i < totalNodes; i++) {
-        g.color[i]  = -1;
-        g.active[i] =  1;
-    }
+    /* color = -1: pattern 0xFF valido per int -1 in two's complement */
+    memset(g.color,  0xFF, (size_t)totalNodes * sizeof(int));
+
+    /* active = true: sizeof(bool)==1 quindi memset con 1 è corretto */
+    memset(g.active, 1,    (size_t)totalNodes * sizeof(bool));
+
+    /* sovrascrive color per registri fisici: indici [nextVreg, nextVreg+PHYS_ALLOCATABLE) */
     for (int p = 0; p < PHYS_ALLOCATABLE; p++)
         g.color[nextVreg + p] = p;
 

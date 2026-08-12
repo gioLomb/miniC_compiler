@@ -1,14 +1,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>   /* CHAR_BIT */
+#include <float.h>    /* DECIMAL_DIG */
 #include "optimize.h"
+
+/*
+ * Dimensione buffer per snprintf di valori numerici.
+ *
+ * INT_BUF_SIZE:   segno + cifre decimali di long + '\0'
+ *                 Formula standard: CHAR_BIT*sizeof(long)/3 arrotonda
+ *                 per eccesso il numero di cifre in base 10.
+ *
+ * FLOAT_BUF_SIZE: DECIMAL_DIG cifre significative (double) + overhead
+ *                 per segno, punto decimale, 'e', segno esponente,
+ *                 3 cifre esponente, '\0'.
+ *
+ * NUM_BUF_SIZE: massimo tra i due — usato nelle funzioni che possono
+ *               produrre sia interi che float nello stesso buffer.
+ */
+#define INT_BUF_SIZE   (CHAR_BIT * sizeof(long) / 3 + 3)
+#define FLOAT_BUF_SIZE (DECIMAL_DIG + 8)
+#define NUM_BUF_SIZE   (FLOAT_BUF_SIZE > INT_BUF_SIZE ? FLOAT_BUF_SIZE : INT_BUF_SIZE)
 
 /* =========================================================================
  * Helper di riconoscimento/lettura dei letterali
- * =========================================================================
- * Tutti inline: con -g il compilatore non inlina automaticamente, qui
- * sono abbastanza piccoli da non avere overhead visibile in debug e zero
- * overhead in release.
  * ========================================================================= */
 
 static inline int isIntLiteral(ASTNode *n)     { return n && n->kind == ND_NUM_INT; }
@@ -23,10 +39,6 @@ static inline int literalIntEquals(ASTNode *n, long v) {
     return isIntLiteral(n) && literalAsLong(n) == v;
 }
 
-/*
- * Libera SOLO questo nodo (text + array children), MAI i figli puntati.
- * Usare quando uno o più figli vengono riusati/restituiti al chiamante.
- */
 static void freeNodeShallow(ASTNode *node) {
     if (!node) return;
     free(node->children);
@@ -36,9 +48,6 @@ static void freeNodeShallow(ASTNode *node) {
 
 /* =========================================================================
  * hasSideEffect
- *
- * FIX punto 3: rimosso strcmp per '/' e '%' — sono gli unici operatori
- * binari con text[0]=='/' o text[0]=='%', confronto diretto sul char.
  * ========================================================================= */
 static int hasSideEffect(ASTNode *expr) {
     if (!expr) return 0;
@@ -49,7 +58,6 @@ static int hasSideEffect(ASTNode *expr) {
         case ND_ARRAY_ACCESS:
             return 1;
         case ND_BINOP:
-            /* '/' e '%' unici come primo char tra tutti gli operatori binari */
             if (expr->text[0] == '/' || expr->text[0] == '%')
                 return 1;
             break;
@@ -65,17 +73,13 @@ static int hasSideEffect(ASTNode *expr) {
 
 /* =========================================================================
  * foldBinopLiterals
- *
- * FIX punto 1: tutte le cascate di strcmp rimpiazzate con switch su
- * OP_KEY (macro già definita in optimize.h).
  * ========================================================================= */
 static ASTNode *foldBinopLiterals(const char *op, ASTNode *sx, ASTNode *dx) {
     int bothInt = isIntLiteral(sx) && isIntLiteral(dx);
 
-    char buf[64];
+    char buf[NUM_BUF_SIZE];
     unsigned short key = OP_KEY(op[0], op[1]);
 
-    /* confronto/logici: risultato sempre int 0/1 */
     switch (key) {
         case OP_KEY('=','='): case OP_KEY('!','='):
         case OP_KEY('<', 0):  case OP_KEY('>', 0):
@@ -100,7 +104,6 @@ static ASTNode *foldBinopLiterals(const char *op, ASTNode *sx, ASTNode *dx) {
             break;
     }
 
-    /* '%': solo interi */
     if (key == OP_KEY('%', 0)) {
         long b = literalAsLong(dx);
         if (b == 0) return NULL;
@@ -109,7 +112,6 @@ static ASTNode *foldBinopLiterals(const char *op, ASTNode *sx, ASTNode *dx) {
         return newNode(ND_NUM_INT, buf);
     }
 
-    /* '/' */
     if (key == OP_KEY('/', 0)) {
         if (bothInt) {
             long b = literalAsLong(dx);
@@ -125,13 +127,12 @@ static ASTNode *foldBinopLiterals(const char *op, ASTNode *sx, ASTNode *dx) {
         return newNode(ND_NUM_FLOAT, buf);
     }
 
-    /* '+', '-', '*': int→int, altrimenti float */
     if (bothInt) {
         long a = literalAsLong(sx), b = literalAsLong(dx), r;
         switch (key) {
             case OP_KEY('+', 0): r = a + b; break;
             case OP_KEY('-', 0): r = a - b; break;
-            default:             r = a * b; break; /* '*' */
+            default:             r = a * b; break;
         }
         snprintf(buf, sizeof(buf), "%ld", r);
         return newNode(ND_NUM_INT, buf);
@@ -150,11 +151,9 @@ static ASTNode *foldBinopLiterals(const char *op, ASTNode *sx, ASTNode *dx) {
 
 /* =========================================================================
  * foldUnaryLiteral
- *
- * FIX punto 2: rimossi strcmp, confronto diretto su op[0].
  * ========================================================================= */
 static ASTNode *foldUnaryLiteral(const char *op, ASTNode *child) {
-    char buf[64];
+    char buf[NUM_BUF_SIZE];
     if (op[0] == '-') {
         if (isIntLiteral(child)) {
             snprintf(buf, sizeof(buf), "%ld", -literalAsLong(child));
@@ -171,13 +170,9 @@ static ASTNode *foldUnaryLiteral(const char *op, ASTNode *child) {
 }
 
 /* =========================================================================
- * Tree height balancing per catene associative (+, *)
+ * Tree height balancing
  * ========================================================================= */
 
-/*
- * Vero se il sottoalbero contiene almeno un letterale ND_NUM_FLOAT.
- * Limite noto: non rileva variabili float senza letterali visibili.
- */
 static int containsFloatLiteral(ASTNode *n) {
     if (!n) return 0;
     if (n->kind == ND_NUM_FLOAT) return 1;
@@ -187,11 +182,6 @@ static int containsFloatLiteral(ASTNode *n) {
     return 0;
 }
 
-/*
- * Appiattisce la catena associativa in leaves[].
- *
- * FIX punto 4: confronto operatore su 2 char via OP_KEY invece di strcmp.
- */
 static void flattenChain(ASTNode *node, unsigned short opKey,
                           ASTNode ***leaves, int *count, int *cap) {
     if (node->kind == ND_BINOP &&
@@ -208,20 +198,7 @@ static void flattenChain(ASTNode *node, unsigned short opKey,
     }
 }
 
-/*
- * Ricostruisce albero bilanciato da array piatto di foglie.
- *
- * FIX punto 5: iterativo in-place, elimina O(log n) malloc/free interni.
- * Algoritmo: appaia foglie [0,1], [2,3], ... sul buffer stesso (scrittura
- * sempre a indice < lettura corrente perché count/2 < count), poi ripeti
- * finché count==1. Corretto perché con count>=2 lo slot di scrittura è
- * sempre già stato consumato prima di essere sovrascritto.
- *
- * Fold inline di coppie costanti: se due foglie adiacenti sono letterali,
- * le combina subito riducendo il lavoro dei pass successivi.
- */
 static ASTNode *buildBalanced(ASTNode **leaves, int count, const char opChar) {
-    /* buffer di appoggio per il livello corrente — riusa leaves[] stesso */
     while (count > 1) {
         int writeIdx = 0;
         int i = 0;
@@ -229,7 +206,6 @@ static ASTNode *buildBalanced(ASTNode **leaves, int count, const char opChar) {
             ASTNode *sx = leaves[i];
             ASTNode *dx = leaves[i + 1];
 
-            /* fold inline di coppia costante */
             if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
                 char opStr[3] = { opChar, '\0', '\0' };
                 ASTNode *folded = foldBinopLiterals(opStr, sx, dx);
@@ -247,21 +223,15 @@ static ASTNode *buildBalanced(ASTNode **leaves, int count, const char opChar) {
             leaves[writeIdx++] = pair;
         }
         if (i < count)
-            leaves[writeIdx++] = leaves[i]; /* foglia dispari: sale invariata */
+            leaves[writeIdx++] = leaves[i];
         count = writeIdx;
     }
     return leaves[0];
 }
 
-/*
- * Punto d'ingresso bilanciamento: verifica se la catena è bilanciabile,
- * poi appiattisce e ricostruisce.
- *
- * FIX: copia opChar prima di flattenChain (che libera expr incluso text).
- */
 static ASTNode *balanceAssocChain(ASTNode *expr) {
     if (expr->text[0] != '+' && expr->text[0] != '*') return expr;
-    if (expr->text[1] != '\0') return expr; /* '++' o '**' non esistono ma sicurezza */
+    if (expr->text[1] != '\0') return expr;
     if (containsFloatLiteral(expr)) return expr;
 
     char opChar = expr->text[0];
@@ -277,7 +247,7 @@ static ASTNode *balanceAssocChain(ASTNode *expr) {
 }
 
 /* =========================================================================
- * Attraversamento delle espressioni
+ * Attraversamento espressioni
  * ========================================================================= */
 
 static ASTNode *optimizeExpr(ASTNode *expr) {
@@ -310,7 +280,6 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
         ASTNode *sx = expr->children[0];
         ASTNode *dx = expr->children[1];
 
-        /* 1) Folding completo di due letterali */
         if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
             ASTNode *folded = foldBinopLiterals(expr->text, sx, dx);
             if (folded) {
@@ -319,7 +288,6 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
             }
         }
 
-        /* 2) Semplificazioni algebriche via OP_KEY — punto 1 fix */
         unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
         switch (key) {
             case OP_KEY('+', 0):
@@ -347,7 +315,6 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
                 break;
         }
 
-        /* 3) Tree height balancing */
         return balanceAssocChain(expr);
     }
 
@@ -371,10 +338,7 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
 }
 
 /* =========================================================================
- * Attraversamento degli statement
- *
- * FIX punto 6: ND_BLOCK pre-alloca oldCount slot prima di ricostruire
- * l'array figli, evitando la sequenza realloc 0→4→8→... di addChild.
+ * Attraversamento statement
  * ========================================================================= */
 
 static ASTNode *optimizeStmt(ASTNode *stmt) {
@@ -391,12 +355,6 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
         ASTNode **oldChildren = stmt->children;
         int oldCount = stmt->nchildren;
 
-        /* FIX punto 6: pre-alloca esattamente oldCount slot — nel caso
-         * peggiore nessun figlio viene eliminato o espanso, quindi questa
-         * dimensione è sufficiente senza realloc. Se un figlio è esso
-         * stesso un ND_BLOCK, i suoi nchildren si sommano ai già presenti;
-         * in quel caso addChild farà al più una realloc da oldCount a
-         * oldCount*2, che è accettabile (caso raro). */
         stmt->children = (oldCount > 0)
                          ? malloc((size_t)oldCount * sizeof(ASTNode *))
                          : NULL;
@@ -408,7 +366,6 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
             if (!result) continue;
 
             if (result->kind == ND_BLOCK) {
-                /* Appiattisci: i nipoti diventano figli diretti */
                 for (int j = 0; j < result->nchildren; j++)
                     addChild(stmt, result->children[j]);
                 freeNodeShallow(result);
@@ -430,7 +387,7 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
             ASTNode *thenBr = stmt->children[1];
             ASTNode *elseBr = (stmt->nchildren > 2) ? stmt->children[2] : NULL;
 
-            ASTNode *survivor  = condTrue ? thenBr : elseBr;
+            ASTNode *survivor   = condTrue ? thenBr : elseBr;
             ASTNode *deadBranch = condTrue ? elseBr : thenBr;
 
             freeAST(cond);
