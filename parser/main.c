@@ -4,6 +4,7 @@
 #include "error.h"
 #include "ast.h"
 #include "parser.h"
+#include "../arena.h"
 #include "../symbol_table.h"
 #include "../ast_to_symtab.h"
 #include "../semantic.h"
@@ -12,7 +13,7 @@
 #include "../svn.h"
 #include "../instr_selector.h"
 #include "../sched.h"
-#include "../regalloc.h"  
+#include "../regalloc.h"
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -40,21 +41,22 @@ int main(int argc, char **argv) {
 
     /* ---- Parsing ---- */
     lexer_open(src_path);
-    ASTNode *root = ParseProgram();
+    Arena   *astArena = arena_create(0);
+    ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
     if (!emit_asm) { printf("=== PARSE TREE ===\n"); printAST(root, 0); }
 
     if (totalErrorCount() > 0) {
         printf("\nParsing completato con %d errori.\n", totalErrorCount());
-        freeAST(root); return 1;
+        freeAST(root); arena_destroy(astArena); return 1;
     }
     if (!emit_asm) printf("\nParsing completato con successo.\n");
 
     /* ---- Analisi semantica ---- */
-    Scope *global   = scope_create(NULL);
-    int pass1Errors = symtab_populate_globals(root, global);
-    int semErrors   = semantic_check(root, global);
+    Scope *global    = scope_create(NULL);
+    int pass1Errors  = symtab_populate_globals(root, global);
+    int semErrors    = semantic_check(root, global);
 
     if (!emit_asm) {
         printf("\n=== ANALISI SEMANTICA ===\n");
@@ -63,22 +65,18 @@ int main(int argc, char **argv) {
     }
     if (pass1Errors + semErrors > 0) {
         if (emit_asm) fprintf(stderr, "Errori semantici: assembly non generato.\n");
-        symtab_destroy_tree(global); freeAST(root); return 1;
+        symtab_destroy_tree(global); freeAST(root); arena_destroy(astArena); return 1;
     }
 
     /* ---- Ottimizzazioni AST + generazione IR ---- */
-    printf("bef_optimie\n");
-    optimize_ast(root);
-    printf("af_optimize\n");
-
+    optimize_ast(root, astArena);
     IRProgram *ir = ir_generate(root);
-    printf("af_generate\n");
-
 
     if (!emit_asm) {
         printf("\n=== IR LINEARE (three-address code) ===\n");
         ir_print(ir);
-        ir_free(ir); symtab_destroy_tree(global); freeAST(root);
+        ir_free(ir); symtab_destroy_tree(global);
+        freeAST(root); arena_destroy(astArena);
         return 0;
     }
 
@@ -86,32 +84,21 @@ int main(int argc, char **argv) {
     FILE *out = stdout;
     if (out_path) {
         out = fopen(out_path, "w");
-        if (!out) { perror(out_path); ir_free(ir); symtab_destroy_tree(global); freeAST(root); return 1; }
+        if (!out) {
+            perror(out_path);
+            ir_free(ir); symtab_destroy_tree(global);
+            freeAST(root); arena_destroy(astArena); return 1;
+        }
     }
-    printf("bef_selection\n");
 
     MachProgram *mp = isel_select(ir);
-    printf("af_selection\n");
-
-    if (debug) {
-        fprintf(out, "# === PRE-SCHEDULING ===\n");
-        isel_emit_asm(mp, out);
-        fprintf(out, "\n");
-    }
+    if (debug) { fprintf(out, "# === PRE-SCHEDULING ===\n"); isel_emit_asm(mp, out); fprintf(out, "\n"); }
 
     sched_schedule(mp);
-        printf("af_schedule\n");
+    if (debug) { fprintf(out, "# === POST-SCHEDULING / PRE-REGALLOC ===\n"); isel_emit_asm(mp, out); fprintf(out, "\n"); }
 
-    if (debug) {
-        fprintf(out, "# === POST-SCHEDULING / PRE-REGALLOC ===\n");
-        isel_emit_asm(mp, out);
-        fprintf(out, "\n");
-    }
-    printf("NNAMOOOO\n");
-    regalloc(mp);   /* colorazione + spill + prologo/epilogo */
-    printf("BONOOO\n");
-    if (debug)
-        fprintf(out, "# === POST-REGALLOC ===\n");
+    regalloc(mp);
+    if (debug) fprintf(out, "# === POST-REGALLOC ===\n");
 
     isel_emit_asm(mp, out);
 
@@ -121,5 +108,6 @@ int main(int argc, char **argv) {
     ir_free(ir);
     symtab_destroy_tree(global);
     freeAST(root);
+    arena_destroy(astArena);
     return 0;
 }

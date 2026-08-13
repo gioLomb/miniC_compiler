@@ -3,6 +3,7 @@
 #include "parser/error.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
+#include "arena.h"
 #include "symbol_table.h"
 #include "ast_to_symtab.h"
 #include "semantic.h"
@@ -14,7 +15,10 @@ int main(int argc, char **argv) {
     }
 
     lexer_open(argv[1]);
-    ASTNode *root = ParseProgram();
+    Arena   *astArena = arena_create(0);
+    ASTNode *root     = ParseProgram(astArena);
+    lexer_close();
+
     printf("Parsing: %d errori.\n", totalErrorCount());
 
     Scope *global = scope_create(NULL);
@@ -27,7 +31,7 @@ int main(int argc, char **argv) {
 
     symtab_destroy_tree(global);
     freeAST(root);
-    lexer_close();
+    arena_destroy(astArena);
 
     return (pass1Errors > 0 || semErrors > 0) ? 1 : 0;
 }

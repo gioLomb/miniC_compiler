@@ -4,23 +4,32 @@
 #include "parser/error.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
+#include "arena.h"
 #include "symbol_table.h"
 #include "ast_to_symtab.h"
 #include "semantic.h"
 #include "ir.h"
 
-static IRProgram *pipeline(const char *src, ASTNode **outRoot) {
+static IRProgram *pipeline(const char *src, ASTNode **outRoot, Arena **outArena) {
     const char *path = "/tmp/miniC_test_svn_src.c";
     FILE *f = fopen(path, "w"); fputs(src, f); fclose(f);
+
     lexer_open(path);
-    ASTNode *root = ParseProgram();
+    Arena   *astArena = arena_create(0);
+    ASTNode *root     = ParseProgram(astArena);
     lexer_close();
+
     Scope *global = scope_create(NULL);
     symtab_populate_globals(root, global);
     int errs = semantic_check(root, global);
     symtab_destroy_tree(global);
-    if (errs > 0) { fprintf(stderr, "errori semantici (%d)\n", errs); freeAST(root); exit(1); }
-    *outRoot = root;
+
+    if (errs > 0) {
+        fprintf(stderr, "errori semantici (%d)\n", errs);
+        freeAST(root); arena_destroy(astArena); exit(1);
+    }
+    *outRoot  = root;
+    *outArena = astArena;
     return ir_generate(root);
 }
 
@@ -32,19 +41,20 @@ static int countOp(IRFunction *f, IROp op) {
     return c;
 }
 
-int main(void) {
-    IRProgram *prog; ASTNode *root; IRFunction *f;
+#define CLEANUP(prog, root, arena) do { ir_free(prog); freeAST(root); arena_destroy(arena); } while(0)
 
-    /* PASS 1: 'a+b' calcolato due volte nella condizione while con &&.
-     * B0(predCount=2)→B1(predCount=1): EBB valida, SVN deve eliminare la seconda.
-     * IR atteso: 2 IR_ADD totali (a+b in B0, c+1 nel corpo), 1 copia temp→temp. */
+int main(void) {
+    IRProgram *prog; ASTNode *root; IRFunction *f; Arena *arena;
+
+    /* PASS 1 */
     prog = pipeline(
         "int main() { int a; int b; int c; "
-        "while (a+b > 0 && a+b < 10) { c = c+1; } return c; }", &root);
+        "while (a+b > 0 && a+b < 10) { c = c+1; } return c; }",
+        &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_ADD) != 2) {
-        fprintf(stderr, "PASS 1 FALLITO: attese 2 IR_ADD (a+b + c+1), trovate %d\n", countOp(f,IR_ADD));
-        ir_free(prog); freeAST(root); return 1;
+        fprintf(stderr, "PASS 1 FALLITO: attese 2 IR_ADD, trovate %d\n", countOp(f,IR_ADD));
+        CLEANUP(prog, root, arena); return 1;
     }
     int copies = 0;
     for (int i = 0; i < f->count; i++) {
@@ -53,46 +63,49 @@ int main(void) {
     }
     if (copies != 1) {
         fprintf(stderr, "PASS 1 FALLITO: attesa 1 copia temp->temp, trovate %d\n", copies);
-        ir_free(prog); freeAST(root); return 1;
+        CLEANUP(prog, root, arena); return 1;
     }
     printf("PASS 1 ok: 'a+b' nella condizione while ottimizzato (2 IR_ADD, 1 copia temp).\n");
-    ir_free(prog); freeAST(root);
+    CLEANUP(prog, root, arena);
 
-    /* PASS 2: NON unifica attraverso un punto di confluenza (if/else). */
+    /* PASS 2 */
     prog = pipeline(
         "int main() { int a; int b; int x; int y; "
-        "if (a > 0) { x = a+b; } else { y = a+b; } return x; }", &root);
+        "if (a > 0) { x = a+b; } else { y = a+b; } return x; }",
+        &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_ADD) != 2) {
-        fprintf(stderr, "PASS 2 FALLITO: i due 'a+b' in rami alternativi non devono essere unificati (trovate %d)\n", countOp(f,IR_ADD));
-        ir_free(prog); freeAST(root); return 1;
+        fprintf(stderr, "PASS 2 FALLITO: i due 'a+b' non devono essere unificati (trovate %d)\n", countOp(f,IR_ADD));
+        CLEANUP(prog, root, arena); return 1;
     }
     printf("PASS 2 ok: i due 'a+b' in rami if/else restano distinti.\n");
-    ir_free(prog); freeAST(root);
+    CLEANUP(prog, root, arena);
 
-    /* PASS 3: mappa valori-nomi attiva — alias usato quando leader primario invalidato. */
+    /* PASS 3 */
     prog = pipeline(
         "int main() { int a; int b; int p; int x; int y; "
-        "p = a+b; x = p; p = 999; y = a+b; return y; }", &root);
+        "p = a+b; x = p; p = 999; y = a+b; return y; }",
+        &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_ADD) != 1) {
-        fprintf(stderr, "PASS 3 FALLITO: 'a+b' andava ricalcolato una volta sola (trovate %d IR_ADD)\n", countOp(f,IR_ADD));
-        ir_free(prog); freeAST(root); return 1;
+        fprintf(stderr, "PASS 3 FALLITO: attesa 1 IR_ADD, trovate %d\n", countOp(f,IR_ADD));
+        CLEANUP(prog, root, arena); return 1;
     }
     printf("PASS 3 ok: leader primario invalidato, alias 'x' riusato.\n");
-    ir_free(prog); freeAST(root);
+    CLEANUP(prog, root, arena);
 
-    /* PASS 4: LOAD_ARR mai memoizzato — due letture restano distinte. */
+    /* PASS 4 */
     prog = pipeline(
         "int main() { int arr[10]; int other[10]; int i; int t1; int t2; "
-        "t1 = arr[i]; other[0] = 5; t2 = arr[i]; return t1+t2; }", &root);
+        "t1 = arr[i]; other[0] = 5; t2 = arr[i]; return t1+t2; }",
+        &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_LOAD_ARR) != 2) {
-        fprintf(stderr, "PASS 4 FALLITO: due letture di 'arr[i]' non devono essere unificate (trovate %d)\n", countOp(f,IR_LOAD_ARR));
-        ir_free(prog); freeAST(root); return 1;
+        fprintf(stderr, "PASS 4 FALLITO: due letture non unificate (trovate %d)\n", countOp(f,IR_LOAD_ARR));
+        CLEANUP(prog, root, arena); return 1;
     }
     printf("PASS 4 ok: due letture di 'arr[i]' restano distinte.\n");
-    ir_free(prog); freeAST(root);
+    CLEANUP(prog, root, arena);
 
     printf("\nTutti i test SVN sono passati.\n");
     remove("/tmp/miniC_test_svn_src.c");

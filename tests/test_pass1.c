@@ -3,6 +3,7 @@
 #include "parser/error.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
+#include "arena.h"
 #include "symbol_table.h"
 #include "ast_to_symtab.h"
 
@@ -15,15 +16,10 @@ static const char *dataTypeName(DataType t) {
     return "?";
 }
 
-/* userdata per ht_foreach: stampa ogni Symbol registrato nello scope globale.
-   Il nome (key/keySize) viene stampato direttamente con "%.*s": non serve
-   copiarlo in un buffer intermedio di dimensione fissa, qualunque sia la
-   sua lunghezza reale. */
 static void printSymbol(void *key, size_t keySize, void *value, size_t valueSize, void *userdata) {
     (void)valueSize; (void)userdata;
     const char *name = (const char *)key;
     int nameLen = (int)keySize;
-
     Symbol *sym = (Symbol *)value;
     if (sym->kind == SYM_FUNC) {
         printf("  FUNC %.*s -> %s (", nameLen, name, dataTypeName(sym->dataType));
@@ -45,7 +41,10 @@ int main(int argc, char **argv) {
     }
 
     lexer_open(argv[1]);
-    ASTNode *root = ParseProgram();
+    Arena   *astArena = arena_create(0);
+    ASTNode *root     = ParseProgram(astArena);
+    lexer_close();
+
     printf("Parsing: %d errori.\n", totalErrorCount());
 
     Scope *global = scope_create(NULL);
@@ -57,7 +56,7 @@ int main(int argc, char **argv) {
 
     symtab_destroy_tree(global);
     freeAST(root);
-    lexer_close();
+    arena_destroy(astArena);
 
     return symErrors > 0 ? 1 : 0;
 }

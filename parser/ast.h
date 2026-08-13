@@ -1,13 +1,11 @@
 #ifndef AST_H
 #define AST_H
 
+#include "../arena.h"
+
 /*
  * X-Macro list: unico punto di verita' per NodeKind.
  * Ogni entry: X(enum_value, "stringa_leggibile")
- *
- * Aggiungere/rimuovere un nodo: modifica SOLO questa lista.
- * enum e array di stringhe (in ast.c) si aggiornano automaticamente
- * alla prossima compilazione — zero rischio di desync.
  */
 #define NODEKIND_LIST(X)                          \
     X(ND_PROGRAM,      "Program"     )            \
@@ -29,7 +27,6 @@
     X(ND_NUM_FLOAT,    "NumFloat"   )            \
     X(ND_ERROR,        "Error"      )
 
-/* Espansione dell'enum: ogni X(val, str) diventa 'val,' */
 #define X_ENUM(val, str) val,
 typedef enum {
     NODEKIND_LIST(X_ENUM)
@@ -38,25 +35,29 @@ typedef enum {
 
 typedef struct ASTNode {
     NodeKind kind;
-    char *text;
+    char *text;          /* punta dentro astArena — non va liberato */
     struct ASTNode **children;
     int nchildren;
     int capacity;
 
-    /* Coordinate di risoluzione, popolate da semantic_check su ND_ID,
-       ND_ARRAY_ACCESS, ND_VAR_DECL e ND_PARAM (-1 altrove / non ancora
-       risolto). Identificano univocamente la variabile (shadowing incluso)
-       senza che ir_generate debba ripetere una symtab_lookup: scopeLevel e'
-       la profondita' lessicale dello scope in cui la variabile e' stata
-       dichiarata, offset la sua posizione nella tabella locale di quello
-       scope. */
+    /* coordinate di risoluzione (popolate da semantic_check) */
     int scopeLevel;
     int offset;
 } ASTNode;
 
-ASTNode *newNode(NodeKind kind, const char *text);
-void     addChild(ASTNode *parent, ASTNode *child);
-void     printAST(const ASTNode *node, int depth);
-void     freeAST(ASTNode *node);
+/*
+ * Crea un nodo: text viene duplicato nell'arena fornita.
+ * Passare arena=NULL è equivalente a non avere testo (text resterà NULL).
+ */
+ASTNode *newNode(Arena *arena, NodeKind kind, const char *text);
+
+void addChild(ASTNode *parent, ASTNode *child);
+void printAST(const ASTNode *node, int depth);
+
+/*
+ * Libera la struttura ad albero (children array + nodi stessi).
+ * NON libera node->text: la memoria appartiene all'astArena del chiamante.
+ */
+void freeAST(ASTNode *node);
 
 #endif

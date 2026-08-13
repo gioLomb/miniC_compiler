@@ -5,14 +5,14 @@
 
 #define INITIAL_CAPACITY 4
 
-ASTNode *newNode(NodeKind kind, const char *text) {
+ASTNode *newNode(Arena *arena, NodeKind kind, const char *text) {
     ASTNode *node = malloc(sizeof(ASTNode));
-        
+
     *node = (ASTNode){
-        .kind = kind,
-        .text = text ? strdup(text) : NULL,
+        .kind       = kind,
+        .text       = (arena && text) ? arena_strdup(arena, text) : NULL,
         .scopeLevel = -1,
-        .offset = -1
+        .offset     = -1,
     };
 
     return node;
@@ -23,18 +23,13 @@ void addChild(ASTNode *parent, ASTNode *child) {
     if (parent->nchildren == parent->capacity) {
         parent->capacity = parent->capacity == 0 ? INITIAL_CAPACITY
                                                   : parent->capacity * 2;
-        parent->children = (ASTNode **)realloc(
-            parent->children, parent->capacity * sizeof(ASTNode *));
+        parent->children = realloc(parent->children,
+                                   parent->capacity * sizeof(ASTNode *));
     }
     parent->children[parent->nchildren++] = child;
 }
 
-/*
- * Espansione 2 della X-Macro: array di stringhe indicizzato da NodeKind.
- * Ogni X(val, str) diventa la stringa 'str,' nell'inizializzatore.
- * Sincronizzazione garantita a compile-time: se NODEKIND_LIST cambia,
- * l'array si aggiorna automaticamente — nessun switch da mantenere.
- */
+/* ---- tabella nomi (X-Macro, stesso ordine di NodeKind) ---- */
 #define X_STR(val, str) str,
 static const char *KIND_NAMES[] = {
     NODEKIND_LIST(X_STR)
@@ -63,6 +58,6 @@ void freeAST(ASTNode *node) {
     for (int i = 0; i < node->nchildren; i++)
         freeAST(node->children[i]);
     free(node->children);
-    free(node->text);
+    /* node->text appartiene all'astArena: non va liberato qui */
     free(node);
 }
