@@ -312,13 +312,12 @@ static ASTNode *ParseAssign(void) {
 static ASTNode *ParseLogicOr(void) {
     ASTNode *left = ParseLogicAnd();
     while (current_token == TOK_OP_OR) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *right = ParseLogicAnd();
         ASTNode *node = newNode(ND_BINOP, op);
         addChild(node, left);
         addChild(node, right);
-        free(op);
         left = node;
     }
     return left;
@@ -327,13 +326,12 @@ static ASTNode *ParseLogicOr(void) {
 static ASTNode *ParseLogicAnd(void) {
     ASTNode *left = ParseEquality();
     while (current_token == TOK_OP_AND) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *right = ParseEquality();
         ASTNode *node = newNode(ND_BINOP, op);
         addChild(node, left);
         addChild(node, right);
-        free(op);
         left = node;
     }
     return left;
@@ -342,13 +340,12 @@ static ASTNode *ParseLogicAnd(void) {
 static ASTNode *ParseEquality(void) {
     ASTNode *left = ParseRelational();
     while (current_token == TOK_OP_EQ || current_token == TOK_OP_NE) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *right = ParseRelational();
         ASTNode *node = newNode(ND_BINOP, op);
         addChild(node, left);
         addChild(node, right);
-        free(op);
         left = node;
     }
     return left;
@@ -358,13 +355,12 @@ static ASTNode *ParseRelational(void) {
     ASTNode *left = ParseAdditive();
     while (current_token == TOK_OP_LT || current_token == TOK_OP_GT ||
            current_token == TOK_OP_LE || current_token == TOK_OP_GE) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *right = ParseAdditive();
         ASTNode *node = newNode(ND_BINOP, op);
         addChild(node, left);
         addChild(node, right);
-        free(op);
         left = node;
     }
     return left;
@@ -373,13 +369,12 @@ static ASTNode *ParseRelational(void) {
 static ASTNode *ParseAdditive(void) {
     ASTNode *left = ParseTerm();
     while (current_token == TOK_OP_PLUS || current_token == TOK_OP_MINUS) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *right = ParseTerm();
         ASTNode *node = newNode(ND_BINOP, op);
         addChild(node, left);
         addChild(node, right);
-        free(op);
         left = node;
     }
     return left;
@@ -388,13 +383,12 @@ static ASTNode *ParseAdditive(void) {
 static ASTNode *ParseTerm(void) {
     ASTNode *left = ParseUnary();
     while (current_token == TOK_OP_MUL || current_token == TOK_OP_DIV || current_token == TOK_OP_MOD) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *right = ParseUnary();
         ASTNode *node = newNode(ND_BINOP, op);
         addChild(node, left);
         addChild(node, right);
-        free(op);
         left = node;
     }
     return left;
@@ -403,12 +397,11 @@ static ASTNode *ParseTerm(void) {
 /* Unary -> '!' Unary | '-' Unary | Factor */
 static ASTNode *ParseUnary(void) {
     if (current_token == TOK_OP_NOT || current_token == TOK_OP_MINUS) {
-        char *op = strdup(current_lexeme);
+        char *op = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
         ASTNode *operand = ParseUnary();
         ASTNode *node = newNode(ND_UNARY, op);
         addChild(node, operand);
-        free(op);
         return node;
     }
     return ParseFactor();
@@ -419,7 +412,7 @@ static ASTNode *ParseUnary(void) {
  */
 static ASTNode *ParseFactor(void) {
     if (current_token == TOK_ID) {
-        char *name = strdup(current_lexeme);
+        char *name = arena_strdup(scratchArena, current_lexeme);
         match(TOK_ID);
 
         ASTNode *node;
@@ -443,7 +436,6 @@ static ASTNode *ParseFactor(void) {
         } else {
             node = newNode(ND_ID, name);
         }
-        free(name);
         return node;
 
     } else if (current_token == TOK_NUM_INT) {

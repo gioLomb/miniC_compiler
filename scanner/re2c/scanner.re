@@ -162,24 +162,22 @@ void lexer_open(const char *path) {
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    /* +1 byte per il terminatore '\0' usato come sentinella di fine-input
-       (regola "end" nel blocco re2c sopra) */
-    sourceBuffer = malloc(len + 1);
-    fread(sourceBuffer, 1, len, f);
-    sourceBuffer[len] = '\0';
+    lexerArena = arena_create(0);                     // crea l'arena
+
+    unsigned char *buf = arena_alloc(lexerArena, len + 1); // alloca direttamente nell'arena
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
     fclose(f);
 
-    cur = sourceBuffer;
+    cur = buf;                                         // punta all'inizio del sorgente
     lineNumber = 1;
-    lexerArena = arena_create(0);
 }
 
 void lexer_close(void) {
-    free(sourceBuffer);
-    sourceBuffer = NULL;
-    arena_destroy(lexerArena);
+    arena_destroy(lexerArena);    // libera tutto (sourceBuffer + lessemi)
     lexerArena = NULL;
     currentLexeme = NULL;
+    cur = NULL;
 }
 
 int lexer_next_token(void) {
