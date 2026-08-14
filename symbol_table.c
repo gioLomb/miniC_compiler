@@ -5,7 +5,7 @@
 /**
  * @brief Deterministic FNV-1a hash algorithm for identifier lookup keys.
  */
-static unsigned long symtab_hash(const void *key, size_t keySize) {
+static unsigned long sym_hash(const void *key, size_t keySize) {
     const unsigned char *bytes = key;
     unsigned long h = 2166136261UL;
     for (size_t i = 0; i < keySize; i++) {
@@ -15,13 +15,13 @@ static unsigned long symtab_hash(const void *key, size_t keySize) {
     return h;
 }
 
-Scope *scope_create(Scope *parent) {
+Scope *sym_scopeCreate(Scope *parent) {
     // Allocate memory for new scope container
     Scope *scope = malloc(sizeof(Scope));
     if (!scope) return NULL;
 
     // Initialize local hash table
-    scope->table = ht_create(SCOPE_DEFAULT_CAPACITY, symtab_hash);
+    scope->table = ht_create(SCOPE_DEFAULT_CAPACITY, sym_hash);
     if (!scope->table) {
         free(scope);
         return NULL;
@@ -46,12 +46,12 @@ Scope *scope_create(Scope *parent) {
     return scope;
 }
 
-Scope *scope_exit(Scope *scope) {
+Scope *sym_scopeExit(Scope *scope) {
     // Return parent pointer without deallocating scope node
     return scope ? scope->parent : NULL;
 }
 
-int symtab_declare(Scope *scope, const char *name, const Symbol *sym) {
+int sym_bind(Scope *scope, const char *name, const Symbol *sym) {
     // Guard against NULL input pointers
     if (!scope || !name || !sym) return 0;
 
@@ -68,7 +68,7 @@ int symtab_declare(Scope *scope, const char *name, const Symbol *sym) {
     return ht_set(scope->table, (void *)name, nameLen, (void *)sym, sizeof(*sym));
 }
 
-int symtab_lookup(Scope *scope, const char *name, Symbol *out) {
+int sym_resolve(Scope *scope, const char *name, Symbol *out) {
     if (!name || !out) return 0;
 
     size_t nameLen = strlen(name);
@@ -83,12 +83,12 @@ int symtab_lookup(Scope *scope, const char *name, Symbol *out) {
     return 0; // Symbol not found in any enclosing scope
 }
 
-void symtab_destroy_tree(Scope *root) {
+void sym_finalize(Scope *root) {
     if (!root) return;
 
     // Recursively destroy child sub-scopes in post-order traversal
     for (int i = 0; i < root->childCount; i++) {
-        symtab_destroy_tree(root->children[i]);
+        sym_finalize(root->children[i]);
     }
 
     // Free child pointer array, local table, and scope struct

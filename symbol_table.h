@@ -112,7 +112,7 @@ typedef struct Scope {
  * @param parent Pointer to parent scope (NULL creates global root scope).
  * @return Pointer to newly initialized Scope instance, or NULL on memory error.
  */
-Scope *scope_create(Scope *parent);
+Scope *sym_scopeCreate(Scope *parent);
 
 /**
  * @brief Exits current scope context by returning its parent scope pointer.
@@ -120,7 +120,7 @@ Scope *scope_create(Scope *parent);
  * @param scope Pointer to current active Scope.
  * @return Pointer to parent Scope, or NULL if at root scope.
  */
-Scope *scope_exit(Scope *scope);
+Scope *sym_scopeExit(Scope *scope);
 
 /**
  * @brief Declares a new symbol inside the current scope ONLY.
@@ -130,7 +130,7 @@ Scope *scope_exit(Scope *scope);
  * @param sym   Pointer to Symbol descriptor to copy into table.
  * @return 1 on successful declaration, 0 if symbol exists in local scope or on invalid input.
  */
-int symtab_declare(Scope *scope, const char *name, const Symbol *sym);
+int sym_bind(Scope *scope, const char *name, const Symbol *sym);
 
 /**
  * @brief Resolves a symbol name by ascending through outer enclosing scopes.
@@ -140,13 +140,13 @@ int symtab_declare(Scope *scope, const char *name, const Symbol *sym);
  * @param out   Pointer receiving copy of matched Symbol metadata.
  * @return 1 if symbol was found in scope chain, 0 otherwise.
  */
-int symtab_lookup(Scope *scope, const char *name, Symbol *out);
+int sym_resolve(Scope *scope, const char *name, Symbol *out);
 
 /**
  * @brief Recursively destroys a scope tree and frees all associated memory.
  *
  * @param root Pointer to root Scope of subtree to destroy.
  */
-void symtab_destroy_tree(Scope *root);
+void sym_finalize(Scope *root);
 
 #endif /* SYMBOL_TABLE_H */

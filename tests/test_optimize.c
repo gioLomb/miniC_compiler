@@ -26,10 +26,10 @@ static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    Scope *global = scope_create(NULL);
-    symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    st_resolveGlobalNamespace(root, global);
     semantic_check(root, global);
-    symtab_destroy_tree(global);
+    sym_finalize(global);
 
     optimize_ast(root, astArena);
 

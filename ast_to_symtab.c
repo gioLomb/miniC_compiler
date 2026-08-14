@@ -3,7 +3,7 @@
 #include <string.h>
 #include "ast_to_symtab.h"
 
-DataType symtab_type_from_string(const char *typeName) {
+DataType st_resolveType(const char *typeName) {
     if (!typeName) return T_VOID;
 
     // Check first character to determine data type
@@ -14,7 +14,7 @@ DataType symtab_type_from_string(const char *typeName) {
     }
 }
 
-void symtab_parse_decl_text(Arena *arena, const char *text,
+void st_elaborateDecl(Arena *arena, const char *text,
                              char **outTypeName, char **outName,
                              int *isArray, int *arraySize) {
     // Reset output flags and parameters
@@ -50,17 +50,17 @@ void symtab_parse_decl_text(Arena *arena, const char *text,
     }
 }
 
-int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node) {
+int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node) {
     char *typeName, *name;
     int isArray, arraySize;
 
     // Parse declaration details from node text string
-    symtab_parse_decl_text(arena, node->text, &typeName, &name, &isArray, &arraySize);
+    st_elaborateDecl(arena, node->text, &typeName, &name, &isArray, &arraySize);
 
     // Build symbol table entry instance
     Symbol sym = {
         .kind       = SYM_VAR,
-        .dataType   = symtab_type_from_string(typeName),
+        .dataType   = st_resolveType(typeName),
         .isArray    = isArray,
         .arraySize  = arraySize,
         .scopeLevel = scope->level,
@@ -68,7 +68,7 @@ int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node) {
     };
 
     // Register symbol into target scope and check for redeclaration conflicts
-    if (!symtab_declare(scope, name, &sym)) {
+    if (!sym_bind(scope, name, &sym)) {
         fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
         return 0;
     }
@@ -79,7 +79,7 @@ int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node) {
     return 1;
 }
 
-int symtab_populate_globals(ASTNode *program, Scope *global) {
+int st_resolveGlobalNamespace(ASTNode *program, Scope *global) {
     int errors = 0;
 
     // Allocate internal scratch arena for parsing top-level global declarations
@@ -91,10 +91,10 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
 
         char *typeName, *name;
         int isArray, arraySize;
-        symtab_parse_decl_text(arena, decl->text, &typeName, &name, &isArray, &arraySize);
+        st_elaborateDecl(arena, decl->text, &typeName, &name, &isArray, &arraySize);
 
         Symbol sym = {0};
-        sym.dataType = symtab_type_from_string(typeName);
+        sym.dataType = st_resolveType(typeName);
 
         // Process function declaration nodes
         if (decl->kind == ND_FUNC_DECL) {
@@ -115,10 +115,10 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
             for (int p = 0; p < paramCount; p++) {
                 char *ptypeName, *pname;
                 int pIsArray, pArraySize;
-                symtab_parse_decl_text(arena, decl->children[p]->text,
+                st_elaborateDecl(arena, decl->children[p]->text,
                                         &ptypeName, &pname, &pIsArray, &pArraySize);
 
-                DataType pType = symtab_type_from_string(ptypeName);
+                DataType pType = st_resolveType(ptypeName);
                 symtab_pack_param_type(&sym.paramTypes, p, pType);
             }
 
@@ -134,7 +134,7 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
         }
 
         // Register global symbol and report redeclaration errors
-        if (!symtab_declare(global, name, &sym)) {
+        if (!sym_bind(global, name, &sym)) {
             fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
             errors++;
         }

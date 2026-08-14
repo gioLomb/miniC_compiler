@@ -8,7 +8,7 @@ int main(void) {
        (main() chiama somma() anche se somma e' "dichiarata dopo": questo
        e' esattamente il caso di forward reference che la strategia a
        due passate risolve) */
-    Scope *global = scope_create(NULL);
+    Scope *global = sym_scopeCreate(NULL);
 
     Symbol sommaSym = {0};
     sommaSym.kind = SYM_FUNC;
@@ -16,30 +16,30 @@ int main(void) {
     sommaSym.paramCount = 2;
     symtab_pack_param_type(&sommaSym.paramTypes, 0, T_INT);
     symtab_pack_param_type(&sommaSym.paramTypes, 1, T_INT);
-    assert(symtab_declare(global, "somma", &sommaSym) == 1);
+    assert(sym_bind(global, "somma", &sommaSym) == 1);
 
     Symbol mainSym = {0};
     mainSym.kind = SYM_FUNC;
     mainSym.dataType = T_INT;
     mainSym.paramCount = 0;
-    assert(symtab_declare(global, "main", &mainSym) == 1);
+    assert(sym_bind(global, "main", &mainSym) == 1);
 
     /* redeclaration nello stesso scope: deve fallire */
-    assert(symtab_declare(global, "somma", &sommaSym) == 0);
+    assert(sym_bind(global, "somma", &sommaSym) == 0);
     printf("PASS 1 ok: funzioni globali registrate, redeclaration rifiutata.\n");
 
     /* --- PASS 2: entriamo nel corpo di main() --- */
-    Scope *mainScope = scope_create(global);
+    Scope *mainScope = sym_scopeCreate(global);
 
     Symbol xSym = {0};
     xSym.kind = SYM_VAR;
     xSym.dataType = T_INT;
     xSym.offset = 0;
-    assert(symtab_declare(mainScope, "x", &xSym) == 1);
+    assert(sym_bind(mainScope, "x", &xSym) == 1);
 
     /* lookup di 'somma' da dentro mainScope: risale fino a 'global' */
     Symbol found;
-    assert(symtab_lookup(mainScope, "somma", &found) == 1);
+    assert(sym_resolve(mainScope, "somma", &found) == 1);
     assert(found.kind == SYM_FUNC);
     assert(found.paramCount == 2);
     assert(symtab_unpack_param_type(found.paramTypes, 0) == T_INT);
@@ -49,30 +49,30 @@ int main(void) {
 
     /* --- Scope annidato: un blocco 'if' dentro main(), con una
        variabile locale 'x' che fa SHADOWING di quella di main() --- */
-    Scope *ifScope = scope_create(mainScope);
+    Scope *ifScope = sym_scopeCreate(mainScope);
 
     Symbol innerX = {0};
     innerX.kind = SYM_VAR;
     innerX.dataType = T_FLOAT;
     innerX.offset = 4;
-    assert(symtab_declare(ifScope, "x", &innerX) == 1);   /* NON e' redeclaration:
+    assert(sym_bind(ifScope, "x", &innerX) == 1);   /* NON e' redeclaration:
                                                               scope diverso */
 
     /* il lookup da dentro ifScope deve trovare la 'x' PIU' VICINA (float,
        quella del blocco if), non quella di main() (int) */
-    assert(symtab_lookup(ifScope, "x", &found) == 1);
+    assert(sym_resolve(ifScope, "x", &found) == 1);
     assert(found.dataType == T_FLOAT);
     printf("PASS 3 ok: shadowing corretto, 'x' interna (float) nasconde quella esterna (int).\n");
 
     /* usciamo dal blocco if: la 'x' di main() torna visibile */
-    Scope *backToMain = scope_exit(ifScope);
+    Scope *backToMain = sym_scopeExit(ifScope);
     assert(backToMain == mainScope);
-    assert(symtab_lookup(backToMain, "x", &found) == 1);
+    assert(sym_resolve(backToMain, "x", &found) == 1);
     assert(found.dataType == T_INT);
     printf("PASS 4 ok: uscendo dal blocco, torna visibile la 'x' di main() (int).\n");
 
     /* nome mai dichiarato in nessuno scope: deve fallire */
-    assert(symtab_lookup(ifScope, "nonEsiste", &found) == 0);
+    assert(sym_resolve(ifScope, "nonEsiste", &found) == 0);
     printf("PASS 5 ok: lookup di un nome inesistente fallisce correttamente.\n");
 
     /* --- Verifica dedicata del packing: 16 parametri, tutti e 3 i tipi --- */
@@ -92,7 +92,7 @@ int main(void) {
            SYM_MAX_PARAMS);
 
     /* cleanup finale: distrugge l'intero albero a partire dalla radice */
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     printf("\nTutti i test sono passati. Cleanup completato senza errori.\n");
 
     return 0;

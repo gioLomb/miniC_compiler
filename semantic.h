@@ -25,7 +25,7 @@
  * nothing needs to be exported or re-queried.
  *
  * @pre  @p global must already be populated with all top-level signatures
- *       by symtab_populate_globals() (Pass 1, ast_to_symtab.h) before
+ *       by st_resolveGlobalNamespace() (Pass 1, ast_to_symtab.h) before
  *       calling semantic_check().  Forward references between functions
  *       (a function calling another declared later in the file) would not
  *       resolve otherwise.
@@ -45,7 +45,7 @@
  * Scopes created here (one per function, one per nested ND_BLOCK) are
  * attached as children of @p global and remain alive for as long as
  * @p global does.  Destruction is handled externally via
- * symtab_destroy_tree(global) — semantic_check() never frees anything.
+ * sym_finalize(global) — semantic_check() never frees anything.
  *
  * ### Resolution coordinates
  * Every resolved ND_ID, ND_ARRAY_ACCESS, ND_VAR_DECL, and ND_PARAM node
@@ -55,7 +55,7 @@
  * another symbol-table lookup.
  *
  * @param program  Root ND_PROGRAM node produced by ParseProgram().
- * @param global   Global scope pre-populated by symtab_populate_globals().
+ * @param global   Global scope pre-populated by st_resolveGlobalNamespace().
  * @return         Total number of semantic errors (0 = no errors).
  */
 int semantic_check(ASTNode *program, Scope *global);

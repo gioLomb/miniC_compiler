@@ -21,7 +21,7 @@
  * @param typeName Name string of the data type.
  * @return Corresponding DataType enum value.
  */
-DataType symtab_type_from_string(const char *typeName);
+DataType st_resolveType(const char *typeName);
 
 /**
  * @brief Parses a combined declaration string from an AST node's text field into individual components.
@@ -36,7 +36,7 @@ DataType symtab_type_from_string(const char *typeName);
  * @param isArray     Output flag set to 1 if declaration is an array, 0 otherwise.
  * @param arraySize   Output integer receiving array capacity if applicable.
  */
-void symtab_parse_decl_text(Arena *arena, const char *text,
+void st_elaborateDecl(Arena *arena, const char *text,
                              char **outTypeName, char **outName,
                              int *isArray, int *arraySize);
 
@@ -51,7 +51,7 @@ void symtab_parse_decl_text(Arena *arena, const char *text,
  * @param node  Pointer to the AST node (`ND_VAR_DECL` or `ND_PARAM`).
  * @return 1 on successful declaration, 0 if a redeclaration error occurs in the current scope.
  */
-int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node);
+int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node);
 
 /**
  * @brief Populates the global scope with top-level AST declarations (Pass 1).
@@ -63,6 +63,6 @@ int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node);
  * @param global  Pointer to the target global Scope structure.
  * @return Number of redeclaration errors encountered (0 indicates success).
  */
-int symtab_populate_globals(ASTNode *program, Scope *global);
+int st_resolveGlobalNamespace(ASTNode *program, Scope *global);
 
 #endif /* AST_TO_SYMTAB_H */

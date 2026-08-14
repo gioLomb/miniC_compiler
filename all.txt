@@ -128,14 +128,14 @@ void arena_destroy(Arena *arena) {
 #include <string.h>
 #include "ast_to_symtab.h"
 
-DataType symtab_type_from_string(const char *typeName) {
+DataType st_resolveType(const char *typeName) {
     if (!typeName) return T_VOID;
     if (strcmp(typeName, "int") == 0)   return T_INT;
     if (strcmp(typeName, "float") == 0) return T_FLOAT;
     return T_VOID;   /* fallback: copre anche "void" se/quando comparira' */
 }
 
-void symtab_parse_decl_text(Arena *arena, const char *text,
+void st_elaborateDecl(Arena *arena, const char *text,
                              char **outTypeName, char **outName,
                              int *isArray, int *arraySize) {
     *isArray = 0;
@@ -172,20 +172,20 @@ void symtab_parse_decl_text(Arena *arena, const char *text,
     }
 }
 
-int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node) {
+int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node) {
     char *typeName, *name;
     int isArray, arraySize;
-    symtab_parse_decl_text(arena, node->text, &typeName, &name, &isArray, &arraySize);
+    st_elaborateDecl(arena, node->text, &typeName, &name, &isArray, &arraySize);
 
     Symbol sym = {0};
     sym.kind = SYM_VAR;
-    sym.dataType = symtab_type_from_string(typeName);
+    sym.dataType = st_resolveType(typeName);
     sym.isArray = isArray;
     sym.arraySize = arraySize;
     sym.scopeLevel = scope->level;
     sym.offset     = (int) scope->table->size;   /* prossimo slot libero in questo scope */
 
-    if (!symtab_declare(scope, name, &sym)) {
+    if (!sym_bind(scope, name, &sym)) {
         fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
         return 0;
     }
@@ -200,7 +200,7 @@ int symtab_declare_from_decl_text(Arena *arena, Scope *scope, ASTNode *node) {
  * scende nei corpi funzione: quella parte (ex Pass 2) e' stata spostata
  * in semantic.c, fusa con l'analisi semantica.
  */
-int symtab_populate_globals(ASTNode *program, Scope *global) {
+int st_resolveGlobalNamespace(ASTNode *program, Scope *global) {
     int errors = 0;
     Arena *arena = arena_create(0);
 
@@ -209,10 +209,10 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
 
         char *typeName, *name;
         int isArray, arraySize;
-        symtab_parse_decl_text(arena, decl->text, &typeName, &name, &isArray, &arraySize);
+        st_elaborateDecl(arena, decl->text, &typeName, &name, &isArray, &arraySize);
 
         Symbol sym = {0};
-        sym.dataType = symtab_type_from_string(typeName);
+        sym.dataType = st_resolveType(typeName);
 
         if (decl->kind == ND_FUNC_DECL) {
             sym.kind = SYM_FUNC;
@@ -231,10 +231,10 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
             for (int p = 0; p < paramCount; p++) {
                 char *ptypeName, *pname;
                 int pIsArray, pArraySize;
-                symtab_parse_decl_text(arena, decl->children[p]->text,
+                st_elaborateDecl(arena, decl->children[p]->text,
                                         &ptypeName, &pname, &pIsArray, &pArraySize);
 
-                DataType pType = symtab_type_from_string(ptypeName);
+                DataType pType = st_resolveType(ptypeName);
                 symtab_pack_param_type(&sym.paramTypes, p, pType);
             }
 
@@ -249,7 +249,7 @@ int symtab_populate_globals(ASTNode *program, Scope *global) {
             continue;
         }
 
-        if (!symtab_declare(global, name, &sym)) {
+        if (!sym_bind(global, name, &sym)) {
             fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
             errors++;
         }
@@ -326,7 +326,7 @@ static uint64_t cp_make_key(int kind, int a, int b) {
     return k;
 }
 
-static int varMap_id(VarMap *m, int kind, int a, int b) {
+static int varmap_mapToIndex(VarMap *m, int kind, int a, int b) {
     uint64_t key = cp_make_key(kind, a, b);
     int id;
     if (ht_get(m->table, &key, sizeof key, &id, sizeof id)) return id;
@@ -336,8 +336,8 @@ static int varMap_id(VarMap *m, int kind, int a, int b) {
 }
 
 static int operandVarId(VarMap *m, Operand op) {
-    if (op.kind == OPND_VAR)  return varMap_id(m, 0, op.data.varLevel, op.data.varOffset);
-    if (op.kind == OPND_TEMP) return varMap_id(m, 1, op.data.tempId, 0);
+    if (op.kind == OPND_VAR)  return varmap_mapToIndex(m, 0, op.data.varLevel, op.data.varOffset);
+    if (op.kind == OPND_TEMP) return varmap_mapToIndex(m, 1, op.data.tempId, 0);
     return -1;
 }
 
@@ -1920,7 +1920,7 @@ unsigned long varmap_hash(const void *key, size_t keySize) {
     return (unsigned long)v;
 }
 
-uint64_t varmap_make_key(int kind, int a, int b) {
+uint64_t varmap_makeKey(int kind, int a, int b) {
     uint64_t k = 0;
     k |= (uint64_t)(kind & 0x3)        << 62;
     k |= (uint64_t)(a    & 0x7fffffff) << 31;
@@ -1928,8 +1928,8 @@ uint64_t varmap_make_key(int kind, int a, int b) {
     return k;
 }
 
-int varmap_id(VarMap *m, int kind, int a, int b) {
-    uint64_t key = varmap_make_key(kind, a, b);
+int varmap_mapToIndex(VarMap *m, int kind, int a, int b) {
+    uint64_t key = varmap_makeKey(kind, a, b);
     int id;
     if (ht_get(m->table, &key, sizeof key, &id, sizeof id)) return id;
     id = m->nextId++;
@@ -1938,8 +1938,8 @@ int varmap_id(VarMap *m, int kind, int a, int b) {
 }
 
 int varmap_operand_id(VarMap *m, Operand op) {
-    if (op.kind == OPND_VAR)  return varmap_id(m, 0, op.data.varLevel, op.data.varOffset);
-    if (op.kind == OPND_TEMP) return varmap_id(m, 1, op.data.tempId, 0);
+    if (op.kind == OPND_VAR)  return varmap_mapToIndex(m, 0, op.data.varLevel, op.data.varOffset);
+    if (op.kind == OPND_TEMP) return varmap_mapToIndex(m, 1, op.data.tempId, 0);
     return -1;
 }
 
@@ -2585,7 +2585,7 @@ static ASTNode *balanceAssocChain(ASTNode *expr) {
 
 /* ---- Attraversamento delle espressioni ------------------------------ */
 
-static ASTNode *optimizeExpr(ASTNode *expr) {
+static ASTNode *rewriteExpr(ASTNode *expr) {
     if (!expr) return NULL;
 
     switch (expr->kind) {
@@ -2596,7 +2596,7 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
         return expr;   /* foglie: niente da fare */
 
     case ND_UNARY: {
-        expr->children[0] = optimizeExpr(expr->children[0]);
+        expr->children[0] = rewriteExpr(expr->children[0]);
         ASTNode *child = expr->children[0];
 
         if (isNumericLiteral(child)) {
@@ -2610,8 +2610,8 @@ static ASTNode *optimizeExpr(ASTNode *expr) {
     }
 
 case ND_BINOP: {
-        expr->children[0] = optimizeExpr(expr->children[0]);
-        expr->children[1] = optimizeExpr(expr->children[1]);
+        expr->children[0] = rewriteExpr(expr->children[0]);
+        expr->children[1] = rewriteExpr(expr->children[1]);
         ASTNode *sx = expr->children[0];
         ASTNode *dx = expr->children[1];
 
@@ -2673,18 +2673,18 @@ case ND_BINOP: {
     }
 
     case ND_ASSIGN:
-        expr->children[0] = optimizeExpr(expr->children[0]);   /* lvalue (es. indice di un array) */
-        expr->children[1] = optimizeExpr(expr->children[1]);   /* rvalue */
+        expr->children[0] = rewriteExpr(expr->children[0]);   /* lvalue (es. indice di un array) */
+        expr->children[1] = rewriteExpr(expr->children[1]);   /* rvalue */
         return expr;
 
     case ND_CALL:
         for (int i = 0; i < expr->nchildren; i++) {
-            expr->children[i] = optimizeExpr(expr->children[i]);
+            expr->children[i] = rewriteExpr(expr->children[i]);
         }
         return expr;
 
     case ND_ARRAY_ACCESS:
-        expr->children[0] = optimizeExpr(expr->children[0]);   /* indice */
+        expr->children[0] = rewriteExpr(expr->children[0]);   /* indice */
         return expr;
 
     default:
@@ -2694,20 +2694,20 @@ case ND_BINOP: {
 
 /* ---- Attraversamento degli statement --------------------------------
  *
- * optimizeStmt ritorna il nodo che deve sostituire 'stmt' nel genitore,
+ * rewriteStmt ritorna il nodo che deve sostituire 'stmt' nel genitore,
  * oppure NULL per dire "rimuovi questo statement, non lo sostituire con
  * nulla" (es. un intero "while(0) { ... }" che sparisce). Chi chiama
  * (il caso ND_BLOCK, o optimize_ast per il corpo di una funzione) deve
  * gestire esplicitamente il caso NULL.
  */
-static ASTNode *optimizeStmt(ASTNode *stmt) {
+static ASTNode *rewriteStmt(ASTNode *stmt) {
     if (!stmt) return NULL;
 
     switch (stmt->kind) {
 
     case ND_VAR_DECL:
         for (int i = 0; i < stmt->nchildren; i++) {
-            stmt->children[i] = optimizeExpr(stmt->children[i]);
+            stmt->children[i] = rewriteExpr(stmt->children[i]);
         }
         return stmt;
 
@@ -2729,7 +2729,7 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
         stmt->capacity = 0;
 
         for (int i = 0; i < oldCount; i++) {
-            ASTNode *result = optimizeStmt(oldChildren[i]);
+            ASTNode *result = rewriteStmt(oldChildren[i]);
             if (!result) continue;
 
             if (result->kind == ND_BLOCK) {
@@ -2749,7 +2749,7 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
     }
 
     case ND_IF: {
-        stmt->children[0] = optimizeExpr(stmt->children[0]);
+        stmt->children[0] = rewriteExpr(stmt->children[0]);
         ASTNode *cond = stmt->children[0];
 
         if (isNumericLiteral(cond)) {
@@ -2766,23 +2766,23 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
             if (deadBranch) freeAST(deadBranch);
             freeNodeShallow(stmt);   /* mai freeAST(stmt): 'survivor' deve restare vivo */
 
-            return survivor ? optimizeStmt(survivor) : NULL;
+            return survivor ? rewriteStmt(survivor) : NULL;
         }
 
         /* condizione non costante: resta un vero if a runtime, ma i due
            rami vengono comunque ottimizzati ricorsivamente */
-        stmt->children[1] = optimizeStmt(stmt->children[1]);
+        stmt->children[1] = rewriteStmt(stmt->children[1]);
         if (!stmt->children[1]) stmt->children[1] = newNode(ND_BLOCK, NULL);
 
         if (stmt->nchildren > 2) {
-            stmt->children[2] = optimizeStmt(stmt->children[2]);
+            stmt->children[2] = rewriteStmt(stmt->children[2]);
             if (!stmt->children[2]) stmt->children[2] = newNode(ND_BLOCK, NULL);
         }
         return stmt;
     }
 
     case ND_WHILE: {
-        stmt->children[0] = optimizeExpr(stmt->children[0]);
+        stmt->children[0] = rewriteExpr(stmt->children[0]);
         ASTNode *cond = stmt->children[0];
 
         if (isNumericLiteral(cond) && literalIsZero(cond)) {
@@ -2791,14 +2791,14 @@ static ASTNode *optimizeStmt(ASTNode *stmt) {
             return NULL;
         }
 
-        stmt->children[1] = optimizeStmt(stmt->children[1]);
+        stmt->children[1] = rewriteStmt(stmt->children[1]);
         if (!stmt->children[1]) stmt->children[1] = newNode(ND_BLOCK, NULL);
         return stmt;
     }
 
     case ND_RETURN:
     case ND_EXPR_STMT:
-        stmt->children[0] = optimizeExpr(stmt->children[0]);
+        stmt->children[0] = rewriteExpr(stmt->children[0]);
         return stmt;
 
     default:
@@ -2817,14 +2817,14 @@ void optimize_ast(ASTNode *program) {
             /* il corpo e' sempre l'ultimo figlio (vedi ast_to_symtab.c/
                semantic.c: stessa convenzione riusata qui) */
             ASTNode *body = decl->children[decl->nchildren - 1];
-            ASTNode *optimizedBody = optimizeStmt(body);
+            ASTNode *optimizedBody = rewriteStmt(body);
             if (!optimizedBody) optimizedBody = newNode(ND_BLOCK, NULL);
             decl->children[decl->nchildren - 1] = optimizedBody;
 
         } else if (decl->kind == ND_VAR_DECL) {
             /* variabile globale con inizializzatore: ottimizza anche quello */
             for (int c = 0; c < decl->nchildren; c++) {
-                decl->children[c] = optimizeExpr(decl->children[c]);
+                decl->children[c] = rewriteExpr(decl->children[c]);
             }
         }
     }
@@ -2864,11 +2864,11 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors);
  * stiamo verificando (1 = ND_ARRAY_ACCESS, 0 = ND_ID). 'outSym', se non
  * NULL, riceve il Symbol trovato quando il lookup ha successo — serve
  * al chiamante ND_ARRAY_ACCESS per leggere arraySize (bound-check
- * statico) senza rifare un secondo symtab_lookup identico.
+ * statico) senza rifare un secondo sym_resolve identico.
  */
 static DataType resolveNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol *outSym, int *errors) {
     Symbol sym;
-    if (!symtab_lookup(scope, expr->text, &sym)) {
+    if (!sym_resolve(scope, expr->text, &sym)) {
         fprintf(stderr, "Errore: '%s' non e' stato dichiarato\n", expr->text);
         (*errors)++;
         return T_VOID;
@@ -3014,7 +3014,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
 
     case ND_CALL: {
         Symbol sym;
-        int found = symtab_lookup(scope, expr->text, &sym);
+        int found = sym_resolve(scope, expr->text, &sym);
 
         if (!found) {
             fprintf(stderr, "Errore: funzione '%s' non e' stata dichiarata\n", expr->text);
@@ -3122,7 +3122,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
  *
  * Punto delicato invariato rispetto alla vecchia Pass 2: SOLO ND_BLOCK
  * apre un nuovo scope. ND_IF/ND_WHILE ricorrono sui rami passando lo
- * stesso 'scope' ricevuto, senza mai chiamare scope_create(): uno
+ * stesso 'scope' ricevuto, senza mai chiamare sym_scopeCreate(): uno
  * statement senza graffe non introduce un livello di scoping.
  *
  * 'returnType' e' il tipo di ritorno della funzione in cui ci troviamo
@@ -3136,7 +3136,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
 
     case ND_VAR_DECL: {
         /* dichiara nello scope CORRENTE: non ne apre uno nuovo */
-        if (!symtab_declare_from_decl_text(arena, scope, stmt)) {
+        if (!st_bindSymbol(arena, scope, stmt)) {
             (*errors)++;
             break;
         }
@@ -3146,8 +3146,8 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
            per dichiarare il simbolo: piu' semplice che rifare un lookup. */
         char *typeNameBuf, *varName;
         int isArray, arraySize;
-        symtab_parse_decl_text(arena, stmt->text, &typeNameBuf, &varName, &isArray, &arraySize);
-        DataType declType = symtab_type_from_string(typeNameBuf);
+        st_elaborateDecl(arena, stmt->text, &typeNameBuf, &varName, &isArray, &arraySize);
+        DataType declType = st_resolveType(typeNameBuf);
 
         if (!isArray) {
             /* scalare: esattamente un figlio (garantito dal parser) */
@@ -3183,7 +3183,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
 
     case ND_BLOCK: {
         /* l'UNICO caso che apre un nuovo scope */
-        Scope *blockScope = scope_create(scope);
+        Scope *blockScope = sym_scopeCreate(scope);
         for (int i = 0; i < stmt->nchildren; i++) {
             checkStmt(stmt->children[i], blockScope, returnType, arena, errors);
         }
@@ -3233,19 +3233,19 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
 static void checkFunctionBody(ASTNode *decl, Scope *global, Arena *arena, int *errors) {
     char *typeNameBuf, *funcName;
     int isArray, arraySize;
-    symtab_parse_decl_text(arena, decl->text, &typeNameBuf, &funcName, &isArray, &arraySize);
+    st_elaborateDecl(arena, decl->text, &typeNameBuf, &funcName, &isArray, &arraySize);
 
-    DataType returnType = symtab_type_from_string(typeNameBuf);
+    DataType returnType = st_resolveType(typeNameBuf);
 
-    Scope *fnScope = scope_create(global);
+    Scope *fnScope = sym_scopeCreate(global);
 
     /* tutti i figli tranne l'ultimo sono ND_PARAM: l'ultimo e' il Block */
     int paramCount = decl->nchildren - 1;
     for (int p = 0; p < paramCount; p++) {
         /* un parametro duplicato e' una redeclaration nello stesso
-           scope: symtab_declare la rifiuta gia' da sola, qui si
+           scope: sym_bind la rifiuta gia' da sola, qui si
            controlla solo il valore di ritorno */
-        if (!symtab_declare_from_decl_text(arena, fnScope, decl->children[p])) (*errors)++;
+        if (!st_bindSymbol(arena, fnScope, decl->children[p])) (*errors)++;
     }
 
     ASTNode *body = decl->children[decl->nchildren - 1];   /* ND_BLOCK */
@@ -3881,7 +3881,7 @@ void svn_optimize(IRFunction *f) {
  * gli identificatori di un linguaggio sorgente. Nessun seed necessario:
  * non c'e' un avversario che sceglie apposta i nomi delle variabili per
  * far collidere la tabella. */
-static unsigned long symtab_hash(const void *key, size_t keySize) {
+static unsigned long sym_hash(const void *key, size_t keySize) {
     const unsigned char *bytes = key;
     unsigned long h = 2166136261UL;
     for (size_t i = 0; i < keySize; i++) {
@@ -3891,11 +3891,11 @@ static unsigned long symtab_hash(const void *key, size_t keySize) {
     return h;
 }
 
-Scope *scope_create(Scope *parent) {
+Scope *sym_scopeCreate(Scope *parent) {
     Scope *scope = malloc(sizeof(Scope));
     if (!scope) return NULL;
 
-    scope->table = ht_create(SCOPE_DEFAULT_CAPACITY, symtab_hash);
+    scope->table = ht_create(SCOPE_DEFAULT_CAPACITY, sym_hash);
     if (!scope->table) {
         free(scope);
         return NULL;
@@ -3917,11 +3917,11 @@ Scope *scope_create(Scope *parent) {
     return scope;
 }
 
-Scope *scope_exit(Scope *scope) {
+Scope *sym_scopeExit(Scope *scope) {
     return scope ? scope->parent : NULL;
 }
 
-int symtab_declare(Scope *scope, const char *name, const Symbol *sym) {
+int sym_bind(Scope *scope, const char *name, const Symbol *sym) {
     if (!scope || !name || !sym) return 0;
 
     size_t nameLen = strlen(name);
@@ -3947,7 +3947,7 @@ int symtab_declare(Scope *scope, const char *name, const Symbol *sym) {
     return ht_set(scope->table, (void *)name, nameLen, (void *)sym, sizeof(*sym));
 }
 
-int symtab_lookup(Scope *scope, const char *name, Symbol *out) {
+int sym_resolve(Scope *scope, const char *name, Symbol *out) {
     if (!name || !out) return 0;
 
     size_t nameLen = strlen(name);
@@ -3961,13 +3961,13 @@ int symtab_lookup(Scope *scope, const char *name, Symbol *out) {
     return 0;   /* non trovato in nessuno scope della catena */
 }
 
-void symtab_destroy_tree(Scope *root) {
+void sym_finalize(Scope *root) {
     if (!root) return;
 
     /* prima i figli (post-order): niente puntatori penzolanti se in
        futuro si aggiungesse logica che risale durante la distruzione */
     for (int i = 0; i < root->childCount; i++) {
-        symtab_destroy_tree(root->children[i]);
+        sym_finalize(root->children[i]);
     }
 
     free(root->children);
@@ -3990,10 +3990,10 @@ static IRProgram *pipeline(const char *src, ASTNode **outRoot) {
     lexer_open(path);
     ASTNode *root = ParseProgram();
     lexer_close();
-    Scope *global = scope_create(NULL);
-    symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    st_resolveGlobalNamespace(root, global);
     int errs = semantic_check(root, global);
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     if (errs > 0) { fprintf(stderr, "errori semantici (%d)\n", errs); freeAST(root); exit(1); }
     *outRoot = root;
     return ir_generate(root);
@@ -4404,8 +4404,8 @@ int main(int argc, char **argv) {
     }
     printf("\nParsing completato con successo.\n");
 
-    Scope *global = scope_create(NULL);
-    int pass1Errors = symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    int pass1Errors = st_resolveGlobalNamespace(root, global);
     int semErrors = semantic_check(root, global);
     printf("\n=== ANALISI SEMANTICA ===\n");
     printf("Pass 1 (signature globali): %d error%s.\n", pass1Errors, pass1Errors == 1 ? "e" : "i");
@@ -4429,7 +4429,7 @@ int main(int argc, char **argv) {
         printf("\nErrori presenti: l'IR non viene generato.\n");
     }
 
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     freeAST(root);
 
     return totalErrors > 0 ? 1 : 0;
@@ -4657,7 +4657,7 @@ static void ParseParamList(ASTNode *funcNode) {
  * L'inizializzatore, se presente, viene appeso come figlio/figli del nodo
  * ND_VAR_DECL: un solo figlio per lo scalare, zero o piu' figli (uno per
  * elemento) per l'array. Il testo del nodo ("tipo nome" o "tipo nome[size]")
- * resta invariato: chi lo interpreta (symtab_parse_decl_text) non deve
+ * resta invariato: chi lo interpreta (st_elaborateDecl) non deve
  * sapere nulla dell'inizializzatore.
  */
 static ASTNode *ParseDeclaration(void) {
@@ -4916,7 +4916,7 @@ int main(void) {
        (main() chiama somma() anche se somma e' "dichiarata dopo": questo
        e' esattamente il caso di forward reference che la strategia a
        due passate risolve) */
-    Scope *global = scope_create(NULL);
+    Scope *global = sym_scopeCreate(NULL);
 
     Symbol sommaSym = {0};
     sommaSym.kind = SYM_FUNC;
@@ -4924,30 +4924,30 @@ int main(void) {
     sommaSym.paramCount = 2;
     symtab_pack_param_type(&sommaSym.paramTypes, 0, T_INT);
     symtab_pack_param_type(&sommaSym.paramTypes, 1, T_INT);
-    assert(symtab_declare(global, "somma", &sommaSym) == 1);
+    assert(sym_bind(global, "somma", &sommaSym) == 1);
 
     Symbol mainSym = {0};
     mainSym.kind = SYM_FUNC;
     mainSym.dataType = T_INT;
     mainSym.paramCount = 0;
-    assert(symtab_declare(global, "main", &mainSym) == 1);
+    assert(sym_bind(global, "main", &mainSym) == 1);
 
     /* redeclaration nello stesso scope: deve fallire */
-    assert(symtab_declare(global, "somma", &sommaSym) == 0);
+    assert(sym_bind(global, "somma", &sommaSym) == 0);
     printf("PASS 1 ok: funzioni globali registrate, redeclaration rifiutata.\n");
 
     /* --- PASS 2: entriamo nel corpo di main() --- */
-    Scope *mainScope = scope_create(global);
+    Scope *mainScope = sym_scopeCreate(global);
 
     Symbol xSym = {0};
     xSym.kind = SYM_VAR;
     xSym.dataType = T_INT;
     xSym.offset = 0;
-    assert(symtab_declare(mainScope, "x", &xSym) == 1);
+    assert(sym_bind(mainScope, "x", &xSym) == 1);
 
     /* lookup di 'somma' da dentro mainScope: risale fino a 'global' */
     Symbol found;
-    assert(symtab_lookup(mainScope, "somma", &found) == 1);
+    assert(sym_resolve(mainScope, "somma", &found) == 1);
     assert(found.kind == SYM_FUNC);
     assert(found.paramCount == 2);
     assert(symtab_unpack_param_type(found.paramTypes, 0) == T_INT);
@@ -4957,30 +4957,30 @@ int main(void) {
 
     /* --- Scope annidato: un blocco 'if' dentro main(), con una
        variabile locale 'x' che fa SHADOWING di quella di main() --- */
-    Scope *ifScope = scope_create(mainScope);
+    Scope *ifScope = sym_scopeCreate(mainScope);
 
     Symbol innerX = {0};
     innerX.kind = SYM_VAR;
     innerX.dataType = T_FLOAT;
     innerX.offset = 4;
-    assert(symtab_declare(ifScope, "x", &innerX) == 1);   /* NON e' redeclaration:
+    assert(sym_bind(ifScope, "x", &innerX) == 1);   /* NON e' redeclaration:
                                                               scope diverso */
 
     /* il lookup da dentro ifScope deve trovare la 'x' PIU' VICINA (float,
        quella del blocco if), non quella di main() (int) */
-    assert(symtab_lookup(ifScope, "x", &found) == 1);
+    assert(sym_resolve(ifScope, "x", &found) == 1);
     assert(found.dataType == T_FLOAT);
     printf("PASS 3 ok: shadowing corretto, 'x' interna (float) nasconde quella esterna (int).\n");
 
     /* usciamo dal blocco if: la 'x' di main() torna visibile */
-    Scope *backToMain = scope_exit(ifScope);
+    Scope *backToMain = sym_scopeExit(ifScope);
     assert(backToMain == mainScope);
-    assert(symtab_lookup(backToMain, "x", &found) == 1);
+    assert(sym_resolve(backToMain, "x", &found) == 1);
     assert(found.dataType == T_INT);
     printf("PASS 4 ok: uscendo dal blocco, torna visibile la 'x' di main() (int).\n");
 
     /* nome mai dichiarato in nessuno scope: deve fallire */
-    assert(symtab_lookup(ifScope, "nonEsiste", &found) == 0);
+    assert(sym_resolve(ifScope, "nonEsiste", &found) == 0);
     printf("PASS 5 ok: lookup di un nome inesistente fallisce correttamente.\n");
 
     /* --- Verifica dedicata del packing: 16 parametri, tutti e 3 i tipi --- */
@@ -5000,7 +5000,7 @@ int main(void) {
            SYM_MAX_PARAMS);
 
     /* cleanup finale: distrugge l'intero albero a partire dalla radice */
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     printf("\nTutti i test sono passati. Cleanup completato senza errori.\n");
 
     return 0;
@@ -5090,10 +5090,10 @@ static IRProgram *parseAndGenerateIR(const char *src, ASTNode **outRoot) {
     ASTNode *root = ParseProgram();
     lexer_close();
 
-    Scope *global = scope_create(NULL);
-    symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    st_resolveGlobalNamespace(root, global);
     int errs = semantic_check(root, global);
-    symtab_destroy_tree(global);
+    sym_finalize(global);
 
     if (errs > 0) {
         fprintf(stderr, "pipeline di test: errori semantici inattesi (%d) in:\n%s\n", errs, src);
@@ -5357,10 +5357,10 @@ static ASTNode *parseAndOptimize(const char *src) {
     ASTNode *root = ParseProgram();
     lexer_close();
 
-    Scope *global = scope_create(NULL);
-    symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    st_resolveGlobalNamespace(root, global);
     semantic_check(root, global);
-    symtab_destroy_tree(global);
+    sym_finalize(global);
 
     optimize_ast(root);
     return root;
@@ -5631,14 +5631,14 @@ int main(int argc, char **argv) {
     ASTNode *root = ParseProgram();
     printf("Parsing: %d errori.\n", totalErrorCount());
 
-    Scope *global = scope_create(NULL);
-    int symErrors = symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    int symErrors = st_resolveGlobalNamespace(root, global);
     printf("Pass 1 (popolamento scope globale): %d errori.\n\n", symErrors);
 
     printf("=== SCOPE GLOBALE ===\n");
     ht_foreach(global->table, printSymbol, NULL);
 
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     freeAST(root);
     lexer_close();
 
@@ -5663,15 +5663,15 @@ int main(int argc, char **argv) {
     ASTNode *root = ParseProgram();
     printf("Parsing: %d errori.\n", totalErrorCount());
 
-    Scope *global = scope_create(NULL);
+    Scope *global = sym_scopeCreate(NULL);
 
-    int pass1Errors = symtab_populate_globals(root, global);
+    int pass1Errors = st_resolveGlobalNamespace(root, global);
     printf("Pass 1 (signature globali): %d errori.\n", pass1Errors);
 
     int semErrors = semantic_check(root, global);
     printf("Pass 2 + analisi semantica: %d errori.\n", semErrors);
 
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     freeAST(root);
     lexer_close();
 

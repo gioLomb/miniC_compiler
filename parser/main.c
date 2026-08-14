@@ -54,8 +54,8 @@ int main(int argc, char **argv) {
     if (!emit_asm) printf("\nParsing completato con successo.\n");
 
     /* ---- Analisi semantica ---- */
-    Scope *global    = scope_create(NULL);
-    int pass1Errors  = symtab_populate_globals(root, global);
+    Scope *global    = sym_scopeCreate(NULL);
+    int pass1Errors  = st_resolveGlobalNamespace(root, global);
     int semErrors    = semantic_check(root, global);
 
     if (!emit_asm) {
@@ -65,7 +65,7 @@ int main(int argc, char **argv) {
     }
     if (pass1Errors + semErrors > 0) {
         if (emit_asm) fprintf(stderr, "Errori semantici: assembly non generato.\n");
-        symtab_destroy_tree(global); freeAST(root); arena_destroy(astArena); return 1;
+        sym_finalize(global); freeAST(root); arena_destroy(astArena); return 1;
     }
 
     /* ---- Ottimizzazioni AST + generazione IR ---- */
@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
     if (!emit_asm) {
         printf("\n=== IR LINEARE (three-address code) ===\n");
         ir_print(ir);
-        ir_free(ir); symtab_destroy_tree(global);
+        ir_free(ir); sym_finalize(global);
         freeAST(root); arena_destroy(astArena);
         return 0;
     }
@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
         out = fopen(out_path, "w");
         if (!out) {
             perror(out_path);
-            ir_free(ir); symtab_destroy_tree(global);
+            ir_free(ir); sym_finalize(global);
             freeAST(root); arena_destroy(astArena); return 1;
         }
     }
@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
     if (out_path) fclose(out);
 
     ir_free(ir);
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     freeAST(root);
     arena_destroy(astArena);
     return 0;

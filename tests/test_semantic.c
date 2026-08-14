@@ -21,15 +21,15 @@ int main(int argc, char **argv) {
 
     printf("Parsing: %d errori.\n", totalErrorCount());
 
-    Scope *global = scope_create(NULL);
+    Scope *global = sym_scopeCreate(NULL);
 
-    int pass1Errors = symtab_populate_globals(root, global);
+    int pass1Errors = st_resolveGlobalNamespace(root, global);
     printf("Pass 1 (signature globali): %d errori.\n", pass1Errors);
 
     int semErrors = semantic_check(root, global);
     printf("Pass 2 + analisi semantica: %d errori.\n", semErrors);
 
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     freeAST(root);
     arena_destroy(astArena);
 

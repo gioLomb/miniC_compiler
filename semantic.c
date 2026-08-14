@@ -75,7 +75,7 @@ static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
 static DataType resolveNameUse(ASTNode *expr, Scope *scope, int wantArray,
                               Symbol *outSym, int *errors) {
     Symbol sym;
-    if (!symtab_lookup(scope, expr->text, &sym)) {
+    if (!sym_resolve(scope, expr->text, &sym)) {
         fprintf(stderr, "Errore: '%s' non e' stato dichiarato\n", expr->text);
         (*errors)++;
         return T_VOID;
@@ -228,7 +228,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
     /* ---- Function call: f(arg0, arg1, ...) ------------------------------ */
     case ND_CALL: {
         Symbol sym;
-        int found = symtab_lookup(scope, expr->text, &sym);
+        int found = sym_resolve(scope, expr->text, &sym);
 
         if (!found) {
             fprintf(stderr, "Errore: funzione '%s' non e' stata dichiarata\n", expr->text);
@@ -361,7 +361,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
  * @param returnType  Return type of the enclosing function; threaded through
  *                    the recursion so ND_RETURN nodes can be validated.
  * @param arena       Scratch arena forwarded to declaration helpers
- *                    (symtab_declare_from_decl_text, symtab_parse_decl_text).
+ *                    (st_bindSymbol, st_elaborateDecl).
  * @param errors      Incremented once per semantic error found.
  */
 static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
@@ -374,7 +374,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
     case ND_VAR_DECL: {
         // Register the variable in the current scope and stamp the node with
         // (scopeLevel, offset); returns 0 on redeclaration.
-        if (!symtab_declare_from_decl_text(arena, scope, stmt)) {
+        if (!st_bindSymbol(arena, scope, stmt)) {
             (*errors)++;
             break; // no initializer check if the declaration itself failed
         }
@@ -385,9 +385,9 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
         // initializer compatibility checking.
         char *typeNameBuf, *varName;
         int isArray, arraySize;
-        symtab_parse_decl_text(arena, stmt->text, &typeNameBuf, &varName,
+        st_elaborateDecl(arena, stmt->text, &typeNameBuf, &varName,
                                 &isArray, &arraySize);
-        DataType declType = symtab_type_from_string(typeNameBuf);
+        DataType declType = st_resolveType(typeNameBuf);
 
         if (!isArray) {
             // Scalar initializer: exactly one expression child.
@@ -425,11 +425,11 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
     case ND_BLOCK: {
         // Each block gets its own scope so that inner declarations shadow
         // outer ones but do not persist beyond the closing brace.
-        Scope *blockScope = scope_create(scope);
+        Scope *blockScope = sym_scopeCreate(scope);
         for (int i = 0; i < stmt->nchildren; i++)
             checkStmt(stmt->children[i], blockScope, returnType, arena, errors);
         // blockScope remains alive as a child of scope; freed by
-        // symtab_destroy_tree() at the end of compilation.
+        // sym_finalize() at the end of compilation.
         break;
     }
 
@@ -500,19 +500,19 @@ static void checkFunctionBody(ASTNode *decl, Scope *global,
     // (format: "retType funcName", e.g. "int main" or "float compute").
     char *typeNameBuf, *funcName;
     int isArray, arraySize;
-    symtab_parse_decl_text(arena, decl->text, &typeNameBuf, &funcName,
+    st_elaborateDecl(arena, decl->text, &typeNameBuf, &funcName,
                             &isArray, &arraySize);
 
-    DataType returnType = symtab_type_from_string(typeNameBuf);
+    DataType returnType = st_resolveType(typeNameBuf);
 
     // Parameter scope is a direct child of global so forward references to
     // other top-level functions are visible from inside the body.
-    Scope *fnScope = scope_create(global);
+    Scope *fnScope = sym_scopeCreate(global);
 
     // All children except the last are parameters (ND_PARAM nodes).
     int paramCount = decl->nchildren - 1;
     for (int p = 0; p < paramCount; p++) {
-        if (!symtab_declare_from_decl_text(arena, fnScope, decl->children[p]))
+        if (!st_bindSymbol(arena, fnScope, decl->children[p]))
             (*errors)++;
     }
 
@@ -535,7 +535,7 @@ int semantic_check(ASTNode *program, Scope *global) {
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         // Global variable declarations were fully handled by Pass 1
-        // (symtab_populate_globals); only function bodies need walking here.
+        // (st_resolveGlobalNamespace); only function bodies need walking here.
         if (decl->kind != ND_FUNC_DECL) continue;
         checkFunctionBody(decl, global, arena, &errors);
     }

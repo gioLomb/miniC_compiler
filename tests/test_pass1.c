@@ -47,14 +47,14 @@ int main(int argc, char **argv) {
 
     printf("Parsing: %d errori.\n", totalErrorCount());
 
-    Scope *global = scope_create(NULL);
-    int symErrors = symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    int symErrors = st_resolveGlobalNamespace(root, global);
     printf("Pass 1 (popolamento scope globale): %d errori.\n\n", symErrors);
 
     printf("=== SCOPE GLOBALE ===\n");
     ht_foreach(global->table, printSymbol, NULL);
 
-    symtab_destroy_tree(global);
+    sym_finalize(global);
     freeAST(root);
     arena_destroy(astArena);
 

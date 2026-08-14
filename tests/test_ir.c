@@ -24,10 +24,10 @@ static IRProgram *parseAndGenerateIR(const char *src,
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    Scope *global = scope_create(NULL);
-    symtab_populate_globals(root, global);
+    Scope *global = sym_scopeCreate(NULL);
+    st_resolveGlobalNamespace(root, global);
     int errs = semantic_check(root, global);
-    symtab_destroy_tree(global);
+    sym_finalize(global);
 
     if (errs > 0) {
         fprintf(stderr, "errori semantici inattesi (%d) in:\n%s\n", errs, src);
