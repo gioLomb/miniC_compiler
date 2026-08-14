@@ -1,21 +1,46 @@
 #ifndef LEXER_H
 #define LEXER_H
 
-/* Apre il file sorgente e lo carica interamente in un buffer interno.
-   Termina il programma con un messaggio se il file non esiste. */
+/**
+ * @file lexer.h
+ * @brief Lexical analyzer interface for reading and tokenizing source files.
+ */
+
+/**
+ * @brief Opens the source file and loads its entire contents into an internal buffer.
+ *
+ * Terminates the program with an error message if the file cannot be opened.
+ *
+ * @param path Path to the source file to open.
+ */
 void lexer_open(const char *path);
 
-/* Libera il buffer allocato da lexer_open. */
+/**
+ * @brief Frees the buffer memory allocated by `lexer_open`.
+ */
 void lexer_close(void);
 
-/* Restituisce il codice del prossimo token (TOK_EOF a fine input). */
+/**
+ * @brief Retrieves the token code for the next token in the input stream.
+ *
+ * @return The token code integer (`TOK_EOF` when end of input is reached).
+ */
 int lexer_next_token(void);
 
-/* Restituisce il testo dell'ultimo token restituito da lexer_next_token().
-   Il puntatore resta valido solo fino alla chiamata successiva. */
+/**
+ * @brief Returns the text of the last token returned by `lexer_next_token()`.
+ *
+ * @note The returned pointer remains valid only until the next call to `lexer_next_token()`.
+ *
+ * @return Pointer to the current lexeme string.
+ */
 const char *lexer_current_lexeme(void);
 
-/* Restituisce il numero di riga corrente (per i messaggi di errore). */
+/**
+ * @brief Retrieves the current line number (used for error reporting).
+ *
+ * @return Current 1-based line number.
+ */
 int lexer_current_line(void);
 
-#endif
+#endif /* LEXER_H */

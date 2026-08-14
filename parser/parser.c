@@ -8,18 +8,16 @@
 #include "ast.h"
 #include "parser.h"
 
-/* ================================================================
- * Stato del parser
- * ================================================================ */
+// Parser state variables
 static int   current_token;
 static char *current_lexeme = NULL;
 
-/* astArena    — arena esterna, vita = AST (testi dei nodi)        */
-/* scratchArena — arena interna, vita = ParseProgram() (temporanei) */
+// astArena: persistent memory arena for AST node strings
+// scratchArena: temporary memory arena for internal parsing allocations
 static Arena *astArena    = NULL;
 static Arena *scratchArena = NULL;
 
-/* ---- prototipi interni ---- */
+// Internal forward declarations
 static void advance(void);
 static void match(int expected);
 static void synchronize(void);
@@ -39,20 +37,17 @@ static ASTNode *ParseTerm(void);
 static ASTNode *ParseUnary(void);
 static ASTNode *ParseFactor(void);
 
-/* ================================================================
- * Macro helper: crea nodo con testo nell'astArena
- * ================================================================ */
+// Helper macro to construct a new AST node allocating its text in the persistent astArena
 #define NEW_NODE(kind, text) newNode(astArena, (kind), (text))
 
-/* ================================================================
- * Bookkeeping token
- * ================================================================ */
+// Token management helper: advances the lexer state to the next token
 static void advance(void) {
     current_token = lexer_next_token();
     free(current_lexeme);
     current_lexeme = strdup(lexer_current_lexeme());
 }
 
+// Matches expected token type or reports a syntax error
 static void match(int expected) {
     if (current_token == expected) {
         advance();
@@ -63,6 +58,7 @@ static void match(int expected) {
     }
 }
 
+// Panic-mode error recovery: skips tokens until reaching a synchronization boundary
 static void synchronize(void) {
     advance();
     while (current_token != TOK_EOF) {
@@ -81,30 +77,29 @@ static void synchronize(void) {
     }
 }
 
-/* ================================================================
- * ParseProgram — entry point pubblico
- * ================================================================ */
 ASTNode *ParseProgram(Arena *arena) {
+    // Initialize external persistent arena and create internal scratch arena
     astArena    = arena;
     scratchArena = arena_create(0);
 
+    // Fetch initial token from lexer stream
     advance();
 
+    // Create root node and parse statements until EOF
     ASTNode *node = NEW_NODE(ND_PROGRAM, NULL);
     while (current_token != TOK_EOF) {
         addChild(node, ParseStmtInner());
         if (hadAnyError()) { synchronize(); clearError(); }
     }
 
+    // Clean up temporary internal memory arena and clear static references
     arena_destroy(scratchArena);
     scratchArena = NULL;
     astArena     = NULL;
     return node;
 }
 
-/* ================================================================
- * Block -> '{' Stmt* '}'
- * ================================================================ */
+// Parses block statements enclosed in braces: Block -> '{' Stmt* '}'
 static ASTNode *ParseBlockInner(void) {
     match(TOK_DEL_LBRACE);
     ASTNode *node = NEW_NODE(ND_BLOCK, NULL);
@@ -116,9 +111,7 @@ static ASTNode *ParseBlockInner(void) {
     return node;
 }
 
-/* ================================================================
- * Stmt
- * ================================================================ */
+// Parses general statement types (declarations, blocks, control structures, expressions)
 static ASTNode *ParseStmtInner(void) {
     switch (current_token) {
 
@@ -139,6 +132,8 @@ static ASTNode *ParseStmtInner(void) {
         ASTNode *node = NEW_NODE(ND_IF, NULL);
         addChild(node, cond);
         addChild(node, thenBranch);
+
+        // Optional else clause processing
         if (current_token == TOK_KW_ELSE) {
             match(TOK_KW_ELSE);
             addChild(node, ParseStmtInner());
@@ -170,6 +165,7 @@ static ASTNode *ParseStmtInner(void) {
     }
 
     default: {
+        // Fallback to expression statement
         ASTNode *expr = ParseExpr();
         match(TOK_DEL_SEMICOLON);
 
@@ -180,18 +176,17 @@ static ASTNode *ParseStmtInner(void) {
     }
 }
 
-/* ================================================================
- * ParamList
- * ================================================================ */
+// Parses parameter lists inside function declarations
 static void ParseParamList(ASTNode *funcNode) {
     while (current_token == TOK_KW_INT || current_token == TOK_KW_FLOAT) {
+        // Temporarily store type and parameter name in scratch arena
         char *type = arena_strdup(scratchArena, current_lexeme);
         match(current_token);
 
         char *name = arena_strdup(scratchArena, current_lexeme);
         match(TOK_ID);
 
-        /* combined vive nell'astArena: testo permanente del nodo ND_PARAM */
+        // Format combined string "type name" directly into astArena for permanent storage
         char *combined = arena_sprintf(astArena, "%s %s", type, name);
         addChild(funcNode, newNode(astArena, ND_PARAM, combined));
 
@@ -200,19 +195,19 @@ static void ParseParamList(ASTNode *funcNode) {
     }
 }
 
-/* ================================================================
- * Decl
- * ================================================================ */
+// Parses variable, function, or array declarations
 static ASTNode *ParseDeclaration(void) {
+    // Store type and identifier lexemes temporarily
     char *type = arena_strdup(scratchArena, current_lexeme);
     match(current_token);
 
     char *name = arena_strdup(scratchArena, current_lexeme);
     match(TOK_ID);
 
-    /* combined: stringa "tipo nome" — testo permanente del nodo */
+    // Format combined string "type name" into persistent AST memory arena
     char *combined = arena_sprintf(astArena, "%s %s", type, name);
 
+    // Handle function declaration
     if (current_token == TOK_DEL_LPAREN) {
         ASTNode *node = newNode(astArena, ND_FUNC_DECL, combined);
         match(TOK_DEL_LPAREN);
@@ -222,16 +217,18 @@ static ASTNode *ParseDeclaration(void) {
         return node;
     }
 
+    // Handle array declaration
     if (current_token == TOK_DEL_LBRACK) {
         match(TOK_DEL_LBRACK);
         char *size = arena_strdup(scratchArena, current_lexeme);
         match(TOK_NUM_INT);
         match(TOK_DEL_RBRACK);
 
-        /* testo array: "tipo nome[size]" — permanente */
+        // Build array formatted string "type name[size]" for persistent node text
         char *arrDecl = arena_sprintf(astArena, "%s[%s]", combined, size);
         ASTNode *node = newNode(astArena, ND_VAR_DECL, arrDecl);
 
+        // Process initializer list if present
         if (current_token == TOK_OP_ASSIGN) {
             match(TOK_OP_ASSIGN);
             match(TOK_DEL_LBRACE);
@@ -249,6 +246,7 @@ static ASTNode *ParseDeclaration(void) {
         return node;
     }
 
+    // Handle standard variable declaration (with optional single assignment)
     ASTNode *node = newNode(astArena, ND_VAR_DECL, combined);
     if (current_token == TOK_OP_ASSIGN) {
         match(TOK_OP_ASSIGN);
@@ -258,11 +256,10 @@ static ASTNode *ParseDeclaration(void) {
     return node;
 }
 
-/* ================================================================
- * Espressioni
- * ================================================================ */
-static ASTNode *ParseExpr(void)    { return ParseAssign(); }
+// Expression parser entry point
+static ASTNode *ParseExpr(void) { return ParseAssign(); }
 
+// Parses right-associative assignment expressions
 static ASTNode *ParseAssign(void) {
     ASTNode *left = ParseLogicOr();
     if (current_token == TOK_OP_ASSIGN) {
@@ -276,6 +273,7 @@ static ASTNode *ParseAssign(void) {
     return left;
 }
 
+// Parses logical OR expressions ('||')
 static ASTNode *ParseLogicOr(void) {
     ASTNode *left = ParseLogicAnd();
     while (current_token == TOK_OP_OR) {
@@ -290,6 +288,7 @@ static ASTNode *ParseLogicOr(void) {
     return left;
 }
 
+// Parses logical AND expressions ('&&')
 static ASTNode *ParseLogicAnd(void) {
     ASTNode *left = ParseEquality();
     while (current_token == TOK_OP_AND) {
@@ -304,6 +303,7 @@ static ASTNode *ParseLogicAnd(void) {
     return left;
 }
 
+// Parses equality relational expressions ('==' and '!=')
 static ASTNode *ParseEquality(void) {
     ASTNode *left = ParseRelational();
     while (current_token == TOK_OP_EQ || current_token == TOK_OP_NE) {
@@ -318,6 +318,7 @@ static ASTNode *ParseEquality(void) {
     return left;
 }
 
+// Parses order relational expressions ('<', '>', '<=', '>=')
 static ASTNode *ParseRelational(void) {
     ASTNode *left = ParseAdditive();
     while (current_token == TOK_OP_LT || current_token == TOK_OP_GT ||
@@ -333,6 +334,7 @@ static ASTNode *ParseRelational(void) {
     return left;
 }
 
+// Parses additive arithmetic expressions ('+' and '-')
 static ASTNode *ParseAdditive(void) {
     ASTNode *left = ParseTerm();
     while (current_token == TOK_OP_PLUS || current_token == TOK_OP_MINUS) {
@@ -347,6 +349,7 @@ static ASTNode *ParseAdditive(void) {
     return left;
 }
 
+// Parses multiplicative arithmetic expressions ('*', '/', '%')
 static ASTNode *ParseTerm(void) {
     ASTNode *left = ParseUnary();
     while (current_token == TOK_OP_MUL || current_token == TOK_OP_DIV ||
@@ -362,6 +365,7 @@ static ASTNode *ParseTerm(void) {
     return left;
 }
 
+// Parses unary operators ('!' and unary '-')
 static ASTNode *ParseUnary(void) {
     if (current_token == TOK_OP_NOT || current_token == TOK_OP_MINUS) {
         char *op = arena_strdup(scratchArena, current_lexeme);
@@ -374,12 +378,14 @@ static ASTNode *ParseUnary(void) {
     return ParseFactor();
 }
 
+// Parses factor expressions (identifiers, function calls, array indexings, literals, parenthesized expressions)
 static ASTNode *ParseFactor(void) {
     if (current_token == TOK_ID) {
         char *name = arena_strdup(scratchArena, current_lexeme);
         match(TOK_ID);
 
         ASTNode *node;
+        // Parse function call expression
         if (current_token == TOK_DEL_LPAREN) {
             match(TOK_DEL_LPAREN);
             node = newNode(astArena, ND_CALL, name);
@@ -391,27 +397,32 @@ static ASTNode *ParseFactor(void) {
                 }
             }
             match(TOK_DEL_RPAREN);
+        // Parse array indexing expression
         } else if (current_token == TOK_DEL_LBRACK) {
             match(TOK_DEL_LBRACK);
             ASTNode *index = ParseExpr();
             match(TOK_DEL_RBRACK);
             node = newNode(astArena, ND_ARRAY_ACCESS, name);
             addChild(node, index);
+        // Parse simple identifier variable reference
         } else {
             node = newNode(astArena, ND_ID, name);
         }
         return node;
 
+    // Parse integer numeric literal
     } else if (current_token == TOK_NUM_INT) {
         ASTNode *node = newNode(astArena, ND_NUM_INT, current_lexeme);
         match(TOK_NUM_INT);
         return node;
 
+    // Parse floating point numeric literal
     } else if (current_token == TOK_NUM_FLOAT) {
         ASTNode *node = newNode(astArena, ND_NUM_FLOAT, current_lexeme);
         match(TOK_NUM_FLOAT);
         return node;
 
+    // Parse sub-expression within parentheses
     } else if (current_token == TOK_DEL_LPAREN) {
         match(TOK_DEL_LPAREN);
         ASTNode *node = ParseExpr();
@@ -419,6 +430,7 @@ static ASTNode *ParseFactor(void) {
         return node;
     }
 
+    // Handle unexpected token syntax error
     reportError(lexer_current_line(),
                 "token inatteso %d in un'espressione", current_token);
     return newNode(astArena, ND_ERROR, "<error>");

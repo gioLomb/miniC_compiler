@@ -4,16 +4,22 @@
 #include "ast.h"
 #include "../arena.h"
 
-/*
- * Fa partire il parsing dell'intero programma (assume che lexer_open()
- * sia gia' stato chiamato).
+/**
+ * @file parser.h
+ * @brief Recursive-descent parser interface.
  *
- * astArena  — arena in cui vengono allocati tutti i testi (node->text).
- *             Il chiamante la crea prima, la distrugge dopo freeAST().
- *             scratchArena (temporanea, interna) resta gestita dal parser.
+ * Provides entry point functions for parsing source tokens into an Abstract Syntax Tree (AST).
+ */
+
+/**
+ * @brief Parses an entire program and generates its corresponding AST representation.
  *
- * Restituisce la radice del parse tree.
+ * Expects that `lexer_open()` (or equivalent lexer initialization) has already been invoked.
+ *
+ * @param astArena Memory arena used to allocate permanent node text payloads (`node->text`).
+ *                 The caller manages the lifetime of this arena (destroying it after calling `freeAST()`).
+ * @return Pointer to the root ASTNode (`ND_PROGRAM`) of the generated syntax tree.
  */
 ASTNode *ParseProgram(Arena *astArena);
 
-#endif
+#endif /* PARSER_H */

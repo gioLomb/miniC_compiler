@@ -4,57 +4,59 @@
 #include "parser/ast.h"
 #include "symbol_table.h"
 
-/*
- * Analisi semantica: fonde in un UNICO attraversamento quello che prima
- * era la Pass 2 (creazione degli scope di parametri/blocchi + dichiara-
- * zione delle variabili locali) e la risoluzione/verifica degli usi
- * (ND_ID, ND_CALL, ND_ARRAY_ACCESS, assegnamenti, operatori, return).
+/**
+ * @file semantic.h
+ * @brief Single-pass semantic analysis: scope creation, name resolution,
+ *        and type checking.
  *
- * Perche' fuse in una sola funzione invece di due passate separate:
- * la Pass 2 "pura" apriva scope come variabili locali (fnScope,
- * blockScope dentro walkStmt) che sparivano non appena la funzione C
- * ritornava - nessun modo pulito per una fase successiva di recuperarli
- * dall'esterno per farci il lookup. Fondendo le due cose, lo scope in
- * cui si dichiara una variabile e quello in cui si risolve un suo uso
- * sono la STESSA variabile locale nella STESSA chiamata ricorsiva: non
- * serve mai esportare/recuperare nulla.
+ * Merges what used to be two separate phases:
+ *   - **Pass 2**: creation of parameter/block scopes and declaration of
+ *     local variables.
+ *   - **Semantic verification**: name resolution and type checking of every
+ *     use site (ND_ID, ND_CALL, ND_ARRAY_ACCESS, assignments, operators,
+ *     return statements).
  *
- * Precondizione: 'global' deve essere gia' stato popolato con le
- * signature top-level da symtab_populate_globals() (Pass 1, in
- * ast_to_symtab.c/.h) - altrimenti le chiamate a funzioni dichiarate
- * "in avanti" nel file non si risolverebbero.
+ * Rationale for merging: the scopes opened during Pass 2 (one per function
+ * body, one per nested block) were local to the C call-frame of the old
+ * walking function and disappeared when it returned — no clean way for a
+ * later phase to retrieve them for lookups.  By fusing the two steps, the
+ * scope in which a variable is declared and the scope in which its uses
+ * are resolved are the **same local variable in the same recursive call**:
+ * nothing needs to be exported or re-queried.
  *
- * Cosa verifica, nel dettaglio:
- *   - ND_ID / ND_ARRAY_ACCESS: il nome deve essere dichiarato nello
- *     scope corrente o in uno degli scope antenati (symtab_lookup);
- *     un ND_ID non puo' riferirsi a un array (va usato con []) ne' a
- *     una funzione; un ND_ARRAY_ACCESS richiede che il simbolo sia
- *     davvero un array e che l'indice sia di tipo int. Se l'indice e'
- *     una costante nota a compile-time (letterale, eventualmente con
- *     un meno unario), viene anche verificato che sia dentro i bound
- *     dell'array (0 <= indice < arraySize); un indice calcolato a
- *     runtime non puo' essere verificato qui (richiederebbe un
- *     controllo nel codice generato, fuori portata di un'analisi statica).
- *   - ND_CALL: il nome deve essere una funzione (non una variabile);
- *     il numero di argomenti deve combaciare con paramCount; ogni
- *     argomento deve essere assegnabile al tipo del parametro
- *     corrispondente (stessa regola di compatibilita' degli assegnamenti).
- *   - ND_ASSIGN: il lato sinistro dev'essere un ND_ID o ND_ARRAY_ACCESS
- *     (il parser accetterebbe sintatticamente anche "1 = 2;": qui viene
- *     rifiutato); l'unica conversione implicita ammessa e' int -> float
- *     (widening), il contrario (float -> int, narrowing) e' sempre errore.
- *   - ND_BINOP '%': richiede entrambi gli operandi int.
- *   - ND_RETURN: il tipo dell'espressione restituita deve essere
- *     assegnabile al tipo di ritorno dichiarato per la funzione
- *     corrente (stessa regola di compatibilita' int -> float).
+ * @pre  @p global must already be populated with all top-level signatures
+ *       by symtab_populate_globals() (Pass 1, ast_to_symtab.h) before
+ *       calling semantic_check().  Forward references between functions
+ *       (a function calling another declared later in the file) would not
+ *       resolve otherwise.
  *
- * Gli scope creati (uno per funzione, uno per ogni ND_BLOCK annidato)
- * restano appesi all'albero radicato in 'global', esattamente come
- * accadeva con la vecchia Pass 2: nessuna distruzione qui dentro, se ne
- * occupa simtab_destroy_tree(global) a fine compilazione.
+ * ### Checks performed
  *
- * Restituisce il numero totale di errori semantici incontrati (0 =
- * nessuno).
+ * | Node kind          | What is verified |
+ * |--------------------|-----------------|
+ * | ND_ID              | Declared in scope; not an array; not a function. |
+ * | ND_ARRAY_ACCESS    | Symbol is an array; index type is `int`; if index is a compile-time constant, bounds are checked (0 ≤ idx < arraySize). |
+ * | ND_CALL            | Name refers to a function; arity matches `paramCount`; each argument is compatible with the corresponding parameter type. |
+ * | ND_ASSIGN          | LHS must be ND_ID or ND_ARRAY_ACCESS; only implicit `int`→`float` widening is allowed; `float`→`int` narrowing is always an error. |
+ * | ND_BINOP `%`       | Both operands must be `int`. |
+ * | ND_RETURN          | Return-expression type must be compatible with the function's declared return type (same widening rule). |
+ *
+ * ### Scope lifetime
+ * Scopes created here (one per function, one per nested ND_BLOCK) are
+ * attached as children of @p global and remain alive for as long as
+ * @p global does.  Destruction is handled externally via
+ * symtab_destroy_tree(global) — semantic_check() never frees anything.
+ *
+ * ### Resolution coordinates
+ * Every resolved ND_ID, ND_ARRAY_ACCESS, ND_VAR_DECL, and ND_PARAM node
+ * has its @c scopeLevel and @c offset fields set to the values stored in
+ * the matching Symbol.  This lets ir_generate() identify every variable
+ * unambiguously (even in the presence of shadowing) without performing
+ * another symbol-table lookup.
+ *
+ * @param program  Root ND_PROGRAM node produced by ParseProgram().
+ * @param global   Global scope pre-populated by symtab_populate_globals().
+ * @return         Total number of semantic errors (0 = no errors).
  */
 int semantic_check(ASTNode *program, Scope *global);
 

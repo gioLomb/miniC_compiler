@@ -2850,13 +2850,13 @@ static const char *typeName(DataType t) {
  * Il contrario (float -> int, narrowing) e' sempre un errore, cosi'
  * come qualunque altra combinazione diversa dall'identita'.
  */
-static int assignCompatible(DataType target, DataType value) {
+static int isTypeCompatible(DataType target, DataType value) {
     if (target == value) return 1;
     if (target == T_FLOAT && value == T_INT) return 1;
     return 0;
 }
 
-static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors);
+static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors);
 
 /*
  * ND_ID / ND_ARRAY_ACCESS condividono la stessa logica di lookup: qui
@@ -2866,7 +2866,7 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors);
  * al chiamante ND_ARRAY_ACCESS per leggere arraySize (bound-check
  * statico) senza rifare un secondo symtab_lookup identico.
  */
-static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol *outSym, int *errors) {
+static DataType resolveNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol *outSym, int *errors) {
     Symbol sym;
     if (!symtab_lookup(scope, expr->text, &sym)) {
         fprintf(stderr, "Errore: '%s' non e' stato dichiarato\n", expr->text);
@@ -2922,14 +2922,14 @@ static DataType checkNameUse(ASTNode *expr, Scope *scope, int wantArray, Symbol 
  * solo a rendere il bound-check piu' preciso - non e' un'ottimizzazione
  * dell'albero, non modifica l'AST.
  */
-static int constIntValue(ASTNode *expr, long *out) {
+static int tryEvalConstant(ASTNode *expr, long *out) {
     if (expr->kind == ND_NUM_INT) {
         *out = atol(expr->text);
         return 1;
     }
     if (expr->kind == ND_UNARY && strcmp(expr->text, "-") == 0) {
         long inner;
-        if (constIntValue(expr->children[0], &inner)) {
+        if (tryEvalConstant(expr->children[0], &inner)) {
             *out = -inner;
             return 1;
         }
@@ -2937,8 +2937,8 @@ static int constIntValue(ASTNode *expr, long *out) {
     }
     if (expr->kind == ND_BINOP) {
         long a, b;
-        if (!constIntValue(expr->children[0], &a)) return 0;
-        if (!constIntValue(expr->children[1], &b)) return 0;
+        if (!tryEvalConstant(expr->children[0], &a)) return 0;
+        if (!tryEvalConstant(expr->children[1], &b)) return 0;
 
         if (strcmp(expr->text, "+") == 0) { *out = a + b; return 1; }
         if (strcmp(expr->text, "-") == 0) { *out = a - b; return 1; }
@@ -2964,11 +2964,11 @@ static int constIntValue(ASTNode *expr, long *out) {
  * risultante dell'espressione (T_VOID in caso di errore, cosi' che gli
  * errori non si propaghino a cascata in falsi positivi sui livelli
  * superiori: un T_VOID non fa mai scattare un ulteriore errore di tipo,
- * dato che assignCompatible/i confronti espliciti lo trattano come
+ * dato che isTypeCompatible/i confronti espliciti lo trattano come
  * "sconosciuto" e le chiamate successive lo accettano implicitamente
  * solo per non moltiplicare i messaggi per un singolo errore reale).
  */
-static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
+static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
     if (!expr) return T_VOID;
 
     switch (expr->kind) {
@@ -2980,11 +2980,11 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         return T_FLOAT;
 
     case ND_ID:
-        return checkNameUse(expr, scope, 0, NULL, errors);
+        return resolveNameUse(expr, scope, 0, NULL, errors);
 
     case ND_ARRAY_ACCESS: {
         ASTNode *idx = expr->children[0];
-        DataType idxType = checkExpr(idx, scope, errors);
+        DataType idxType = checkExprType(idx, scope, errors);
         if (idxType != T_VOID && idxType != T_INT) {
             fprintf(stderr, "Errore: l'indice di '%s[]' deve essere int, non %s\n",
                     expr->text, typeName(idxType));
@@ -2992,7 +2992,7 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         }
 
         Symbol sym;
-        DataType elemType = checkNameUse(expr, scope, 1, &sym, errors);
+        DataType elemType = resolveNameUse(expr, scope, 1, &sym, errors);
 
         /* Bound-check statico: solo se l'indice e' una costante intera
            nota adesso (letterale, eventualmente con un meno unario).
@@ -3000,7 +3000,7 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
            puo' essere verificato qui - richiederebbe un controllo nel
            codice generato, non un'analisi statica. */
         long constValue;
-        if (elemType != T_VOID && constIntValue(idx, &constValue)) {
+        if (elemType != T_VOID && tryEvalConstant(idx, &constValue)) {
             if (constValue < 0 || constValue >= sym.arraySize) {
                 fprintf(stderr,
                         "Errore: indice %ld fuori dai limiti di '%s' (dimensione %d)\n",
@@ -3033,10 +3033,10 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
            un colpo solo), confrontando col parametro corrispondente solo
            se il lookup e' andato a buon fine e l'indice e' in range */
         for (int i = 0; i < expr->nchildren; i++) {
-            DataType argType = checkExpr(expr->children[i], scope, errors);
+            DataType argType = checkExprType(expr->children[i], scope, errors);
             if (found && i < sym.paramCount) {
                 DataType paramType = symtab_unpack_param_type(sym.paramTypes, i);
-                if (argType != T_VOID && !assignCompatible(paramType, argType)) {
+                if (argType != T_VOID && !isTypeCompatible(paramType, argType)) {
                     fprintf(stderr,
                             "Errore: argomento %d di '%s' e' %s, atteso %s\n",
                             i + 1, expr->text, typeName(argType), typeName(paramType));
@@ -3055,14 +3055,14 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
         if (lvalue->kind != ND_ID && lvalue->kind != ND_ARRAY_ACCESS) {
             fprintf(stderr, "Errore: il lato sinistro di '=' non e' una variabile valida\n");
             (*errors)++;
-            checkExpr(rvalue, scope, errors);
+            checkExprType(rvalue, scope, errors);
             return T_VOID;
         }
 
-        DataType lt = checkExpr(lvalue, scope, errors);
-        DataType rt = checkExpr(rvalue, scope, errors);
+        DataType lt = checkExprType(lvalue, scope, errors);
+        DataType rt = checkExprType(rvalue, scope, errors);
 
-        if (lt != T_VOID && rt != T_VOID && !assignCompatible(lt, rt)) {
+        if (lt != T_VOID && rt != T_VOID && !isTypeCompatible(lt, rt)) {
             fprintf(stderr, "Errore: non si puo' assegnare %s a una variabile %s\n",
                     typeName(rt), typeName(lt));
             (*errors)++;
@@ -3071,8 +3071,8 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
     }
 
     case ND_BINOP: {
-        DataType lt = checkExpr(expr->children[0], scope, errors);
-        DataType rt = checkExpr(expr->children[1], scope, errors);
+        DataType lt = checkExprType(expr->children[0], scope, errors);
+        DataType rt = checkExprType(expr->children[1], scope, errors);
 
         if (strcmp(expr->text, "%") == 0) {
             if (lt != T_VOID && lt != T_INT) { (*errors)++; }
@@ -3101,11 +3101,11 @@ static DataType checkExpr(ASTNode *expr, Scope *scope, int *errors) {
 
     case ND_UNARY:
         if (strcmp(expr->text, "!") == 0) {
-            checkExpr(expr->children[0], scope, errors);
+            checkExprType(expr->children[0], scope, errors);
             return T_INT;
         }
         /* '-' unario: preserva il tipo dell'operando */
-        return checkExpr(expr->children[0], scope, errors);
+        return checkExprType(expr->children[0], scope, errors);
 
     default:
         /* non dovrebbe capitare in un'espressione ben formata dal parser */
@@ -3151,8 +3151,8 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
 
         if (!isArray) {
             /* scalare: esattamente un figlio (garantito dal parser) */
-            DataType t = checkExpr(stmt->children[0], scope, errors);
-            if (t != T_VOID && !assignCompatible(declType, t)) {
+            DataType t = checkExprType(stmt->children[0], scope, errors);
+            if (t != T_VOID && !isTypeCompatible(declType, t)) {
                 fprintf(stderr,
                         "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
                         varName, typeName(declType), typeName(t));
@@ -3169,8 +3169,8 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
                 (*errors)++;
             }
             for (int i = 0; i < stmt->nchildren; i++) {
-                DataType t = checkExpr(stmt->children[i], scope, errors);
-                if (t != T_VOID && !assignCompatible(declType, t)) {
+                DataType t = checkExprType(stmt->children[i], scope, errors);
+                if (t != T_VOID && !isTypeCompatible(declType, t)) {
                     fprintf(stderr,
                             "Errore: elemento %d dell'inizializzatore di '%s' e' %s, atteso %s\n",
                             i, varName, typeName(t), typeName(declType));
@@ -3191,7 +3191,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
     }
 
     case ND_IF:
-        checkExpr(stmt->children[0], scope, errors);                        /* condizione */
+        checkExprType(stmt->children[0], scope, errors);                        /* condizione */
         checkStmt(stmt->children[1], scope, returnType, arena, errors);      /* then */
         if (stmt->nchildren > 2) {
             checkStmt(stmt->children[2], scope, returnType, arena, errors); /* else, se presente */
@@ -3199,13 +3199,13 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
         break;
 
     case ND_WHILE:
-        checkExpr(stmt->children[0], scope, errors);                        /* condizione */
+        checkExprType(stmt->children[0], scope, errors);                        /* condizione */
         checkStmt(stmt->children[1], scope, returnType, arena, errors);      /* body */
         break;
 
     case ND_RETURN: {
-        DataType t = checkExpr(stmt->children[0], scope, errors);
-        if (t != T_VOID && !assignCompatible(returnType, t)) {
+        DataType t = checkExprType(stmt->children[0], scope, errors);
+        if (t != T_VOID && !isTypeCompatible(returnType, t)) {
             fprintf(stderr, "Errore: return di tipo %s non compatibile col tipo %s della funzione\n",
                     typeName(t), typeName(returnType));
             (*errors)++;
@@ -3214,7 +3214,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType, Arena *a
     }
 
     case ND_EXPR_STMT:
-        checkExpr(stmt->children[0], scope, errors);
+        checkExprType(stmt->children[0], scope, errors);
         break;
 
     default:

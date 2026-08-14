@@ -27,30 +27,16 @@
 #include "../../arena.h"
 
 
-/* --- "yytext" equivalente: cur punta al carattere corrente, tok
-   all'inizio del lessema in corso di riconoscimento ---
-   'cur' e 'tok' sono STATIC: interni a questo file. Il resto del
-   programma (parser.c) non li vede mai direttamente: puo' solo usare
-   le funzioni lexer_open/lexer_next_token/lexer_current_lexeme/
-   lexer_current_line dichiarate in lexer.h. Questo evita gli 'extern'
-   che attraversavano il confine tra modulo scanner e modulo parser. */
 static const unsigned char *cur;
 static const unsigned char *tok;
 static int lineNumber = 1;
-//static unsigned char *sourceBuffer = NULL;   /* buffer allocato da lexer_open */
 
 #define TOKLEN   ((int)(cur - tok))
 #define TOKTEXT  ((const char *)tok)
 
-/*
- * yylex() - equivalente della funzione generata da Flex.
- * Ogni iterazione del for(;;) riconosce un token; i token da ignorare
- * (whitespace, commenti) fanno "continue" invece di "return".
- */
+
 static int yylex(void) {
-    const unsigned char *YYMARKER;   /* richiesto da re2c per il backtracking
-                                         tra regole con prefissi comuni, es.
-                                         "<" vs "<=" */
+    const unsigned char *YYMARKER;
 
     for (;;) {
         tok = cur;
@@ -810,8 +796,7 @@ yy71:
 	++cur;
 #line 115 "scanner.re"
 	{
-                              /* un commento a blocco puo' contenere newline:
-                                 aggiorna lineNumber per non perdere il conteggio righe */
+
                               for (const unsigned char *p = tok; p < cur; p++) {
                                   if (*p == '\n') lineNumber++;
                               }
@@ -1136,66 +1121,68 @@ yy83:
     }
 }
 
-/* ==================================================================
- * API PUBBLICA DEL LEXER (lexer.h) - unico punto di contatto con il
- * resto del programma. Nessuno fuori da questo file vede piu'
- * 'cur'/'tok'/'yylex' direttamente: niente extern nel parser.
- * ================================================================== */
 
 #include "../../lexer.h"
 
-/* Arena del lexer: possiede il testo di ogni lessema restituito da
-   lexer_current_lexeme(). Nessun limite di lunghezza fisso (a
-   differenza del vecchio "char lexemeBuf[LEXEME_MAX]"): tok/cur
-   puntano gia' dentro sourceBuffer (l'intero file, caricato una
-   volta da lexer_open), quindi la dimensione totale mai occupata
-   da questa arena e' comunque limitata dalla dimensione del file
-   sorgente stesso - non serve un cap ad hoc separato. */
+
 static Arena *lexerArena = NULL;
 static char *currentLexeme = NULL;
 
 void lexer_open(const char *path) {
+    // Open source file in binary read mode
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Impossibile aprire il file %s\n", path);
         exit(1);
     }
+
+    // Measure total file size
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    lexerArena = arena_create(0);                     // crea l'arena
+    // Create memory arena dedicated to lexer storage
+    lexerArena = arena_create(0);                     
 
-    unsigned char *buf = arena_alloc(lexerArena, len + 1); // alloca direttamente nell'arena
+    // Allocate continuous buffer in arena and read entire file content
+    unsigned char *buf = arena_alloc(lexerArena, len + 1);
     fread(buf, 1, len, f);
-    buf[len] = '\0';
+    buf[len] = '\0'; // Null-terminate file buffer string
     fclose(f);
 
-    cur = buf;                                         // punta all'inizio del sorgente
+    // Initialize lexer cursor to start of buffer and set initial line counter
+    cur = buf;                                         
     lineNumber = 1;
 }
 
 void lexer_close(void) {
-    arena_destroy(lexerArena);    // libera tutto (sourceBuffer + lessemi)
+    // Destroy entire lexer memory arena at once
+    arena_destroy(lexerArena);    
     lexerArena = NULL;
     currentLexeme = NULL;
     cur = NULL;
 }
 
 int lexer_next_token(void) {
+    // Fetch next token code from scanner engine
     int token = yylex();
 
+    // Compute active lexeme length safely
     int len = (int)(cur - tok);
     if (len < 0) len = 0;
+
+    // Duplicate lexeme substring into lexer arena
     currentLexeme = arena_strndup(lexerArena, (const char *)tok, (size_t)len);
 
     return token;
 }
 
 const char *lexer_current_lexeme(void) {
+    // Return cached current lexeme string pointer
     return currentLexeme;
 }
 
 int lexer_current_line(void) {
+    // Return current source code line number
     return lineNumber;
 }
