@@ -59,7 +59,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
 
         for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
             IRInstr *in = &f->instrs[i];
-            int def   = liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind);
+            int def   = ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind);
             int dstId = def ? varmap_operand_id(&liv->varMap, in->dst) : -1;
 
             /* Istituzione pura con dst morta → eliminabile */
@@ -69,11 +69,11 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
             }
 
             /* Aggiorna Live: src → vivi, dst → morto */
-            if (liveness_is_var_or_temp(in->src1.kind)) {
+            if (ir_OperandIsStorage(in->src1.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src1);
                 if (id >= 0) liveset_set(&live, id);
             }
-            if (liveness_is_var_or_temp(in->src2.kind)) {
+            if (ir_OperandIsStorage(in->src2.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src2);
                 if (id >= 0) liveset_set(&live, id);
             }
@@ -129,7 +129,7 @@ int dce_optimize(IRFunction *f) {
     markReachableBlocks(f, reachable);
 
     /* PASSO 1-4: Liveness (fronte IR) */
-    LivenessResult liv = liveness_compute_ir(f, reachable, arena);
+    LivenessResult liv = liveness_computeIr(f, reachable, arena);
 
     /* PASSO 5: Mark */
     char *eliminate = arena_alloc(arena, (size_t)f->count);

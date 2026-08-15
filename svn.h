@@ -6,7 +6,7 @@
 /*
  * Superlocal Value Numbering (SVN) sull'IR lineare, eseguita da
  * ir_generate() subito dopo la costruzione del CFG di ogni funzione
- * (vedi resolveCFG()/irFunction() in ir.c). Riconosce e riscrive come
+ * (vedi resolveCFG()/ir_buildFunction() in ir.c). Riconosce e riscrive come
  * semplice copia ogni ricalcolo di un'espressione gia' vista lungo lo
  * stesso cammino di esecuzione:
  *
@@ -25,7 +25,7 @@
  * Il problema del leader stantio (perche' serve un controllo di
  * validita' AL MOMENTO DELL'USO, non solo alla creazione)
  * ---------------------------------------------------------------------
- * Con la generazione a destinazione diretta (irExprInto), il risultato
+ * Con la generazione a destinazione diretta (ir_emitExprInto), il risultato
  * di un'espressione puo' finire direttamente in una variabile con nome,
  * non solo in un temporaneo ("cane = a+b" scrive "cane", non un "t").
  * Se quella variabile viene registrata come "leader" del valore a+b, e

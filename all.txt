@@ -795,18 +795,18 @@ int dce_optimize(IRFunction *f) {
 
         for (int i = f->blocks[b].end - 1; i >= f->blocks[b].start; i--) {
             IRInstr *in = &f->instrs[i];
-            int def   = liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind);
+            int def   = ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind);
             int dstId = def ? varmap_operand_id(&liv.varMap, in->dst) : -1;
 
             if (isPure(in->op) && def && dstId >= 0 && !liveset_test(&live, dstId)) {
                 eliminate[i] = 1;
                 continue;
             }
-            if (liveness_is_var_or_temp(in->src1.kind)) {
+            if (ir_OperandIsStorage(in->src1.kind)) {
                 int id = varmap_operand_id(&liv.varMap, in->src1);
                 if (id >= 0) liveset_set(&live, id);
             }
-            if (liveness_is_var_or_temp(in->src2.kind)) {
+            if (ir_OperandIsStorage(in->src2.kind)) {
                 int id = varmap_operand_id(&liv.varMap, in->src2);
                 if (id >= 0) liveset_set(&live, id);
             }
@@ -1318,8 +1318,8 @@ static IROp binopToIROp(const char *op) {
     }
 }
 
-static Operand irExpr(ASTNode *expr, IRFunction *out);
-static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest);
+static Operand ir_emitExpr(ASTNode *expr, IRFunction *out);
+static Operand ir_emitExprInto(ASTNode *expr, IRFunction *out, Operand dest);
 static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl);
 static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl);
 
@@ -1340,7 +1340,7 @@ static void irJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl) {
         irJumpIfTrue(cond->children[0], out, falseLbl);
         return;
     }
-    Operand v = irExpr(cond, out);
+    Operand v = ir_emitExpr(cond, out);
     emitIfFalse(out, v, falseLbl);
 }
 
@@ -1361,7 +1361,7 @@ static void irJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
         irJumpIfFalse(cond->children[0], out, trueLbl);
         return;
     }
-    Operand v = irExpr(cond, out);
+    Operand v = ir_emitExpr(cond, out);
     Operand skipLbl = mkLabel();
     emitIfFalse(out, v, skipLbl);
     emitGoto(out, trueLbl);
@@ -1383,21 +1383,21 @@ static Operand irShortCircuit(ASTNode *expr, IRFunction *out) {
     return irShortCircuitInto(expr, out, mkTemp());
 }
 
-static Operand irAssign(ASTNode *expr, IRFunction *out) {
+static Operand ir_emitAssign(ASTNode *expr, IRFunction *out) {
     ASTNode *lvalue = expr->children[0];
     if (lvalue->kind == ND_ID) {
-        return irExprInto(expr->children[1], out, mkVar(lvalue));
+        return ir_emitExprInto(expr->children[1], out, mkVar(lvalue));
     }
-    Operand idx = irExpr(lvalue->children[0], out);
+    Operand idx = ir_emitExpr(lvalue->children[0], out);
     Operand base = mkVar(lvalue);
-    Operand rhs = irExpr(expr->children[1], out);
+    Operand rhs = ir_emitExpr(expr->children[1], out);
     emit(out, IR_STORE_ARR, base, idx, rhs);
     return rhs;
 }
 
 static Operand irCall(ASTNode *expr, IRFunction *out) {
     for (int i = 0; i < expr->nchildren; i++) {
-        Operand arg = irExpr(expr->children[i], out);
+        Operand arg = ir_emitExpr(expr->children[i], out);
         emit(out, IR_PARAM, noOperand(), arg, noOperand());
     }
     Operand result = mkTemp();
@@ -1405,20 +1405,20 @@ static Operand irCall(ASTNode *expr, IRFunction *out) {
     return result;
 }
 
-static Operand irExpr(ASTNode *expr, IRFunction *out) {
+static Operand ir_emitExpr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {
     case ND_NUM_INT:    return mkConstInt(atoi(expr->text));
     case ND_NUM_FLOAT:  return mkConstFloat((float)atof(expr->text));
     case ND_ID:         return mkVar(expr);
     case ND_ARRAY_ACCESS: {
-        Operand idx = irExpr(expr->children[0], out);
+        Operand idx = ir_emitExpr(expr->children[0], out);
         Operand base = mkVar(expr);
         Operand t = mkTemp();
         emit(out, IR_LOAD_ARR, t, base, idx);
         return t;
     }
     case ND_UNARY: {
-        Operand v = irExpr(expr->children[0], out);
+        Operand v = ir_emitExpr(expr->children[0], out);
         Operand t = mkTemp();
         emit(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, noOperand());
         return t;
@@ -1427,31 +1427,31 @@ static Operand irExpr(ASTNode *expr, IRFunction *out) {
         unsigned short key = op_key(expr->text);
         if (key == KEY_AND || key == KEY_OR)
             return irShortCircuit(expr, out);
-        Operand lhs = irExpr(expr->children[0], out);
-        Operand rhs = irExpr(expr->children[1], out);
+        Operand lhs = ir_emitExpr(expr->children[0], out);
+        Operand rhs = ir_emitExpr(expr->children[1], out);
         Operand t = mkTemp();
         emit(out, binopToIROp(expr->text), t, lhs, rhs);
         return t;
     }
-    case ND_ASSIGN:     return irAssign(expr, out);
+    case ND_ASSIGN:     return ir_emitAssign(expr, out);
     case ND_CALL:       return irCall(expr, out);
     default:            return noOperand();
     }
 }
 
-static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
+static Operand ir_emitExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
     switch (expr->kind) {
     case ND_NUM_INT:    emit(out, IR_ASSIGN, dest, mkConstInt(atoi(expr->text)), noOperand()); return dest;
     case ND_NUM_FLOAT:  emit(out, IR_ASSIGN, dest, mkConstFloat((float)atof(expr->text)), noOperand()); return dest;
     case ND_ID:         emit(out, IR_ASSIGN, dest, mkVar(expr), noOperand()); return dest;
     case ND_ARRAY_ACCESS: {
-        Operand idx = irExpr(expr->children[0], out);
+        Operand idx = ir_emitExpr(expr->children[0], out);
         Operand base = mkVar(expr);
         emit(out, IR_LOAD_ARR, dest, base, idx);
         return dest;
     }
     case ND_UNARY: {
-        Operand v = irExpr(expr->children[0], out);
+        Operand v = ir_emitExpr(expr->children[0], out);
         emit(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, dest, v, noOperand());
         return dest;
     }
@@ -1459,14 +1459,14 @@ static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
         unsigned short key = op_key(expr->text);
         if (key == KEY_AND || key == KEY_OR)
             return irShortCircuitInto(expr, out, dest);
-        Operand lhs = irExpr(expr->children[0], out);
-        Operand rhs = irExpr(expr->children[1], out);
+        Operand lhs = ir_emitExpr(expr->children[0], out);
+        Operand rhs = ir_emitExpr(expr->children[1], out);
         emit(out, binopToIROp(expr->text), dest, lhs, rhs);
         return dest;
     }
     case ND_CALL: {
         for (int i = 0; i < expr->nchildren; i++) {
-            Operand arg = irExpr(expr->children[i], out);
+            Operand arg = ir_emitExpr(expr->children[i], out);
             emit(out, IR_PARAM, noOperand(), arg, noOperand());
         }
         emit(out, IR_CALL, dest, mkFunc(expr->text), mkConstInt(expr->nchildren));
@@ -1481,34 +1481,34 @@ static Operand irExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
     }
 }
 
-static void irStmt(ASTNode *stmt, IRFunction *out) {
+static void ir_emitStmt(ASTNode *stmt, IRFunction *out) {
     if (!stmt) return;
     switch (stmt->kind) {
     case ND_BLOCK:
-        for (int i = 0; i < stmt->nchildren; i++) irStmt(stmt->children[i], out);
+        for (int i = 0; i < stmt->nchildren; i++) ir_emitStmt(stmt->children[i], out);
         break;
     case ND_VAR_DECL:
         if (stmt->nchildren == 0) break;
         if (stmt->nchildren == 1)
-            irExprInto(stmt->children[0], out, mkVar(stmt));
+            ir_emitExprInto(stmt->children[0], out, mkVar(stmt));
         else
             for (int i = 0; i < stmt->nchildren; i++) {
-                Operand v = irExpr(stmt->children[i], out);
+                Operand v = ir_emitExpr(stmt->children[i], out);
                 emit(out, IR_STORE_ARR, mkVar(stmt), mkConstInt(i), v);
             }
         break;
     case ND_EXPR_STMT:
-        irExpr(stmt->children[0], out);
+        ir_emitExpr(stmt->children[0], out);
         break;
     case ND_IF: {
         Operand elseLbl = mkLabel();
         irJumpIfFalse(stmt->children[0], out, elseLbl);
-        irStmt(stmt->children[1], out);
+        ir_emitStmt(stmt->children[1], out);
         if (stmt->nchildren > 2) {
             Operand endLbl = mkLabel();
             emitGoto(out, endLbl);
             emitLabel(out, elseLbl);
-            irStmt(stmt->children[2], out);
+            ir_emitStmt(stmt->children[2], out);
             emitLabel(out, endLbl);
         } else {
             emitLabel(out, elseLbl);
@@ -1520,13 +1520,13 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
         Operand endLbl = mkLabel();
         emitLabel(out, startLbl);
         irJumpIfFalse(stmt->children[0], out, endLbl);
-        irStmt(stmt->children[1], out);
+        ir_emitStmt(stmt->children[1], out);
         emitGoto(out, startLbl);
         emitLabel(out, endLbl);
         break;
     }
     case ND_RETURN: {
-        Operand v = irExpr(stmt->children[0], out);
+        Operand v = ir_emitExpr(stmt->children[0], out);
         emit(out, IR_RETURN, noOperand(), v, noOperand());
         break;
     }
@@ -1534,7 +1534,7 @@ static void irStmt(ASTNode *stmt, IRFunction *out) {
     }
 }
 
-static IRFunction *irFunction(ASTNode *decl) {
+static IRFunction *ir_buildFunction(ASTNode *decl) {
     const char *space = strrchr(decl->text, ' ');
     const char *name = space ? space + 1 : decl->text;
 
@@ -1544,7 +1544,7 @@ static IRFunction *irFunction(ASTNode *decl) {
     f->curBlockStart = 0;
 
     ASTNode *body = decl->children[decl->nchildren - 1];
-    irStmt(body, f);
+    ir_emitStmt(body, f);
 
     resolveCFG(f);
     svn_optimize(f);
@@ -1589,7 +1589,7 @@ IRProgram *ir_generate(ASTNode *program) {
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         if (decl->kind != ND_FUNC_DECL) continue;
-        programPush(prog, irFunction(decl));
+        programPush(prog, ir_buildFunction(decl));
     }
     return prog;
 }
@@ -1694,7 +1694,7 @@ static int *countDefsInLoop(IRFunction *f, Loop *L, VarMap *vm,
         int b = L->body[i];
         for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!liveness_defines_dst(in->op) || !liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!ir_DefinesDst(in->op) || !ir_OperandIsStorage(in->dst.kind)) continue;
             int id = varmap_operand_id(vm, in->dst);
             if (id >= 0) defCount[id]++;
         }
@@ -1706,13 +1706,13 @@ static int *countDefsInLoop(IRFunction *f, Loop *L, VarMap *vm,
 
 static int singleLoopDefInvariant(IRFunction *f, Loop *L, Operand op,
                                    const char *invariant) {
-    if (!liveness_is_var_or_temp(op.kind)) return -1;
+    if (!ir_OperandIsStorage(op.kind)) return -1;
     int found = -1;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
         for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!liveness_defines_dst(in->op)) continue;
+            if (!ir_DefinesDst(in->op)) continue;
             if (in->dst.kind != op.kind) continue;
             if (op.kind == OPND_VAR &&
                 (in->dst.data.varLevel != op.data.varLevel ||
@@ -1729,7 +1729,7 @@ static int srcIsInvariant(IRFunction *f, Loop *L, Operand src,
                            const int *defCount, VarMap *vm, const char *invariant) {
     if (src.kind == OPND_CONST_INT || src.kind == OPND_CONST_FLOAT ||
         src.kind == OPND_NONE) return 1;
-    if (!liveness_is_var_or_temp(src.kind)) return 0;
+    if (!ir_OperandIsStorage(src.kind)) return 0;
     int id = varmap_operand_id(vm, src);
     if (id < 0 || defCount[id] == 0) return 1;
     if (defCount[id] == 1) return singleLoopDefInvariant(f, L, src, invariant) >= 0;
@@ -1753,8 +1753,8 @@ static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
         int b = L->body[i];
         for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!isPure(in->op) || !liveness_defines_dst(in->op) ||
-                !liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!isPure(in->op) || !ir_DefinesDst(in->op) ||
+                !ir_OperandIsStorage(in->dst.kind)) continue;
             Operand srcs[2] = { in->src1, in->src2 };
             for (int s = 0; s < 2; s++) {
                 int id = varmap_operand_id(vm, srcs[s]);
@@ -1982,7 +1982,7 @@ void liveset_union(LiveSet *dst, const LiveSet *src) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] |= src->bits[i];
 }
 
-void liveset_union_into(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
+void liveset_unionInto(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] | b->bits[i];
 }
 
@@ -2002,7 +2002,7 @@ void liveset_copy(LiveSet *dst, const LiveSet *src) {
 
 /* ---- Predicati --------------------------------------------------------- */
 
-int liveness_defines_dst(IROp op) {
+int ir_DefinesDst(IROp op) {
     switch (op) {
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_NEG: case IR_NOT:
@@ -2014,7 +2014,7 @@ int liveness_defines_dst(IROp op) {
     }
 }
 
-int liveness_is_var_or_temp(OperandKind kind) {
+int ir_OperandIsStorage(OperandKind kind) {
     return kind == OPND_VAR || kind == OPND_TEMP;
 }
 
@@ -2058,17 +2058,17 @@ LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *are
         for (int i = f->blocks[b].start; i < f->blocks[b].end; i++) {
             IRInstr *in = &f->instrs[i];
 
-            if (liveness_is_var_or_temp(in->src1.kind)) {
+            if (ir_OperandIsStorage(in->src1.kind)) {
                 int id = varmap_operand_id(&r.varMap, in->src1);
                 if (id >= 0 && !liveset_test(&r.Def[b], id))
                     liveset_set(&r.Use[b], id);
             }
-            if (liveness_is_var_or_temp(in->src2.kind)) {
+            if (ir_OperandIsStorage(in->src2.kind)) {
                 int id = varmap_operand_id(&r.varMap, in->src2);
                 if (id >= 0 && !liveset_test(&r.Def[b], id))
                     liveset_set(&r.Use[b], id);
             }
-            if (liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind)) {
+            if (ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind)) {
                 int id = varmap_operand_id(&r.varMap, in->dst);
                 if (id >= 0) liveset_set(&r.Def[b], id);
             }
@@ -2093,7 +2093,7 @@ LivenessResult liveness_compute(IRFunction *f, const char *reachable, Arena *are
             }
 
             liveset_diff(&tmp, &r.LiveOut[b], &r.Def[b]);
-            liveset_union_into(&tmp, &tmp, &r.Use[b]);
+            liveset_unionInto(&tmp, &tmp, &r.Use[b]);
 
             if (!liveset_equal(&r.LiveIn[b], &tmp)) {
                 liveset_copy(&r.LiveIn[b], &tmp);
@@ -3323,7 +3323,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
         int b = L->body[i];
         for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!liveness_defines_dst(in->op)) continue;
+            if (!ir_DefinesDst(in->op)) continue;
             int id = varmap_operand_id(vm, in->dst);
             if (id >= 0) defCount[id]++;
         }
@@ -3334,7 +3334,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
         for (int j = f->blocks[b].start; j < f->blocks[b].end; j++) {
             IRInstr *in = &f->instrs[j];
             if (in->op != IR_ADD && in->op != IR_SUB) continue;
-            if (!liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!ir_OperandIsStorage(in->dst.kind)) continue;
             if (!sameOperand(in->dst, in->src1)) continue;
             if (in->src2.kind != OPND_CONST_INT) continue;
 
@@ -3364,7 +3364,7 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
         for (int j = f->blocks[b].start; j < f->blocks[b].end && count < MAX_DERIVED; j++) {
             IRInstr *in = &f->instrs[j];
             if (in->op != IR_MUL) continue;
-            if (!liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!ir_OperandIsStorage(in->dst.kind)) continue;
 
             for (int v = 0; v < ivarCount; v++) {
                 InductionBase *iv = &ivars[v];

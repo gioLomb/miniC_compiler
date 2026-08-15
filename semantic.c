@@ -246,10 +246,11 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
 
         // Type-check each argument even when the arity is wrong (best-effort
         // diagnostics: report type errors alongside the arity error).
-    
+        int checkLimit = found ? sym.paramCount : 0;
+
         for (int i = 0; i < expr->nchildren; i++) {
             DataType argType = checkExprType(expr->children[i], scope, errors);
-            if (found && i < sym.paramCount) {
+            if (i < checkLimit) {
                 DataType paramType = symtab_unpack_param_type(sym.paramTypes, i);
                 if (argType != T_VOID && !isTypeCompatible(paramType, argType)) {
                     fprintf(stderr,

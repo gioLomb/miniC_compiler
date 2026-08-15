@@ -31,7 +31,7 @@
  * e succ[]/predCount del CFG vengono aggiornati (CFG Pruning).
  *
  * Restituisce 1 se l'IR e' stato modificato (per il ciclo a punto
- * fisso esterno in irFunction()), 0 altrimenti.
+ * fisso esterno in ir_buildFunction()), 0 altrimenti.
  */
 int cp_optimize(IRFunction *f);
 

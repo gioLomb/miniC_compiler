@@ -1,8 +1,26 @@
+/**
+ * @file liveness.c
+ * @brief Liveness analysis engine — implementation.
+ *
+ * See liveness.h for the module overview and public API documentation.
+ *
+ * Internal organisation
+ * ---------------------
+ *  1. LiveSet primitives  — bit-set operations used everywhere.
+ *  2. liveness_computeCore  — generic backward dataflow engine.
+ *  3. liveness_computePerInstr  — single backward sweep for per-instruction sets.
+ *  4. IR front-end  — irExtract callback + liveness_computeIr wrapper.
+ *  5. Machine front-end  — machExtract callback + liveness_computeMach wrapper.
+ *  6. IR predicates  — ir_DefinesDst, ir_OperandIsStorage.
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include "liveness.h"
 
-/* ---- LiveSet ------------------------------------------------------------ */
+/* =========================================================================
+ * LiveSet primitives
+ * ========================================================================= */
 
 LiveSet liveset_new(Arena *arena, int words) {
     LiveSet s;
@@ -12,6 +30,7 @@ LiveSet liveset_new(Arena *arena, int words) {
     return s;
 }
 
+/** Zero all words of @p s in one memset. */
 static inline void liveset_clear(LiveSet *s) {
     memset(s->bits, 0, (size_t)s->words * sizeof(uint64_t));
 }
@@ -28,15 +47,20 @@ int liveset_test(const LiveSet *s, int id) {
     return (s->bits[id >> 6] >> (id & 63)) & 1ULL;
 }
 
+/** dst |= src  (word-by-word OR). */
 static inline void liveset_union(LiveSet *dst, const LiveSet *src) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] |= src->bits[i];
 }
 
-static inline void liveset_union_into(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
+/** dst = a | b  (three-operand form avoids a copy when dst aliases neither). */
+static inline void liveset_unionInto(LiveSet *dst,
+                                       const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] | b->bits[i];
 }
 
-static inline void liveset_diff(LiveSet *dst, const LiveSet *a, const LiveSet *b) {
+/** dst = a & ~b  (set difference: a minus b). */
+static inline void liveset_diff(LiveSet *dst,
+                                 const LiveSet *a, const LiveSet *b) {
     for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] & ~b->bits[i];
 }
 
@@ -50,12 +74,28 @@ void liveset_copy(LiveSet *dst, const LiveSet *src) {
     memcpy(dst->bits, src->bits, (size_t)src->words * sizeof(uint64_t));
 }
 
-/* ---- Motore di dataflow generico ----------------------------------------
+/* =========================================================================
+ * Generic backward dataflow engine
+ * =========================================================================
  *
- * Riceve BasicBlock* (ex LivenessBlock*): stesso layout, tipo unificato.
- * -------------------------------------------------------------------------*/
+ * Algorithm (standard backward liveness, iterative to fixed point):
+ *
+ *   for each block b (forward pass to build Use/Def):
+ *     scan instructions b.start..b.end-1 via extract():
+ *       Use[b]  |= use_i  (only ids not already in Def[b])
+ *       Def[b]  |= def_i
+ *
+ *   repeat until no LiveIn set changes (backward pass):
+ *     for b = nBlocks-1 downto 0:
+ *       LiveOut[b] = union( LiveIn[s] for s in succ[b] )
+ *       LiveIn[b]  = Use[b] ∪ (LiveOut[b] − Def[b])
+ *
+ * Memory layout: all LiveSet bit words for all four set arrays (Use, Def,
+ * LiveIn, LiveOut) are allocated as a single contiguous slab from the
+ * arena, improving cache behaviour during the iterative fixed-point loop.
+ * ========================================================================= */
 
-LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
+LivenessBlockSets liveness_computeCore(int nBlocks, const BasicBlock *blocks,
                                          int numVars, const char *reachable,
                                          LivenessExtractFn extract, void *ctx,
                                          Arena *arena) {
@@ -63,16 +103,19 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
     r.numVars = numVars;
     r.words   = (numVars + 63) / 64;
 
+    // Allocate the four per-block set arrays (headers only; bits come below).
     r.Use     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
     r.Def     = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
     r.LiveIn  = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
     r.LiveOut = arena_alloc(arena, (size_t)nBlocks * sizeof(LiveSet));
 
+    // Single slab for all bit words: 4 arrays × nBlocks blocks × r.words uint64_t.
     size_t   wordsPerBlock = (size_t)r.words;
     size_t   totalWords    = 4 * (size_t)nBlocks * wordsPerBlock;
     uint64_t *allBits      = arena_alloc(arena, totalWords * sizeof(uint64_t));
     memset(allBits, 0, totalWords * sizeof(uint64_t));
 
+    // Partition the slab among the four set arrays.
     for (int b = 0; b < nBlocks; b++) {
         r.Use[b]     = (LiveSet){ allBits + (0 * nBlocks + b) * wordsPerBlock, r.words };
         r.Def[b]     = (LiveSet){ allBits + (1 * nBlocks + b) * wordsPerBlock, r.words };
@@ -80,11 +123,13 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
         r.LiveOut[b] = (LiveSet){ allBits + (3 * nBlocks + b) * wordsPerBlock, r.words };
     }
 
+    // --- Forward pass: build Use and Def for each reachable block. ---
     int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
     for (int b = 0; b < nBlocks; b++) {
         if (reachable && !reachable[b]) continue;
         for (int i = blocks[b].start; i < blocks[b].end; i++) {
             extract(ctx, i, uses, &nUses, defs, &nDefs);
+            // A use counts only if the variable has not yet been defined in this block.
             for (int k = 0; k < nUses; k++)
                 if (!liveset_test(&r.Def[b], uses[k]))
                     liveset_set(&r.Use[b], uses[k]);
@@ -93,13 +138,16 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
         }
     }
 
+    // --- Backward iterative fixed-point. ---
     LiveSet tmp = liveset_new(arena, r.words);
     int changed = 1;
     while (changed) {
         changed = 0;
+        // Scanning blocks in reverse order accelerates convergence for loops.
         for (int b = nBlocks - 1; b >= 0; b--) {
             if (reachable && !reachable[b]) continue;
 
+            // LiveOut[b] = union of LiveIn[s] for all successors s.
             liveset_clear(&r.LiveOut[b]);
             for (int k = 0; k < 2; k++) {
                 int s = blocks[b].succ[k];
@@ -107,8 +155,9 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
                     liveset_union(&r.LiveOut[b], &r.LiveIn[s]);
             }
 
+            // LiveIn[b] = Use[b] ∪ (LiveOut[b] − Def[b]).
             liveset_diff(&tmp, &r.LiveOut[b], &r.Def[b]);
-            liveset_union_into(&tmp, &tmp, &r.Use[b]);
+            liveset_unionInto(&tmp, &tmp, &r.Use[b]);
 
             if (!liveset_equal(&r.LiveIn[b], &tmp)) {
                 liveset_copy(&r.LiveIn[b], &tmp);
@@ -120,15 +169,24 @@ LivenessBlockSets liveness_compute_core(int nBlocks, const BasicBlock *blocks,
     return r;
 }
 
-LiveSet *liveness_compute_per_instr(int nBlocks, const BasicBlock *blocks,
+/* =========================================================================
+ * Per-instruction liveness
+ * =========================================================================
+ * A single backward sweep (no iteration needed — block-level LiveOut is
+ * already at the fixed point) produces liveAfter[i] for each instruction.
+ * ========================================================================= */
+
+LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
                                      int instrCount, int numVars,
                                      const LiveSet *blockLiveOut,
                                      LivenessExtractFn extract, void *ctx,
                                      Arena *arena) {
     int words = (numVars + (BITS_PER_WORD - 1)) / BITS_PER_WORD;
 
+    // Allocate liveAfter[] headers and a contiguous bit slab.
     LiveSet  *liveAfter = arena_alloc(arena, (size_t)instrCount * sizeof(LiveSet));
-    uint64_t *allBits   = arena_alloc(arena, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
+    uint64_t *allBits   = arena_alloc(arena,
+                              (size_t)instrCount * (size_t)words * sizeof(uint64_t));
     memset(allBits, 0, (size_t)instrCount * (size_t)words * sizeof(uint64_t));
 
     for (int i = 0; i < instrCount; i++)
@@ -136,15 +194,18 @@ LiveSet *liveness_compute_per_instr(int nBlocks, const BasicBlock *blocks,
 
     int uses[LIVENESS_MAX_IDS], defs[LIVENESS_MAX_IDS], nUses, nDefs;
 
+    // Scratch set reused for each block's backward sweep.
     uint64_t *liveBits = arena_alloc(arena, (size_t)words * sizeof(uint64_t));
     LiveSet   live     = { liveBits, words };
 
     for (int b = 0; b < nBlocks; b++) {
+        // Seed the sweep with the block-level live-out.
         liveset_copy(&live, &blockLiveOut[b]);
 
         for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
             liveset_copy(&liveAfter[i], &live);
             extract(ctx, i, uses, &nUses, defs, &nDefs);
+            // Remove definitions, then add uses (standard backward transfer).
             for (int k = 0; k < nDefs; k++) liveset_clrbit(&live, defs[k]);
             for (int k = 0; k < nUses; k++) liveset_set(&live, uses[k]);
         }
@@ -152,13 +213,26 @@ LiveSet *liveness_compute_per_instr(int nBlocks, const BasicBlock *blocks,
     return liveAfter;
 }
 
-/* ---- Fronte IR lineare (DCE/LICM/SR) ------------------------------------ */
+/* =========================================================================
+ * IR front-end
+ * =========================================================================
+ * Maps IR Operands to compact integer ids via VarMap, then calls the
+ * generic engine.  Only block-level liveness is computed (liveAfter=NULL).
+ * ========================================================================= */
 
+/** Context forwarded to irExtract. */
 typedef struct {
     IRFunction *f;
     VarMap     *varMap;
 } IRLivenessCtx;
 
+/**
+ * @brief Extract uses and defs from IR instruction @p instrIdx.
+ *
+ * src1 and src2 are uses; dst is a def for opcodes that write a result.
+ * Constants, labels, and function names are ignored — they have no id in
+ * the VarMap.
+ */
 static void irExtract(void *ctxP, int instrIdx,
                        int uses[LIVENESS_MAX_IDS], int *nUses,
                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
@@ -166,23 +240,25 @@ static void irExtract(void *ctxP, int instrIdx,
     IRInstr *in = &ctx->f->instrs[instrIdx];
     *nUses = 0; *nDefs = 0;
 
-    if (liveness_is_var_or_temp(in->src1.kind)) {
+    if (ir_OperandIsStorage(in->src1.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->src1);
         if (id >= 0) uses[(*nUses)++] = id;
     }
-    if (liveness_is_var_or_temp(in->src2.kind)) {
+    if (ir_OperandIsStorage(in->src2.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->src2);
         if (id >= 0) uses[(*nUses)++] = id;
     }
-    if (liveness_defines_dst(in->op) && liveness_is_var_or_temp(in->dst.kind)) {
+    if (ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->dst);
         if (id >= 0) defs[(*nDefs)++] = id;
     }
 }
 
-LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *arena) {
+LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
+                                    Arena *arena) {
     LivenessResult r = {0};
 
+    // Assign a compact id to every distinct Operand that appears in the function.
     varmap_init(&r.varMap);
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
@@ -192,26 +268,39 @@ LivenessResult liveness_compute_ir(IRFunction *f, const char *reachable, Arena *
     }
     int numVars = r.varMap.nextId;
 
-    /* Costruisce array BasicBlock dal CFG IR (IRBlock → BasicBlock via campo bb) */
+    // Convert IRBlock descriptors to the generic BasicBlock layout.
     BasicBlock *lb = arena_alloc(arena, (size_t)f->blockCount * sizeof(BasicBlock));
-    for (int b = 0; b < f->blockCount; b++) {
-        lb[b]   = f->blocks[b].bb;
-    }
+    for (int b = 0; b < f->blockCount; b++)
+        lb[b] = f->blocks[b].bb;
 
     IRLivenessCtx ctx = { f, &r.varMap };
-    r.blockSets = liveness_compute_core(f->blockCount, lb, numVars, reachable,
+    r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
                                          irExtract, &ctx, arena);
-    r.liveAfter = NULL;
+    r.liveAfter = NULL;   // not needed by IR-level passes
     return r;
 }
 
-/* ---- Fronte codice macchina (regalloc/interference) ---------------------- */
+/* =========================================================================
+ * Machine-code front-end
+ * =========================================================================
+ * Variable ids are assigned by the regalloc layer: vregs occupy [0, nextVreg)
+ * and physical registers occupy [nextVreg, nextVreg + PHYS_ALLOCATABLE).
+ * This front-end also computes per-instruction liveness for the interference
+ * graph builder.
+ * ========================================================================= */
 
+/** Context forwarded to machExtract. */
 typedef struct {
     const MachFunction *f;
-    int                  nextVreg;
+    int                 nextVreg;
 } MachLivenessCtx;
 
+/**
+ * @brief Extract uses and defs from machine instruction @p instrIdx.
+ *
+ * Combines explicit operand uses/defs with implicit ones (e.g. caller-saved
+ * registers clobbered by a CALL, RAX/RDX clobbered by IDIV).
+ */
 static void machExtract(void *ctxP, int instrIdx,
                          int uses[LIVENESS_MAX_IDS], int *nUses,
                          int defs[LIVENESS_MAX_IDS], int *nDefs) {
@@ -231,43 +320,22 @@ static void machExtract(void *ctxP, int instrIdx,
     for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
 }
 
-/* Riceve BasicBlock* (ex RBlock*): layout identico, tipo unificato */
-LivenessResult liveness_compute_mach(const MachFunction *f, const BasicBlock *blocks,
+LivenessResult liveness_computeMach(const MachFunction *f,
+                                      const BasicBlock *blocks,
                                       int nBlocks, Arena *arena) {
     LivenessResult r = {0};
 
+    // Total variable universe: vregs + physical registers.
     MachLivenessCtx ctx = { f, f->nextVreg };
     int numVars = f->nextVreg + PHYS_ALLOCATABLE;
 
-    r.blockSets = liveness_compute_core(nBlocks, blocks, numVars, NULL,
+    r.blockSets = liveness_computeCore(nBlocks, blocks, numVars, NULL,
                                          machExtract, &ctx, arena);
-    r.liveAfter = liveness_compute_per_instr(nBlocks, blocks, f->count, numVars,
-                                              r.blockSets.LiveOut, machExtract, &ctx, arena);
+
+    // The interference-graph builder requires per-instruction liveAfter[].
+    r.liveAfter = liveness_computePerInstr(nBlocks, blocks, f->count, numVars,
+                                              r.blockSets.LiveOut,
+                                              machExtract, &ctx, arena);
     return r;
 }
 
-/* ---- Predicati (fronte IR) ---------------------------------------------- */
-
-int liveness_defines_dst(IROp op) {
-    /* bit i settato = IROp i definisce dst.
-     * IR_ADD=0, IR_SUB=1, IR_MUL=2, IR_DIV=3, IR_MOD=4,
-     * IR_NEG=5, IR_NOT=6,
-     * IR_LT=7, IR_LE=8, IR_GT=9, IR_GE=10, IR_EQ=11, IR_NE=12,
-     * IR_ASSIGN=13, IR_LOAD_ARR=14, IR_STORE_ARR=15(no),
-     * IR_PARAM=16(no), IR_CALL=17, IR_RETURN=18(no),
-     * IR_GOTO=19(no), IR_IF_FALSE=20(no), IR_LABEL=21(no)
-     */
-    static const uint32_t DEFINES_DST_MASK =
-        (1u << IR_ADD)      | (1u << IR_SUB)  | (1u << IR_MUL)  |
-        (1u << IR_DIV)      | (1u << IR_MOD)  | (1u << IR_NEG)  |
-        (1u << IR_NOT)      | (1u << IR_LT)   | (1u << IR_LE)   |
-        (1u << IR_GT)       | (1u << IR_GE)   | (1u << IR_EQ)   |
-        (1u << IR_NE)       | (1u << IR_ASSIGN)                  |
-        (1u << IR_LOAD_ARR) | (1u << IR_CALL);
-
-    return (op < 32) && ((DEFINES_DST_MASK >> op) & 1u);
-}
-
-int liveness_is_var_or_temp(OperandKind kind) {
-    return kind == OPND_VAR || kind == OPND_TEMP;
-}

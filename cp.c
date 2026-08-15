@@ -97,64 +97,45 @@ static void cp_run_dataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
     }
 }
 
-/* ---- Folding binario costante (usato nella riscrittura) ---------------- */
+/* ---- Folding binario costante (usato nella riscrittura) ----------------
+ *
+ * Gestisce la promozione int→float qui (responsabilità locale), poi
+ * delega il kernel aritmetico a foldBinaryInt/foldBinaryFloat di constmap.
+ * Lo switch sui casi dell'operazione vive solo in constmap.c.
+ * ----------------------------------------------------------------------- */
 static int cp_fold_binary_instr(IRInstr *in, const Operand *ns1, const Operand *ns2) {
     int floatOp = (ns1->kind == OPND_CONST_FLOAT || ns2->kind == OPND_CONST_FLOAT);
-    int ok = 1;
-    int resultInt = 0;
-    float resultFloat = 0.0f;
+    IROp origOp = in->op;
 
     if (floatOp) {
-        float a = (ns1->kind == OPND_CONST_INT) ? (float)ns1->data.intVal : ns1->data.floatVal;
-        float b = (ns2->kind == OPND_CONST_INT) ? (float)ns2->data.intVal : ns2->data.floatVal;
-        switch (in->op) {
-            case IR_ADD: resultFloat = a + b; break;
-            case IR_SUB: resultFloat = a - b; break;
-            case IR_MUL: resultFloat = a * b; break;
-            case IR_DIV: if (b == 0.0f) ok = 0; else resultFloat = a / b; break;
-            case IR_LT:  resultFloat = (float)(a <  b); break;
-            case IR_LE:  resultFloat = (float)(a <= b); break;
-            case IR_GT:  resultFloat = (float)(a >  b); break;
-            case IR_GE:  resultFloat = (float)(a >= b); break;
-            case IR_EQ:  resultFloat = (float)(a == b); break;
-            case IR_NE:  resultFloat = (float)(a != b); break;
-            default: ok = 0; break;
+        float a = (ns1->kind == OPND_CONST_INT) ? (float)ns1->data.intVal
+                                                 : ns1->data.floatVal;
+        float b = (ns2->kind == OPND_CONST_INT) ? (float)ns2->data.intVal
+                                                 : ns2->data.floatVal;
+        float result;
+        if (!foldBinaryFloat(origOp, a, b, &result)) return 0;
+
+        in->op   = IR_ASSIGN;
+        in->src2 = noOperand();
+        /* comparazioni float → risultato int (0/1) */
+        if (isComparisonOp(origOp)) {
+            in->src1 = (Operand){ .kind = OPND_CONST_INT,
+                                  .data.intVal = (int)result };
+        } else {
+            in->src1 = (Operand){ .kind = OPND_CONST_FLOAT,
+                                  .data.floatVal = result };
         }
     } else {
         int a = ns1->data.intVal;
         int b = ns2->data.intVal;
-        switch (in->op) {
-            case IR_ADD: resultInt = a + b; break;
-            case IR_SUB: resultInt = a - b; break;
-            case IR_MUL: resultInt = a * b; break;
-            case IR_DIV: if (b == 0) ok = 0; else resultInt = a / b; break;
-            case IR_MOD: if (b == 0) ok = 0; else resultInt = a % b; break;
-            case IR_LT:  resultInt = (a <  b); break;
-            case IR_LE:  resultInt = (a <= b); break;
-            case IR_GT:  resultInt = (a >  b); break;
-            case IR_GE:  resultInt = (a >= b); break;
-            case IR_EQ:  resultInt = (a == b); break;
-            case IR_NE:  resultInt = (a != b); break;
-            default: ok = 0; break;
-        }
-    }
+        int result;
+        if (!foldBinaryInt(origOp, a, b, &result)) return 0;
 
-    if (!ok) return 0;
-
-    IROp origOp = in->op;
-    in->op = IR_ASSIGN;
-    if (floatOp && (origOp == IR_LT || origOp == IR_LE || origOp == IR_GT ||
-                    origOp == IR_GE || origOp == IR_EQ || origOp == IR_NE)) {
-        in->src1.kind = OPND_CONST_INT;
-        in->src1.data.intVal = (int)resultFloat;
-    } else if (floatOp) {
-        in->src1.kind = OPND_CONST_FLOAT;
-        in->src1.data.floatVal = resultFloat;
-    } else {
-        in->src1.kind = OPND_CONST_INT;
-        in->src1.data.intVal = resultInt;
+        in->op   = IR_ASSIGN;
+        in->src1 = (Operand){ .kind = OPND_CONST_INT,
+                              .data.intVal = result };
+        in->src2 = noOperand();
     }
-    in->src2 = noOperand();
     return 1;
 }
 

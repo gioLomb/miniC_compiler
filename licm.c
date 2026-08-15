@@ -28,7 +28,7 @@ static int *countDefsInLoop(IRFunction *f, Loop *L, VarMap *vm,
         int b = L->body[i];
         for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!liveness_defines_dst(in->op) || !liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!ir_DefinesDst(in->op) || !ir_OperandIsStorage(in->dst.kind)) continue;
             int id = varmap_operand_id(vm, in->dst);
             if (id >= 0) defCount[id]++;
         }
@@ -40,13 +40,13 @@ static int *countDefsInLoop(IRFunction *f, Loop *L, VarMap *vm,
 
 static int singleLoopDefInvariant(IRFunction *f, Loop *L, Operand op,
                                    const char *invariant) {
-    if (!liveness_is_var_or_temp(op.kind)) return -1;
+    if (!ir_OperandIsStorage(op.kind)) return -1;
     int found = -1;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
         for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!liveness_defines_dst(in->op)) continue;
+            if (!ir_DefinesDst(in->op)) continue;
             if (in->dst.kind != op.kind) continue;
             if (op.kind == OPND_VAR &&
                 (in->dst.data.varLevel  != op.data.varLevel ||
@@ -63,7 +63,7 @@ static int srcIsInvariant(IRFunction *f, Loop *L, Operand src,
                            const int *defCount, VarMap *vm, const char *invariant) {
     if (src.kind == OPND_CONST_INT || src.kind == OPND_CONST_FLOAT ||
         src.kind == OPND_NONE) return 1;
-    if (!liveness_is_var_or_temp(src.kind)) return 0;
+    if (!ir_OperandIsStorage(src.kind)) return 0;
     int id = varmap_operand_id(vm, src);
     if (id < 0 || defCount[id] == 0) return 1;
     if (defCount[id] == 1) return singleLoopDefInvariant(f, L, src, invariant) >= 0;
@@ -103,8 +103,8 @@ static void findInvariants(IRFunction *f, Loop *L, VarMap *vm,
         int b = L->body[i];
         for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!isPure(in->op) || !liveness_defines_dst(in->op) ||
-                !liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!isPure(in->op) || !ir_DefinesDst(in->op) ||
+                !ir_OperandIsStorage(in->dst.kind)) continue;
 
             Operand srcs[2] = { in->src1, in->src2 };
             for (int s = 0; s < 2; s++) {
@@ -247,7 +247,7 @@ int licm_optimize(IRFunction *f) {
     if (nLoops == 0) { arena_destroy(arena); return 0; }
 
     Arena         *livArena = arena_create(0);
-    LivenessResult  liv     = liveness_compute_ir(f, NULL, livArena);
+    LivenessResult  liv     = liveness_computeIr(f, NULL, livArena);
     int totalMoved = 0;
 
     for (int l = 0; l < nLoops; l++) {
@@ -269,7 +269,7 @@ int licm_optimize(IRFunction *f) {
             varmap_destroy(&liv.varMap);
             arena_destroy(livArena);
             livArena = arena_create(0);
-            liv = liveness_compute_ir(f, NULL, livArena);
+            liv = liveness_computeIr(f, NULL, livArena);
         }
     }
 

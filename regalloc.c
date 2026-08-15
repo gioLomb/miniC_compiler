@@ -204,7 +204,7 @@ static void regalloc_function(MachFunction *f)
         BasicBlock *blocks = build_cfg(f, &nBlocks);
 
         Arena *livArena = arena_create(0);
-        LivenessResult liv = liveness_compute_mach(f, blocks, nBlocks, livArena);
+        LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, livArena);
 
         IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter, livArena);
 

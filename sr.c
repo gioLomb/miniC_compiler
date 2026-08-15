@@ -61,7 +61,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
         int b = L->body[i];
         for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!liveness_defines_dst(in->op)) continue;
+            if (!ir_DefinesDst(in->op)) continue;
             int id = varmap_operand_id(vm, in->dst);
             if (id >= 0) defCount[id]++;
         }
@@ -76,7 +76,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
 
             /* cerca pattern: dst = dst ± CONST, unica def nel loop */
             if (in->op != IR_ADD && in->op != IR_SUB)          continue;
-            if (!liveness_is_var_or_temp(in->dst.kind))        continue;
+            if (!ir_OperandIsStorage(in->dst.kind))        continue;
             if (!sameOperand(in->dst, in->src1))               continue;
             if (in->src2.kind != OPND_CONST_INT)               continue;
 
@@ -113,7 +113,7 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
             const IRInstr *in = &f->instrs[j];
 
             if (in->op != IR_MUL) continue;
-            if (!liveness_is_var_or_temp(in->dst.kind)) continue;
+            if (!ir_OperandIsStorage(in->dst.kind)) continue;
 
             for (int v = 0; v < ivarCount; v++) {
                 InductionBase *iv = &ivars[v];
@@ -301,7 +301,7 @@ int sr_optimize(IRFunction *f) {
     if (nLoops == 0) { arena_destroy(arena); return 0; }
 
     Arena         *livArena = arena_create(0);
-    LivenessResult  liv     = liveness_compute_ir(f, NULL, livArena);
+    LivenessResult  liv     = liveness_computeIr(f, NULL, livArena);
     VarMap         *vm      = &liv.varMap;
 
     /* calcola nextTemp in un unico scan su tutte le istruzioni */

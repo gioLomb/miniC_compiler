@@ -24,7 +24,7 @@
 
 #include "parser/ast.h"
 #include "block.h"
-
+#include <stdlib.h>
 /** Initial capacity for the instruction array of a new IRFunction. */
 #define IR_INITIAL_CAPACITY 64
 
@@ -135,7 +135,7 @@ typedef struct {
  *   - IR_IF_FALSE:      src1 is condition; dst is the target label
  *   - IR_LABEL:         dst carries the label id; src1/src2 unused
  *
- * loopDepth is stamped by irStmt when entering/leaving ND_WHILE nodes and
+ * loopDepth is stamped by ir_emitStmt when entering/leaving ND_WHILE nodes and
  * propagated intact through SVN/DCE/CP.  LICM and SR update it explicitly
  * for instructions they hoist or insert.  The register allocator uses it
  * to compute spill costs as 10^loopDepth, favouring keeping hot variables
@@ -239,5 +239,26 @@ void ir_print(const IRProgram *prog);
  * @param prog Program to destroy; may be NULL (no-op).
  */
 void ir_free(IRProgram *prog);
+
+/* =========================================================================
+ * IR-front-end predicates
+ * ========================================================================= */
+
+/**
+ * @brief Return non-zero if opcode @p op defines its destination operand.
+ *
+ * Uses a bitmask for O(1) lookup; opcodes that do not write a dst
+ * (IR_STORE_ARR, IR_PARAM, IR_RETURN, IR_GOTO, IR_IF_FALSE, IR_LABEL)
+ * are absent from the mask.
+ */
+int ir_DefinesDst(IROp op);
+
+/**
+ * @brief Return non-zero if operand kind @p kind is a tracked variable or temp.
+ *
+ * Only OPND_VAR and OPND_TEMP contribute to the liveness sets; constants,
+ * labels, and function names are transparent to the dataflow.
+ */
+int ir_OperandIsStorage(OperandKind kind);
 
 #endif /* IR_H */
