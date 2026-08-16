@@ -331,25 +331,4 @@ LivenessResult liveness_computeMach(const MachFunction *f,
                                       const BasicBlock *blocks,
                                       int nBlocks, Arena *arena);
 
-/* =========================================================================
- * IR-front-end predicates
- * ========================================================================= */
-
-/**
- * @brief Return non-zero if opcode @p op defines its destination operand.
- *
- * Uses a bitmask for O(1) lookup; opcodes that do not write a dst
- * (IR_STORE_ARR, IR_PARAM, IR_RETURN, IR_GOTO, IR_IF_FALSE, IR_LABEL)
- * are absent from the mask.
- */
-int ir_DefinesDst(IROp op);
-
-/**
- * @brief Return non-zero if operand kind @p kind is a tracked variable or temp.
- *
- * Only OPND_VAR and OPND_TEMP contribute to the liveness sets; constants,
- * labels, and function names are transparent to the dataflow.
- */
-int ir_OperandIsStorage(OperandKind kind);
-
 #endif

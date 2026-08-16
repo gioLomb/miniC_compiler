@@ -2,7 +2,7 @@
 #define RA_COLOR_H
 
 #include "interference.h"
-
+#include "bucket.h"
 /*
  * Chaitin-Briggs graph coloring: Simplify + Select.
  *

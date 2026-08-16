@@ -39,16 +39,16 @@
  * Internal structure
  * ------------------
  *  cp_build_varmap          — assign compact int ids to all operands
- *  cp_run_dataflow          — forward fixed-point loop filling In[]/Out[]
+ *  cp_runForwardDataflow    — forward fixed-point loop filling In[]/Out[]
  *  cp_rewrite_block         — rewrite + CFG prune one block using In[b]
  *  cp_sweep                 — compact instruction array, update block ranges
  *  cp_optimize              — public entry point, orchestrates the above
  *
  * Helper delegation:
- *  transferInstr            — in-place ConstMap update for one instruction
- *  cp_fold_binary_instr     — int/float binary constant fold with promotion
- *  is_jump_to_next          — detect GOTO/IF_FALSE → immediately next instr
- *  mark_unreferenced_labels — find IR_LABEL nodes with no referencing jump
+ *  cp_transfer              — in-place ConstMap update for one instruction
+ *  cp_foldBinary            — int/float binary constant fold with promotion
+ *  cp_isRedundantJump       — detect GOTO/IF_FALSE → immediately next instr
+ *  cp_markOrphanLabels      — find IR_LABEL nodes with no referencing jump
  */
 
 #include <stdlib.h>
@@ -97,7 +97,7 @@ static inline int operand_equal(const Operand *a, const Operand *b) {
  * Non-defining opcodes (IR_PARAM, IR_GOTO, IR_IF_FALSE, IR_STORE_ARR,
  * IR_RETURN, IR_LABEL) have no effect on the map.
  */
-static void transferInstr(const IRInstr *in, ConstMap *map, VarMap *vm) {
+static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
     int id = varmap_operand_id(vm, in->dst);
     if (id < 0 || id >= map->size) return; // dst not a tracked storage location
 
@@ -176,8 +176,8 @@ static void cp_build_varmap(IRFunction *f, VarMap *vm) {
  * @param numVars Total number of tracked variable ids (== vm->nextId).
  * @param vm      VarMap for operand-to-id translation.
  */
-static void cp_run_dataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
-                             ConstMap *tmp, int numVars, VarMap *vm) {
+static void cp_runForwardDataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
+                                  ConstMap *tmp, int numVars, VarMap *vm) {
     (void)numVars;
     int nBlocks = f->blockCount;
     int changed = 1;
@@ -204,7 +204,7 @@ static void cp_run_dataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
             // compute new Out[b] = transfer(In[b]) into tmp
             constMap_copy(tmp, &In[b]);
             for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
-                transferInstr(&f->instrs[i], tmp, vm);
+                cp_transfer(&f->instrs[i], tmp, vm);
 
             // if Out[b] changed, record it and keep iterating
             if (!constMap_equal(&Out[b], tmp)) {
@@ -236,7 +236,7 @@ static void cp_run_dataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
  *
  * @return 1 if folding succeeded, 0 otherwise.
  */
-static int cp_fold_binary_instr(IRInstr *in, const Operand *ns1, const Operand *ns2) {
+static int cp_foldBinary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
     int floatOp = (ns1->kind == OPND_CONST_FLOAT || ns2->kind == OPND_CONST_FLOAT);
     IROp origOp = in->op;
 
@@ -282,7 +282,7 @@ static int cp_fold_binary_instr(IRInstr *in, const Operand *ns1, const Operand *
  * CFG edge removed.  We detect this by checking whether the instruction
  * at idx+1 is an IR_LABEL with the same labelId as the jump target.
  */
-static int is_jump_to_next(IRFunction *f, int idx) {
+static int cp_isRedundantJump(IRFunction *f, int idx) {
     if (idx + 1 >= f->count) return 0;
     IRInstr *in = &f->instrs[idx];
     if (in->op != IR_GOTO && in->op != IR_IF_FALSE) return 0;
@@ -313,7 +313,7 @@ static int is_jump_to_next(IRFunction *f, int idx) {
  *                  orphan labels are set to 1.
  * @return          Number of labels newly marked for elimination.
  */
-static int mark_unreferenced_labels(IRFunction *f, char *eliminate) {
+static int cp_markOrphanLabels(IRFunction *f, char *eliminate) {
     int count = 0;
     // referenced[j] = 1 if instr j is an IR_LABEL targeted by some jump
     char *referenced = calloc((size_t)f->count, 1);
@@ -382,7 +382,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
         IRInstr *in = &f->instrs[i];
 
         /* ---- 1. Jump-to-next elimination ---- */
-        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && is_jump_to_next(f, i)) {
+        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && cp_isRedundantJump(f, i)) {
             // the jumped-to block loses this predecessor
             int s = (in->op == IR_GOTO)
                     ? f->blocks[b].bb.succ[0]
@@ -399,7 +399,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
             }
             eliminate[i] = 1;
             modified = 1;
-            transferInstr(in, &live, vm); // still advance the map
+            cp_transfer(in, &live, vm); // still advance the map
             continue;
         }
 
@@ -433,7 +433,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
                 in->src1 = cond;
                 modified = 1;
             }
-            transferInstr(in, &live, vm);
+            cp_transfer(in, &live, vm);
             continue;
         }
 
@@ -455,11 +455,11 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
 
             if ((ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
                 (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
-                modified |= cp_fold_binary_instr(in, &ns1, &ns2);
+                modified |= cp_foldBinary(in, &ns1, &ns2);
             }
         }
 
-        transferInstr(in, &live, vm); // advance local map past this instruction
+        cp_transfer(in, &live, vm); // advance local map past this instruction
     }
 
     return modified;
@@ -529,7 +529,7 @@ int cp_optimize(IRFunction *f) {
     }
 
     /* Pass 3: forward dataflow */
-    cp_run_dataflow(f, In, Out, &tmp, numVars, &vm);
+    cp_runForwardDataflow(f, In, Out, &tmp, numVars, &vm);
 
     /* Pass 4: rewrite + CFG pruning */
     int modified = 0;
@@ -541,7 +541,7 @@ int cp_optimize(IRFunction *f) {
         modified |= cp_rewrite_block(f, b, In, eliminate, &vm, arena);
 
     // orphan labels left after CFG pruning can be removed safely
-    modified |= (mark_unreferenced_labels(f, eliminate) > 0);
+    modified |= (cp_markOrphanLabels(f, eliminate) > 0);
 
     /* Pass 5: sweep — only if something was marked for elimination */
     if (modified)

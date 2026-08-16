@@ -1,72 +1,94 @@
+/**
+ * @file bucket.c
+ * @brief Degree-indexed bucket list — implementation.
+ *
+ * All storage is allocated from a module-level arena created by
+ * buckets_create() and released by buckets_free().  The arena avoids
+ * per-array malloc/free pairs and guarantees a single contiguous
+ * allocation for the lifetime of one register-allocation round.
+ */
+
 #include "bucket.h"
 #include "arena.h"
 #include <string.h>
 
-/* Arena globale privata al modulo bucket */
-static Arena *s_bucket_arena = NULL;
+/* =========================================================================
+ * Module-level arena
+ * =========================================================================
+ * Owns the memory for head[], next[], prev[], and inBucket[].
+ * Only one Buckets instance may be live at a time; buckets_create()
+ * enforces this by destroying any leftover arena before creating a new one.
+ * ========================================================================= */
+static Arena *s_arena = NULL;
+
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
 
 Buckets buckets_create(int nextVreg, int k) {
-    /* Se per qualche motivo l'arena esiste ancora, la distruggiamo
-       per garantire uno stato pulito (non dovrebbe accadere se
-       buckets_free viene chiamata correttamente) */
-    if (s_bucket_arena) {
-        arena_destroy(s_bucket_arena);
-        s_bucket_arena = NULL;
+    // Destroy any leftover arena from a previous (incorrectly unpaired) call.
+    if (s_arena) {
+        arena_destroy(s_arena);
+        s_arena = NULL;
     }
-
-    s_bucket_arena = arena_create(0);
+    s_arena = arena_create(0);
 
     Buckets b;
     b.k        = k;
     b.nonempty = 0;
 
-    int n = (nextVreg > 0) ? nextVreg : 1;
+    int nodesNum = (nextVreg > 0) ? nextVreg : 1;   // guard against zero-size allocation
 
-    b.head     = arena_alloc(s_bucket_arena, (size_t)k * sizeof(int));
-    memset(b.head, -1, (size_t)k * sizeof(int));
+    b.head = arena_alloc(s_arena, (size_t)k * sizeof(int));
+    memset(b.head, -1, (size_t)k * sizeof(int));   // -1 = empty sentinel for each bucket
 
-    b.bnext    = arena_alloc(s_bucket_arena, (size_t)n * sizeof(int));
-    b.bprev    = arena_alloc(s_bucket_arena, (size_t)n * sizeof(int));
-    b.inBucket = arena_alloc(s_bucket_arena, (size_t)n * sizeof(int));
-    memset(b.inBucket, 0, (size_t)n * sizeof(int));
+    b.next     = arena_alloc(s_arena, (size_t)nodesNum * sizeof(int));
+    b.prev     = arena_alloc(s_arena, (size_t)nodesNum * sizeof(int));
+    b.inBucket = arena_alloc(s_arena, (size_t)nodesNum * sizeof(int));
+    memset(b.inBucket, 0, (size_t)nodesNum * sizeof(int));
 
     return b;
 }
 
 void buckets_free(Buckets *b) {
-    (void)b; /* parametro mantenuto per coerenza con l'uso esterno */
-    if (s_bucket_arena) {
-        arena_destroy(s_bucket_arena);
-        s_bucket_arena = NULL;
+    (void)b;   // arrays are owned by s_arena; the parameter exists for API symmetry
+    if (s_arena) {
+        arena_destroy(s_arena);
+        s_arena = NULL;
     }
 }
 
-void bucket_insert(Buckets *b, int v, int d) {
-    b->bprev[v]  = -1;
-    b->bnext[v]  = b->head[d];
-    if (b->head[d] >= 0)
-        b->bprev[b->head[d]] = v;
-    b->head[d]   = v;
-    b->inBucket[v] = 1;
-    b->nonempty |= (1u << d);
+void bucket_insert(Buckets *b, int node, int degree) {
+    // Prepend node to the doubly-linked list of bucket degree.
+    b->prev[node] = -1;
+    b->next[node] = b->head[degree];
+    if (b->head[degree] >= 0)
+        b->prev[b->head[degree]] = node;   // update old head's back-pointer
+    b->head[degree]     = node;
+    b->inBucket[node]   = 1;
+    b->nonempty        |= (1u << degree);  // mark bucket degree as non-empty
 }
 
-void bucket_remove(Buckets *b, int v, int d) {
-    if (b->bprev[v] >= 0)
-        b->bnext[b->bprev[v]] = b->bnext[v];
+void bucket_remove(Buckets *b, int node, int degree) {
+    // Unlink node from the doubly-linked list of bucket degree.
+    if (b->prev[node] >= 0)
+        b->next[b->prev[node]] = b->next[node];
     else
-        b->head[d] = b->bnext[v];
+        b->head[degree] = b->next[node];   // node was the head; promote its successor
 
-    if (b->bnext[v] >= 0)
-        b->bprev[b->bnext[v]] = b->bprev[v];
+    if (b->next[node] >= 0)
+        b->prev[b->next[node]] = b->prev[node];
 
-    b->inBucket[v] = 0;
-    if (b->head[d] < 0)
-        b->nonempty &= ~(1u << d);
+    b->inBucket[node] = 0;
+    if (b->head[degree] < 0)
+        b->nonempty &= ~(1u << degree);  // bucket degree is now empty; clear its bit
 }
 
-int bucket_pop_any_low(Buckets *b, int *outD) {
+int bucket_pop_any_low(Buckets *b, int *outDegree) {
     if (!b->nonempty) return -1;
-    *outD = __builtin_ctz(b->nonempty);
-    return b->head[*outD];
+
+    // __builtin_ctz finds the lowest set bit in O(1), giving the minimum-degree
+    // non-empty bucket without scanning all k entries.
+    *outDegree = __builtin_ctz(b->nonempty);
+    return b->head[*outDegree];
 }
