@@ -989,6 +989,12 @@ int ir_DefinesDst(IROp op) {
     return (op < 32) && ((DEFINES_DST_MASK >> op) & 1u);
 }
 
+int ir_isCommutative(IROp op) {
+    static const unsigned int mask =
+        (1U << IR_ADD) | (1U << IR_MUL) | (1U << IR_EQ) | (1U << IR_NE);
+    return (mask >> op) & 1U;
+}
+
 int ir_OperandIsStorage(OperandKind kind) {
     return kind == OPND_VAR || kind == OPND_TEMP;
 }

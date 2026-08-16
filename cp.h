@@ -1,38 +1,89 @@
+/**
+ * @file cp.h
+ * @brief Constant Propagation + CFG Pruning on the linear IR.
+ *
+ * This pass combines two tightly coupled transformations that are most
+ * effective when run together:
+ *
+ * Constant Propagation
+ * --------------------
+ * Tracks, for every variable and temporary, whether it holds a single
+ * known constant value on ALL paths that reach a given program point.
+ * Uses a three-element lattice per variable:
+ *
+ *   LAT_UNKNOWN  (⊤) — no assignment has been seen yet (initial state)
+ *   LAT_CONST       — every reaching definition assigns the same constant
+ *   LAT_CONFLICT (⊥) — two or more different values reach this point
+ *
+ * Meet operator at join points: UNKNOWN meet X = X; CONST(a) meet CONST(b)
+ * = CONST(a) if a==b else CONFLICT; CONFLICT meet anything = CONFLICT.
+ * Values only descend in the lattice, guaranteeing termination.
+ *
+ * After the forward dataflow reaches a fixed point, every variable use
+ * that maps to LAT_CONST is replaced inline with the constant value.
+ * Binary and unary operations whose operands are both constant after
+ * substitution are further folded into a single IR_ASSIGN.
+ *
+ * CFG Pruning
+ * -----------
+ * Two structural simplifications that eliminate dead control-flow edges:
+ *
+ *  - IR_IF_FALSE with a constant condition is replaced by IR_GOTO (branch
+ *    always taken) or deleted (branch never taken); the unreachable
+ *    successor's predCount is decremented.
+ *
+ *  - GOTO / IF_FALSE that targets the immediately following instruction
+ *    (jump-to-next) is deleted; it contributes no reachable edge.
+ *
+ *  - IR_LABEL nodes that no remaining jump references are deleted (they
+ *    become orphans after CFG pruning removes their referencing jumps).
+ *
+ * Integration
+ * -----------
+ * cp_optimize() returns 1 if it modified the IR, 0 otherwise.  The caller
+ * (ir_buildFunction in ir.c) runs CP and DCE in a loop until both return 0,
+ * because constant folding can expose new dead code, and DCE can expose
+ * new constants by removing conflicting definitions.
+ *
+ * Dependencies: constmap.h (lattice + ConstMap), varmap.h (operand ids),
+ *               arena.h (all dataflow storage), ir.h (IRFunction).
+ */
+
 #ifndef CP_H
 #define CP_H
 
 #include "ir.h"
 
-/*
- * Constant Propagation + CFG Pruning sull'IR lineare.
+/**
+ * @brief Run constant propagation and CFG pruning on a single IR function.
  *
- * Usa il framework delle Reaching Definitions in versione semplificata:
- * per ogni variabile/temporaneo, traccia se ha un unico valore costante
- * noto su TUTTI i cammini che raggiungono un dato punto (must-be-constant),
- * oppure se il suo valore e' indeterminato (piu' definizioni diverse la
- * raggiungono) o ignoto (nessuna definizione costante la raggiunge).
+ * Executes five internal passes in sequence:
  *
- * Algoritmo (forward dataflow, iterativo a punto fisso):
- *   - Ogni blocco ha una ConstMap in ingresso (In) e in uscita (Out).
- *   - In[b] = meet di tutti i Out[pred(b)]: se tutti i predecessori
- *     concordano su un valore costante per una variabile, In[b] la
- *     conosce come costante; se almeno uno discorda, la marca come
- *     indeterminata (TOP -> costante -> BOTTOM).
- *   - Out[b] = In[b] aggiornato dalle istruzioni del blocco: un
- *     IR_ASSIGN con sorgente costante propaga la costante; qualunque
- *     altra definizione azzera la costante per quella variabile.
- *   - Converge perche' i valori scendono nella reticolo (da TOP a
- *     costante, da costante a BOTTOM) e non risalgono mai.
+ *  1. Build VarMap — assign a compact integer id to every distinct
+ *     variable and temporary that appears in @p f.
  *
- * Dopo la convergenza, ogni istruzione che legge una variabile con
- * valore costante noto viene riscritta sostituendo la variabile con
- * la costante inline. Se una IR_IF_FALSE legge una condizione costante,
- * viene sostituita con IR_GOTO (ramo preso) o rimossa (ramo non preso),
- * e succ[]/predCount del CFG vengono aggiornati (CFG Pruning).
+ *  2. Allocate ConstMaps — one In[b] and one Out[b] per basic block,
+ *     all initialised to LAT_UNKNOWN (⊤).
  *
- * Restituisce 1 se l'IR e' stato modificato (per il ciclo a punto
- * fisso esterno in ir_buildFunction()), 0 altrimenti.
+ *  3. Forward dataflow — iterate until no Out[b] changes:
+ *       In[b]  = meet of Out[p] for all CFG predecessors p of b
+ *       Out[b] = transfer function applied to In[b] over b's instructions
+ *
+ *  4. Rewrite — scan each block with a local copy of In[b]:
+ *       - substitute variable uses with known constants
+ *       - fold binary/unary instructions whose operands became constant
+ *       - prune IR_IF_FALSE and jump-to-next edges from the CFG
+ *       - mark eliminated instructions in an eliminate[] boolean array
+ *
+ *  5. Sweep — compact f->instrs by removing eliminated instructions;
+ *     update block [start, end) ranges to match the new positions.
+ *
+ * All dataflow storage (ConstMaps, VarMap backing) is allocated from a
+ * temporary arena that is destroyed before returning.
+ *
+ * @param f  IR function to optimise (modified in place).
+ * @return   1 if @p f was modified, 0 if the IR was already at fixed point.
  */
 int cp_optimize(IRFunction *f);
 
-#endif
+#endif /* CP_H */

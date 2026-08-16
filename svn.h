@@ -1,62 +1,77 @@
+/**
+ * @file svn.h
+ * @brief Superlocal Value Numbering (SVN) optimisation pass on the linear IR.
+ *
+ * SVN assigns a compact integer *value number* to each IR operand and
+ * expression, then rewrites every re-computation of an already-seen
+ * expression as a plain copy:
+ *
+ *   t1 = a + b
+ *   ...
+ *   t2 = a + b   →   t2 = t1
+ *
+ * "Already seen" is defined along an *Extended Basic Block* (EBB): a
+ * maximal chain of basic blocks where every block (except the first) has
+ * exactly one predecessor.  Along such a chain every block is guaranteed
+ * to have been executed before its successor, so a value computed earlier
+ * is still valid later.  At a *join point* (a block with more than one
+ * incoming edge) the chain is broken and a fresh scope is started, because
+ * different predecessors may not have computed the same expressions.
+ *
+ * Scope stacking ("sheaf of tables")
+ * ------------------------------------
+ * Each block along an EBB pushes a new SVNScope on entry and pops it on
+ * exit.  Lookups walk the stack from innermost to outermost, so values
+ * defined in a dominating block are visible in dominated successors without
+ * copying.  On scope pop, the child scope is destroyed; the parent scope
+ * is never mutated, preserving the invariant that a sibling EBB branch
+ * sees only the values available at the join point.
+ *
+ * The stale-leader problem
+ * ------------------------
+ * Because irExprInto() can write an expression result directly into a
+ * named variable (not only into a fresh temporary), the same variable may
+ * serve as the *leader* (canonical name) for a value and later be
+ * overwritten.  Invalidating the leader eagerly on reassignment would
+ * require mutating parent scopes and break the sheaf invariant.  Instead,
+ * every candidate leader is validated lazily at the point of use via
+ * svn_leaderStillValid(): the variable's current value number is looked up and
+ * compared to the number for which it was registered.  Temporaries are
+ * immune — they are written exactly once by construction.
+ *
+ * Known limitations (missed optimisations, not correctness issues)
+ * -----------------------------------------------------------------
+ * - IR_LOAD_ARR and IR_CALL are never memoised.  Array loads require alias
+ *   analysis to rule out intervening IR_STORE_ARR; calls may have
+ *   side-effects or return different values on each invocation.
+ * - At most SVN_MAX_NAMES names are tracked per value number.  Excess names
+ *   are silently dropped (no incorrect code is produced).
+ * - Copies introduced by SVN ("t2 = t1") are not further propagated here;
+ *   that is deferred to the CP pass.
+ *
+ * svn_optimize() is called by ir_buildFunction() immediately after CFG
+ * construction and before any other pass.
+ */
+
 #ifndef SVN_H
 #define SVN_H
 
 #include "ir.h"
 
-/*
- * Superlocal Value Numbering (SVN) sull'IR lineare, eseguita da
- * ir_generate() subito dopo la costruzione del CFG di ogni funzione
- * (vedi resolveCFG()/ir_buildFunction() in ir.c). Riconosce e riscrive come
- * semplice copia ogni ricalcolo di un'espressione gia' vista lungo lo
- * stesso cammino di esecuzione:
+/**
+ * @brief Run Superlocal Value Numbering on every EBB of function @p f.
  *
- *     t1 = a + b
- *     ...
- *     t2 = a + b        ->   t2 = t1
+ * Walks the CFG starting from the entry block (index 0).  Blocks that
+ * belong to an EBB (predCount == 1) are visited recursively within the
+ * same scope chain; join points (predCount > 1) restart a fresh top-level
+ * scope.  Already-visited blocks are skipped via a visited[] flag.
  *
- * "Stesso cammino" e' l'estensione di un blocco base (EBB, Extended
- * Basic Block): la visita segue senza interruzioni ogni catena di
- * blocchi con un solo predecessore, e riparte da zero (nessuna
- * conoscenza ereditata) ad ogni punto di confluenza - un blocco con
- * piu' di un arco entrante puo' essere raggiunto da cammini diversi, che
- * potrebbero non aver eseguito la stessa espressione, quindi propagare
- * lì un valore visto su un solo ramo sarebbe scorretto.
+ * The pass rewrites @p f->instrs in place: no new instructions are added,
+ * but the opcode and operands of redundant computations are replaced with
+ * IR_ASSIGN from the leader temporary.
  *
- * Il problema del leader stantio (perche' serve un controllo di
- * validita' AL MOMENTO DELL'USO, non solo alla creazione)
- * ---------------------------------------------------------------------
- * Con la generazione a destinazione diretta (ir_emitExprInto), il risultato
- * di un'espressione puo' finire direttamente in una variabile con nome,
- * non solo in un temporaneo ("cane = a+b" scrive "cane", non un "t").
- * Se quella variabile viene registrata come "leader" del valore a+b, e
- * piu' avanti lungo lo stesso EBB viene riassegnata ("cane = 99;"), il
- * leader registrato punterebbe a una variabile che non contiene piu'
- * quel valore. I temporanei non hanno questo problema (assegnati una
- * volta sola per costruzione); le variabili si'.
- *
- * La soluzione qui NON e' invalidare il leader alla riassegnazione
- * (mutare la lista di nomi di uno scope antenato romperebbe l'invariante
- * "sheaf": un ramo fratello non ancora esplorato vedrebbe un cambiamento
- * che non gli appartiene). Ogni nome resta nella sua lista per sempre;
- * viene scartato per filtraggio, a costo zero, nel momento in cui
- * servirebbe come leader (nameStillValid/findValidLeader), confrontando
- * il valore CORRENTE della variabile (da 'values', gia' scoping-aware)
- * con il valore per cui era stata registrata.
- *
- * Limiti noti (occasioni mancate, non bug di correttezza)
- * ---------------------------------------------------------------------
- * - IR_LOAD_ARR e IR_CALL non vengono mai memoizzate: senza analisi
- *   degli alias, due arr[i] non sono provatamente lo stesso valore se in
- *   mezzo c'e' una IR_STORE_ARR (anche su un array diverso, staticamente
- *   indistinguibile qui); una IR_CALL puo' avere effetti collaterali o
- *   restituire valori diversi a ogni chiamata. Entrambe ricevono un
- *   numero di valore fresco, mai riusabile altrove.
- * - Al massimo SVN_MAX_NAMES nomi tracciati per valore (vedi svn.c):
- *   oltre quel numero, l'unificazione su nomi aggiuntivi viene persa
- *   silenziosamente (nessun rischio di scorrettezza).
- * - La copia introdotta ("t2 = t1") non viene ulteriormente propagata:
- *   la copy propagation e' rimandata a un passo successivo.
+ * @param f IR function to optimise (modified in place).
  */
 void svn_optimize(IRFunction *f);
 
-#endif
+#endif /* SVN_H */

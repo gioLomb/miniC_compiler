@@ -261,4 +261,5 @@ int ir_DefinesDst(IROp op);
  */
 int ir_OperandIsStorage(OperandKind kind);
 
+int ir_isCommutative(IROp op);
 #endif /* IR_H */

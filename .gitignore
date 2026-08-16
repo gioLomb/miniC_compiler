@@ -4,3 +4,6 @@ build/*
 build/
 optimizations.txt
 errorCollector.txt
+theory/*
+theory/
+all.txt
