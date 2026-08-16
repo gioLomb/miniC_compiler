@@ -40,12 +40,12 @@
  * transferInstr() to evaluate whether an instruction produces a constant
  * result and, if so, what value:
  *
- *   lat_getValueFromOperand — lift an Operand to a LatVal (inline constants or map lookup)
- *   isBinaryOp      — predicate: opcode takes two operands and produces a value
- *   isComparisonOp  — predicate: opcode is a relational comparison
- *   foldBinaryInt   — constant-fold a binary integer operation
- *   foldBinaryFloat — constant-fold a binary float operation
- *   foldUnary       — constant-fold NEG or NOT
+ *   lat_get_value_from_operand — lift an Operand to a LatVal (inline constants or map lookup)
+ *   is_binary_op      — predicate: opcode takes two operands and produces a value
+ *   is_comparison_op  — predicate: opcode is a relational comparison
+ *   fold_binary_int   — constant-fold a binary integer operation
+ *   fold_binary_float — constant-fold a binary float operation
+ *   fold_unary       — constant-fold NEG or NOT
  */
 
 #ifndef CONSTMAP_H
@@ -92,10 +92,10 @@ typedef struct {
 LatVal lat_unknown(void);
 
 /** @brief Return a CONST lattice element wrapping the integer @p ival. */
-LatVal lat_setConstInt(int ival);
+LatVal lat_set_const_int(int ival);
 
 /** @brief Return a CONST lattice element wrapping the float @p fval. */
-LatVal lat_setConstFloat(float fval);
+LatVal lat_set_const_float(float fval);
 
 /** @brief Return the CONFLICT (⊥) lattice element. */
 LatVal lat_conflict(void);
@@ -131,13 +131,13 @@ LatVal lat_meet(LatVal a, LatVal b);
 int lat_equal(LatVal a, LatVal b);
 
 /** @brief Return non-zero if @p v is a CONST lattice element. */
-int lat_isConst(LatVal v);
+int lat_is_const(LatVal v);
 
 /** @brief Return non-zero if @p v is the UNKNOWN lattice element. */
-int lat_isUnknown(LatVal v);
+int lat_is_unknown(LatVal v);
 
 /** @brief Return non-zero if @p v is the CONFLICT lattice element. */
-int lat_isConflict(LatVal v);
+int lat_is_conflict(LatVal v);
 
 /* =========================================================================
  * ConstMap — per-variable lattice state
@@ -165,7 +165,7 @@ typedef struct {
  * @param size  Number of entries (should equal VarMap::nextId).
  * @param arena Arena from which @c vals is allocated.
  */
-void constMap_init(ConstMap *m, int size, Arena *arena);
+void const_map_init(ConstMap *m, int size, Arena *arena);
 
 /**
  * @brief Copy all entries from @p src into @p dst (both must have the same size).
@@ -173,7 +173,7 @@ void constMap_init(ConstMap *m, int size, Arena *arena);
  * @param dst  Destination ConstMap (overwritten).
  * @param src  Source ConstMap (unchanged).
  */
-void constMap_copy(ConstMap *dst, const ConstMap *src);
+void const_map_copy(ConstMap *dst, const ConstMap *src);
 
 /**
  * @brief Return non-zero if @p a and @p b have identical lattice values
@@ -185,7 +185,7 @@ void constMap_copy(ConstMap *dst, const ConstMap *src);
  * @param b  Second ConstMap.
  * @return   1 if all entries are equal, 0 otherwise.
  */
-int constMap_equal(const ConstMap *a, const ConstMap *b);
+int const_map_equal(const ConstMap *a, const ConstMap *b);
 
 /**
  * @brief Apply the meet operation entry-wise: dest[i] = meet(dest[i], src[i]).
@@ -196,21 +196,21 @@ int constMap_equal(const ConstMap *a, const ConstMap *b);
  * @param dest  ConstMap updated in place (left operand of meet for each entry).
  * @param src   ConstMap providing the right operand (unchanged).
  */
-void constMap_meet(ConstMap *dest, const ConstMap *src);
+void const_map_meet(ConstMap *dest, const ConstMap *src);
 
 /**
  * @brief Return the lattice value associated with operand @p op.
  *
  * Resolves @p op through @p vm to obtain its variable id, then returns
  * @c m->vals[id].  Returns CONFLICT for operands with no valid id (constants,
- * labels, functions) — the caller should use lat_getValueFromOperand() for those instead.
+ * labels, functions) — the caller should use lat_get_value_from_operand() for those instead.
  *
  * @param m   ConstMap to query.
  * @param op  Operand to look up.
  * @param vm  VarMap providing the operand→id mapping.
  * @return    The current LatVal for @p op, or CONFLICT if not found.
  */
-LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm);
+LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm);
 
 /**
  * @brief If @p op has a known constant value in @p m, return a folded operand.
@@ -225,7 +225,7 @@ LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm);
  * @param vm  VarMap for id resolution.
  * @return    A constant operand if folding succeeded, @p op otherwise.
  */
-Operand constMap_tryFold(Operand op, const ConstMap *m, VarMap *vm);
+Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm);
 
 /* =========================================================================
  * Transfer function helpers
@@ -242,7 +242,7 @@ Operand constMap_tryFold(Operand op, const ConstMap *m, VarMap *vm);
  * Dispatch rules:
  *   - OPND_CONST_INT   → CONST wrapping the inline integer value
  *   - OPND_CONST_FLOAT → CONST wrapping the inline float value
- *   - OPND_VAR / OPND_TEMP → constMap_get() lookup
+ *   - OPND_VAR / OPND_TEMP → const_map_get() lookup
  *   - anything else (label, func, none) → CONFLICT (not a constant source)
  *
  * @param map  Current ConstMap.
@@ -250,7 +250,7 @@ Operand constMap_tryFold(Operand op, const ConstMap *m, VarMap *vm);
  * @param vm   VarMap for variable id resolution.
  * @return     The LatVal representing @p op's current compile-time value.
  */
-LatVal lat_getValueFromOperand(const ConstMap *map, Operand op, VarMap *vm);
+LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm);
 
 /**
  * @brief Return non-zero if @p op is a binary arithmetic or relational opcode.
@@ -258,7 +258,7 @@ LatVal lat_getValueFromOperand(const ConstMap *map, Operand op, VarMap *vm);
  * @param op  IR opcode to test.
  * @return    1 if @p op takes two source operands and produces a value.
  */
-int isBinaryOp(IROp op);
+int is_binary_op(IROp op);
 
 /**
  * @brief Return non-zero if @p op is a relational comparison opcode.
@@ -268,7 +268,7 @@ int isBinaryOp(IROp op);
  * @param op  IR opcode to test.
  * @return    1 if @p op is one of LT, LE, GT, GE, EQ, NE.
  */
-int isComparisonOp(IROp op);
+int is_comparison_op(IROp op);
 
 /**
  * @brief Constant-fold a binary operation on two integer values.
@@ -284,12 +284,12 @@ int isComparisonOp(IROp op);
  * @return     1 if folding succeeded, 0 if the operation cannot be folded
  *             (unsupported opcode or division/modulo by zero).
  */
-int foldBinaryInt(IROp op, int a, int b, int *res);
+int fold_binary_int(IROp op, int a, int b, int *res);
 
 /**
  * @brief Constant-fold a binary operation on two float values.
  *
- * Analogous to foldBinaryInt() but for floating-point operands.
+ * Analogous to fold_binary_int() but for floating-point operands.
  * Float division by zero is guarded the same way as integer division.
  * Comparison opcodes produce a float result of 0.0 or 1.0; the caller is
  * responsible for converting to int when storing a comparison result.
@@ -300,7 +300,7 @@ int foldBinaryInt(IROp op, int a, int b, int *res);
  * @param res  Receives the folded result when the function returns 1.
  * @return     1 if folding succeeded, 0 otherwise.
  */
-int foldBinaryFloat(IROp op, float a, float b, float *res);
+int fold_binary_float(IROp op, float a, float b, float *res);
 
 /**
  * @brief Constant-fold a unary operation (NEG or NOT) on a LatVal.
@@ -312,6 +312,6 @@ int foldBinaryFloat(IROp op, float a, float b, float *res);
  * @param v   Lattice value of the single source operand.
  * @return    A CONST LatVal with the folded result, or CONFLICT on failure.
  */
-LatVal foldUnary(IROp op, LatVal v);
+LatVal fold_unary(IROp op, LatVal v);
 
 #endif /* CONSTMAP_H */

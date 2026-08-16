@@ -4,7 +4,7 @@
  *
  * Algorithm overview (forward dataflow, iterative to fixed point):
  * ----------------------------------------------------------------
- * Each basic block b has an In[b] and Out[b] ConstMap.  A ConstMap
+ * Each basic block b has an in[b] and out[b] ConstMap.  A ConstMap
  * maps every variable/temporary id (from VarMap) to a lattice value:
  *
  *   LAT_UNKNOWN  (⊤) — no definition reaches this point yet
@@ -17,7 +17,7 @@
  *   CONFLICT meet X       = CONFLICT
  *   CONST(a) meet CONST(b) = CONST(a)  if a==b, else CONFLICT
  *
- * Forward transfer function for a block: start from In[b], simulate
+ * Forward transfer function for a block: start from in[b], simulate
  * each instruction updating the map.  IR_ASSIGN of a known constant
  * propagates it; any other definition sets the variable to CONFLICT.
  *
@@ -39,16 +39,16 @@
  * Internal structure
  * ------------------
  *  cp_build_varmap          — assign compact int ids to all operands
- *  cp_runForwardDataflow    — forward fixed-point loop filling In[]/Out[]
- *  cp_rewrite_block         — rewrite + CFG prune one block using In[b]
+ *  cp_run_forward_dataflow  — forward fixed-point loop filling in[]/out[]
+ *  cp_rewrite_block         — rewrite + CFG prune one block using in[b]
  *  cp_sweep                 — compact instruction array, update block ranges
  *  cp_optimize              — public entry point, orchestrates the above
  *
  * Helper delegation:
  *  cp_transfer              — in-place ConstMap update for one instruction
- *  cp_foldBinary            — int/float binary constant fold with promotion
- *  cp_isRedundantJump       — detect GOTO/IF_FALSE → immediately next instr
- *  cp_markOrphanLabels      — find IR_LABEL nodes with no referencing jump
+ *  cp_fold_binary           — int/float binary constant fold with promotion
+ *  cp_is_redundant_jump     — detect GOTO/IF_FALSE → immediately next instr
+ *  cp_mark_orphan_labels    — find IR_LABEL nodes with no referencing jump
  */
 
 #include <stdlib.h>
@@ -105,29 +105,29 @@ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
 
     if (in->op == IR_ASSIGN) {
         // copy: propagate whatever lattice value src1 currently has
-        result = lat_getValueFromOperand(map, in->src1, vm);
+        result = lat_get_value_from_operand(map, in->src1, vm);
 
-    } else if (isBinaryOp(in->op)) {
-        LatVal lhs = lat_getValueFromOperand(map, in->src1, vm);
-        LatVal rhs = lat_getValueFromOperand(map, in->src2, vm);
+    } else if (is_binary_op(in->op)) {
+        LatVal lhs = lat_get_value_from_operand(map, in->src1, vm);
+        LatVal rhs = lat_get_value_from_operand(map, in->src2, vm);
         // only fold when both operands are known constants
         if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
             if (!lhs.isFloat && !rhs.isFloat) {
                 int r;
-                if (foldBinaryInt(in->op, lhs.val.ival, rhs.val.ival, &r))
-                    result = lat_setConstInt(r);
+                if (fold_binary_int(in->op, lhs.val.ival, rhs.val.ival, &r))
+                    result = lat_set_const_int(r);
             } else if (lhs.isFloat && rhs.isFloat) {
                 float r;
-                if (foldBinaryFloat(in->op, lhs.val.fval, rhs.val.fval, &r))
-                    result = isComparisonOp(in->op)
-                             ? lat_setConstInt((int)r)   // comparison → int 0/1
-                             : lat_setConstFloat(r);
+                if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
+                    result = is_comparison_op(in->op)
+                             ? lat_set_const_int((int)r)   // comparison → int 0/1
+                             : lat_set_const_float(r);
             }
             // mixed int/float: leave as LAT_CONFLICT (no implicit promotion here)
         }
 
     } else if (in->op == IR_NEG || in->op == IR_NOT) {
-        result = foldUnary(in->op, lat_getValueFromOperand(map, in->src1, vm));
+        result = fold_unary(in->op, lat_get_value_from_operand(map, in->src1, vm));
     }
 
     map->vals[id] = result;
@@ -159,10 +159,10 @@ static void cp_build_varmap(IRFunction *f, VarMap *vm) {
  * ========================================================================= */
 
 /**
- * @brief Compute In[b] and Out[b] for every block to a fixed point.
+ * @brief Compute in[b] and out[b] for every block to a fixed point.
  *
- * In[b]  = meet of Out[p] for all predecessors p of b.
- * Out[b] = transfer(In[b], instructions of b).
+ * in[b]  = meet of out[p] for all predecessors p of b.
+ * out[b] = transfer(in[b], instructions of b).
  *
  * The iteration is purely forward; blocks are processed in index order,
  * which is already roughly topological for reducible CFGs.  The outer
@@ -170,13 +170,13 @@ static void cp_build_varmap(IRFunction *f, VarMap *vm) {
  * because lattice values only descend (UNKNOWN→CONST→CONFLICT).
  *
  * @param f       Function being analysed.
- * @param In      Per-block input ConstMaps (one entry per block, arena-allocated).
- * @param Out     Per-block output ConstMaps.
- * @param tmp     Scratch ConstMap (arena-allocated, same size as In[b]).
+ * @param in      Per-block input ConstMaps (one entry per block, arena-allocated).
+ * @param out     Per-block output ConstMaps.
+ * @param tmp     Scratch ConstMap (arena-allocated, same size as in[b]).
  * @param numVars Total number of tracked variable ids (== vm->nextId).
  * @param vm      VarMap for operand-to-id translation.
  */
-static void cp_runForwardDataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
+static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
                                   ConstMap *tmp, int numVars, VarMap *vm) {
     (void)numVars;
     int nBlocks = f->blockCount;
@@ -186,29 +186,29 @@ static void cp_runForwardDataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
         changed = 0;
         for (int b = 0; b < nBlocks; b++) {
 
-            // In[b] = meet of all predecessor Out[p]
+            // in[b] = meet of all predecessor out[p]
             int hasPred = 0;
             for (int p = 0; p < nBlocks; p++) {
                 for (int k = 0; k < 2; k++) {
                     if (f->blocks[p].bb.succ[k] != b) continue;
                     if (!hasPred) {
-                        constMap_copy(&In[b], &Out[p]); // first predecessor: copy
+                        const_map_copy(&in[b], &out[p]); // first predecessor: copy
                         hasPred = 1;
                     } else {
-                        constMap_meet(&In[b], &Out[p]); // subsequent: meet (join)
+                        const_map_meet(&in[b], &out[p]); // subsequent: meet (join)
                     }
                 }
             }
-            // block with no predecessors keeps In[b] = all UNKNOWN (initial value)
+            // block with no predecessors keeps in[b] = all UNKNOWN (initial value)
 
-            // compute new Out[b] = transfer(In[b]) into tmp
-            constMap_copy(tmp, &In[b]);
+            // compute new out[b] = transfer(in[b]) into tmp
+            const_map_copy(tmp, &in[b]);
             for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
                 cp_transfer(&f->instrs[i], tmp, vm);
 
-            // if Out[b] changed, record it and keep iterating
-            if (!constMap_equal(&Out[b], tmp)) {
-                constMap_copy(&Out[b], tmp);
+            // if out[b] changed, record it and keep iterating
+            if (!const_map_equal(&out[b], tmp)) {
+                const_map_copy(&out[b], tmp);
                 changed = 1;
             }
         }
@@ -226,7 +226,7 @@ static void cp_runForwardDataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
  * is performed in float arithmetic.  Comparison operators always yield
  * an int result (0 or 1) regardless of operand type.
  *
- * The arithmetic kernel (foldBinaryInt / foldBinaryFloat) lives in
+ * The arithmetic kernel (fold_binary_int / fold_binary_float) lives in
  * constmap.c; this function only handles the int→float promotion logic
  * and rewrites the instruction on success.
  *
@@ -236,7 +236,7 @@ static void cp_runForwardDataflow(IRFunction *f, ConstMap *In, ConstMap *Out,
  *
  * @return 1 if folding succeeded, 0 otherwise.
  */
-static int cp_foldBinary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
+static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
     int floatOp = (ns1->kind == OPND_CONST_FLOAT || ns2->kind == OPND_CONST_FLOAT);
     IROp origOp = in->op;
 
@@ -247,12 +247,12 @@ static int cp_foldBinary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
         float b = (ns2->kind == OPND_CONST_INT) ? (float)ns2->data.intVal
                                                  : ns2->data.floatVal;
         float result;
-        if (!foldBinaryFloat(origOp, a, b, &result)) return 0;
+        if (!fold_binary_float(origOp, a, b, &result)) return 0;
 
         in->op   = IR_ASSIGN;
         in->src2 = noOperand();
         // comparisons produce int 0/1 even when operands are float
-        if (isComparisonOp(origOp)) {
+        if (is_comparison_op(origOp)) {
             in->src1 = (Operand){ .kind = OPND_CONST_INT,
                                   .data.intVal = (int)result };
         } else {
@@ -264,7 +264,7 @@ static int cp_foldBinary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
         int a = ns1->data.intVal;
         int b = ns2->data.intVal;
         int result;
-        if (!foldBinaryInt(origOp, a, b, &result)) return 0; // e.g. div/mod by 0
+        if (!fold_binary_int(origOp, a, b, &result)) return 0; // e.g. div/mod by 0
 
         in->op   = IR_ASSIGN;
         in->src1 = (Operand){ .kind = OPND_CONST_INT,
@@ -282,7 +282,7 @@ static int cp_foldBinary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
  * CFG edge removed.  We detect this by checking whether the instruction
  * at idx+1 is an IR_LABEL with the same labelId as the jump target.
  */
-static int cp_isRedundantJump(IRFunction *f, int idx) {
+static int cp_is_redundant_jump(IRFunction *f, int idx) {
     if (idx + 1 >= f->count) return 0;
     IRInstr *in = &f->instrs[idx];
     if (in->op != IR_GOTO && in->op != IR_IF_FALSE) return 0;
@@ -313,7 +313,7 @@ static int cp_isRedundantJump(IRFunction *f, int idx) {
  *                  orphan labels are set to 1.
  * @return          Number of labels newly marked for elimination.
  */
-static int cp_markOrphanLabels(IRFunction *f, char *eliminate) {
+static int cp_mark_orphan_labels(IRFunction *f, char *eliminate) {
     int count = 0;
     // referenced[j] = 1 if instr j is an IR_LABEL targeted by some jump
     char *referenced = calloc((size_t)f->count, 1);
@@ -347,7 +347,7 @@ static int cp_markOrphanLabels(IRFunction *f, char *eliminate) {
  * ========================================================================= */
 
 /**
- * @brief Rewrite one basic block using the constant information in @p In[b].
+ * @brief Rewrite one basic block using the constant information in @p in[b].
  *
  * Performs three kinds of transformations in a single forward scan:
  *
@@ -368,21 +368,21 @@ static int cp_markOrphanLabels(IRFunction *f, char *eliminate) {
  *
  * @return 1 if any instruction in the block was modified or eliminated.
  */
-static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
+static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
                              char *eliminate, VarMap *vm, Arena *arena) {
     int numVars  = vm->nextId;
     int modified = 0;
 
-    // local copy of In[b]: tracks values as we advance through the block
+    // local copy of inMap[b]: tracks values as we advance through the block
     ConstMap live;
-    constMap_init(&live, numVars, arena);
-    constMap_copy(&live, &In[b]);
+    const_map_init(&live, numVars, arena);
+    const_map_copy(&live, &inMap[b]);
 
     for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++) {
         IRInstr *in = &f->instrs[i];
 
         /* ---- 1. Jump-to-next elimination ---- */
-        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && cp_isRedundantJump(f, i)) {
+        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && cp_is_redundant_jump(f, i)) {
             // the jumped-to block loses this predecessor
             int s = (in->op == IR_GOTO)
                     ? f->blocks[b].bb.succ[0]
@@ -405,7 +405,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
 
         /* ---- 2. IF_FALSE constant folding → CFG pruning ---- */
         if (in->op == IR_IF_FALSE) {
-            Operand cond = constMap_tryFold(in->src1, &live, vm);
+            Operand cond = const_map_try_fold(in->src1, &live, vm);
             if (cond.kind == OPND_CONST_INT || cond.kind == OPND_CONST_FLOAT) {
                 int isZero = (cond.kind == OPND_CONST_INT)
                              ? (cond.data.intVal   == 0)
@@ -440,8 +440,8 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
         /* ---- 3. Constant substitution + binary folding ---- */
 
         // try to replace src1/src2 with known constants
-        Operand ns1 = constMap_tryFold(in->src1, &live, vm);
-        Operand ns2 = constMap_tryFold(in->src2, &live, vm);
+        Operand ns1 = const_map_try_fold(in->src1, &live, vm);
+        Operand ns2 = const_map_try_fold(in->src2, &live, vm);
         if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
         if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
 
@@ -455,7 +455,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *In,
 
             if ((ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
                 (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
-                modified |= cp_foldBinary(in, &ns1, &ns2);
+                modified |= cp_fold_binary(in, &ns1, &ns2);
             }
         }
 
@@ -518,18 +518,18 @@ int cp_optimize(IRFunction *f) {
     cp_build_varmap(f, &vm);
     int numVars = vm.nextId;
 
-    /* Pass 2: allocate In[]/Out[] — all initialised to LAT_UNKNOWN by constMap_init */
-    ConstMap *In  = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
-    ConstMap *Out = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
+    /* Pass 2: allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init */
+    ConstMap *in  = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
+    ConstMap *out = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap  tmp;
-    constMap_init(&tmp, numVars, arena);
+    const_map_init(&tmp, numVars, arena);
     for (int b = 0; b < nBlocks; b++) {
-        constMap_init(&In[b],  numVars, arena);
-        constMap_init(&Out[b], numVars, arena);
+        const_map_init(&in[b],  numVars, arena);
+        const_map_init(&out[b], numVars, arena);
     }
 
     /* Pass 3: forward dataflow */
-    cp_runForwardDataflow(f, In, Out, &tmp, numVars, &vm);
+    cp_run_forward_dataflow(f, in, out, &tmp, numVars, &vm);
 
     /* Pass 4: rewrite + CFG pruning */
     int modified = 0;
@@ -538,10 +538,10 @@ int cp_optimize(IRFunction *f) {
     memset(eliminate, 0, (size_t)f->count * sizeof(char));
 
     for (int b = 0; b < nBlocks; b++)
-        modified |= cp_rewrite_block(f, b, In, eliminate, &vm, arena);
+        modified |= cp_rewrite_block(f, b, in, eliminate, &vm, arena);
 
     // orphan labels left after CFG pruning can be removed safely
-    modified |= (cp_markOrphanLabels(f, eliminate) > 0);
+    modified |= (cp_mark_orphan_labels(f, eliminate) > 0);
 
     /* Pass 5: sweep — only if something was marked for elimination */
     if (modified)

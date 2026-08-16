@@ -1,0 +1,2883 @@
+// ==========================================
+// FILE: arena.c
+// ==========================================
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include "arena.h"
+
+#define ARENA_DEFAULT_BLOCK_SIZE 4096
+
+/**
+ * @brief Internal linked-list block representation.
+ */
+typedef struct ArenaBlock {
+    struct ArenaBlock *next;
+    size_t capacity;
+    size_t used;
+    char data[]; // Flexible array member for payload
+} ArenaBlock;
+
+/**
+ * @brief Internal structure maintaining state for an arena allocation region.
+ */
+struct Arena {
+    ArenaBlock *head;
+    ArenaBlock *current;
+    size_t defaultBlockSize;
+};
+
+/**
+ * @brief Aligns requested byte size upward to the target architecture's pointer alignment.
+ */
+static size_t align_up(size_t n) {
+    size_t a = sizeof(void *);
+    return (n + a - 1) & ~(a - 1);
+}
+
+/**
+ * @brief Allocates a new physical memory block on heap containing header and payload space.
+ */
+static ArenaBlock *block_create(size_t capacity) {
+    // Allocate header size + raw payload capacity in a single malloc call
+    ArenaBlock *block = malloc(sizeof(ArenaBlock) + capacity);
+    if (!block) {
+        fprintf(stderr, "arena: out of memory (requested %zu bytes)\n", capacity);
+        exit(1);
+    }
+    block->next     = NULL;
+    block->capacity = capacity;
+    block->used     = 0;
+    return block;
+}
+
+Arena *arena_create(size_t blockSize) {
+    // Fallback to default block size if 0 is supplied
+    if (blockSize == 0) blockSize = ARENA_DEFAULT_BLOCK_SIZE;
+
+    Arena *arena = malloc(sizeof(Arena));
+    if (!arena) {
+        fprintf(stderr, "arena: out of memory\n");
+        exit(1);
+    }
+
+    arena->defaultBlockSize = blockSize;
+    arena->head             = block_create(blockSize);
+    arena->current          = arena->head;
+    return arena;
+}
+
+void *arena_alloc(Arena *arena, size_t size) {
+    // Ensure all allocations align with standard alignment boundaries
+    size_t aligned = align_up(size);
+
+    // Check if the current block has enough capacity for requested size
+    if (arena->current->capacity - arena->current->used < aligned) {
+        // Expand with default size unless requested size exceeds default capacity
+        size_t newCapacity = arena->defaultBlockSize;
+        if (aligned > newCapacity) newCapacity = aligned;
+
+        // Append new block to chain and advance active block pointer
+        ArenaBlock *block = block_create(newCapacity);
+        arena->current->next = block;
+        arena->current       = block;
+    }
+
+    // Bump offset pointer forward and return calculated base pointer
+    void *ptr = arena->current->data + arena->current->used;
+    arena->current->used += aligned;
+    return ptr;
+}
+
+char *arena_strdup(Arena *arena, const char *s) {
+    if (!s) return NULL;
+
+    size_t len = strlen(s);
+    char *copy = arena_alloc(arena, len + 1);
+    memcpy(copy, s, len + 1);
+    return copy;
+}
+
+char *arena_strndup(Arena *arena, const char *s, size_t n) {
+    if (!s) return NULL;
+
+    size_t len = strnlen(s, n);
+    char *copy = arena_alloc(arena, len + 1);
+    memcpy(copy, s, len);
+    copy[len] = '\0'; // Ensure standard null-termination
+    return copy;
+}
+
+char *arena_sprintf(Arena *arena, const char *fmt, ...) {
+    va_list args, argsCopy;
+    va_start(args, fmt);
+    va_copy(argsCopy, args);
+
+    // First pass: calculate required string buffer size without allocating
+    int needed = vsnprintf(NULL, 0, fmt, argsCopy);
+    va_end(argsCopy);
+    if (needed < 0) {
+        va_end(args);
+        return NULL;
+    }
+
+    // Second pass: allocate exact required size in arena and format string
+    char *buf = arena_alloc(arena, (size_t)needed + 1);
+    vsnprintf(buf, (size_t)needed + 1, fmt, args);
+    va_end(args);
+
+    return buf;
+}
+
+void arena_reset(Arena *arena) {
+    // Reset write pointers to 0 across all existing blocks to allow reuse
+    for (ArenaBlock *b = arena->head; b; b = b->next) {
+        b->used = 0;
+    }
+    // Set write target back to initial head block
+    arena->current = arena->head;
+}
+
+void arena_destroy(Arena *arena) {
+    if (!arena) return;
+
+    // Traverse list and free all allocated physical blocks
+    ArenaBlock *block = arena->head;
+    while (block) {
+        ArenaBlock *next = block->next;
+        free(block);
+        block = next;
+    }
+
+    // Free main struct container
+    free(arena);
+}
+
+// ==========================================
+// FILE: arena.h
+// ==========================================
+
+#ifndef ARENA_H
+#define ARENA_H
+
+#include <stddef.h>
+
+/**
+ * @file arena.h
+ * @brief Fast arena (bump/region) memory allocator interface.
+ *
+ * Provides high-performance region-based memory allocation routines. Memory
+ * is allocated in contiguous blocks and reclaimed all at once, avoiding individual free calls.
+ */
+
+typedef struct Arena Arena;
+
+/**
+ * @brief Creates a new arena allocator instance.
+ *
+ * @param blockSize Default size in bytes for internal memory blocks (pass 0 for default 4096 bytes).
+ * @return Pointer to the newly initialized Arena instance.
+ */
+Arena *arena_create(size_t blockSize);
+
+/**
+ * @brief Allocates aligned memory from the arena.
+ *
+ * @param arena Pointer to the Arena instance.
+ * @param size  Number of bytes to allocate.
+ * @return Pointer to the allocated block of memory.
+ */
+void *arena_alloc(Arena *arena, size_t size);
+
+/**
+ * @brief Duplicates a null-terminated string into memory allocated from the arena.
+ *
+ * @param arena Pointer to the Arena instance.
+ * @param s     The null-terminated string to copy.
+ * @return Pointer to the newly allocated string copy, or NULL if `s` is NULL.
+ */
+char *arena_strdup(Arena *arena, const char *s);
+
+/**
+ * @brief Duplicates up to `n` characters of a string into memory allocated from the arena.
+ *
+ * @param arena Pointer to the Arena instance.
+ * @param s     The string to copy.
+ * @param n     Maximum number of characters to copy.
+ * @return Pointer to the newly allocated, null-terminated string copy, or NULL if `s` is NULL.
+ */
+char *arena_strndup(Arena *arena, const char *s, size_t n);
+
+/**
+ * @brief Formats a string and allocates space for it within the arena.
+ *
+ * @param arena Pointer to the Arena instance.
+ * @param fmt   Format string (printf-style).
+ * @param ...   Additional arguments for formatting.
+ * @return Pointer to the formatted, null-terminated string, or NULL on error.
+ */
+char *arena_sprintf(Arena *arena, const char *fmt, ...);
+
+/**
+ * @brief Resets the arena memory without freeing allocated memory blocks.
+ *
+ * Resets the allocation offset to zero on all blocks for reuse.
+ * @note Invalidates all pointers previously allocated from this arena.
+ *
+ * @param arena Pointer to the Arena instance.
+ */
+void arena_reset(Arena *arena);
+
+/**
+ * @brief Destroys the arena and frees all associated heap memory blocks.
+ *
+ * @param arena Pointer to the Arena instance.
+ */
+void arena_destroy(Arena *arena);
+
+#endif /* ARENA_H */
+
+// ==========================================
+// FILE: ast_to_symtab.c
+// ==========================================
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ast_to_symtab.h"
+
+DataType st_resolve_type(const char *typeName) {
+    if (!typeName) return T_VOID;
+
+    // Check first character to determine data type
+    switch (typeName[0]) {
+    case 'i': return T_INT;    // Matches "int"
+    case 'f': return T_FLOAT;  // Matches "float"
+    default:  return T_VOID;
+    }
+}
+
+void st_elaborate_decl(Arena *arena, const char *text,
+                             char **outTypeName, char **outName,
+                             int *isArray, int *arraySize) {
+    // Reset output flags and parameters
+    *isArray = 0;
+    *arraySize = 0;
+    *outTypeName = NULL;
+    *outName = NULL;
+    if (!text) return;
+
+    // Duplicate string into arena to allow in-place modification without length bounds
+    char *buf = arena_strdup(arena, text);
+
+    // Locate whitespace separator between type and identifier name
+    char *space = strchr(buf, ' ');
+    if (!space) {
+        *outTypeName = buf;
+        return;
+    }
+    *space = '\0'; // Null-terminate type string in-place
+    *outTypeName = buf;
+
+    char *rest = space + 1;
+    char *bracket = strchr(rest, '[');
+    if (bracket) {
+        // Handle array declaration format "name[size]"
+        *bracket = '\0';
+        *outName = rest;
+        *isArray = 1;
+        *arraySize = atoi(bracket + 1); // Parse integer size following bracket
+    } else {
+        // Standard variable or function identifier name
+        *outName = rest;
+    }
+}
+
+int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
+    char *typeName, *name;
+    int isArray, arraySize;
+
+    // Parse declaration details from node text string
+    st_elaborate_decl(arena, node->text, &typeName, &name, &isArray, &arraySize);
+
+    // Build symbol table entry instance
+    Symbol sym = {
+        .kind       = SYM_VAR,
+        .dataType   = st_resolve_type(typeName),
+        .isArray    = isArray,
+        .arraySize  = arraySize,
+        .scopeLevel = scope->level,
+        .offset     = (int)scope->table->size
+    };
+
+    // Register symbol into target scope and check for redeclaration conflicts
+    if (!sym_bind(scope, name, &sym)) {
+        fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
+        return 0;
+    }
+
+    // Attach lexical scope level and symbol offset coordinates to the AST node
+    node->scopeLevel = sym.scopeLevel;
+    node->offset     = sym.offset;
+    return 1;
+}
+
+int st_resolve_global_namespace(ASTNode *program, Scope *global) {
+    int errors = 0;
+
+    // Allocate internal scratch arena for parsing top-level global declarations
+    Arena *arena = arena_create(0);
+
+    // Iterate over top-level statements/declarations of the program
+    for (int i = 0; i < program->nchildren; i++) {
+        ASTNode *decl = program->children[i];
+
+        char *typeName, *name;
+        int isArray, arraySize;
+        st_elaborate_decl(arena, decl->text, &typeName, &name, &isArray, &arraySize);
+
+        Symbol sym = {0};
+        sym.dataType = st_resolve_type(typeName);
+
+        // Process function declaration nodes
+        if (decl->kind == ND_FUNC_DECL) {
+            sym.kind = SYM_FUNC;
+
+            // Determine parameter count (all children except the trailing function body block)
+            int paramCount = decl->nchildren - 1;
+            if (paramCount > SYM_MAX_PARAMS) {
+                fprintf(stderr,
+                        "Errore: '%s' ha %d parametri, il massimo supportato e' %d\n",
+                        name, paramCount, SYM_MAX_PARAMS);
+                paramCount = SYM_MAX_PARAMS;
+                errors++;
+            }
+            sym.paramCount = paramCount;
+
+            // Extract type signature for each parameter node
+            for (int p = 0; p < paramCount; p++) {
+                char *ptypeName, *pname;
+                int pIsArray, pArraySize;
+                st_elaborate_decl(arena, decl->children[p]->text,
+                                        &ptypeName, &pname, &pIsArray, &pArraySize);
+
+                DataType pType = st_resolve_type(ptypeName);
+                symtab_pack_param_type(&sym.paramTypes, p, pType);
+            }
+
+        // Process global variable declaration nodes
+        } else if (decl->kind == ND_VAR_DECL) {
+            sym.kind = SYM_VAR;
+            sym.isArray = isArray;
+            sym.arraySize = arraySize;
+
+        // Skip unexpected non-declaration nodes at global scope level
+        } else {
+            continue;
+        }
+
+        // Register global symbol and report redeclaration errors
+        if (!sym_bind(global, name, &sym)) {
+            fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
+            errors++;
+        }
+    }
+
+    // Free scratch arena memory before returning
+    arena_destroy(arena);
+    return errors;
+}
+
+// ==========================================
+// FILE: ast_to_symtab.h
+// ==========================================
+
+#ifndef AST_TO_SYMTAB_H
+#define AST_TO_SYMTAB_H
+
+#include <stddef.h>
+#include "arena.h"
+#include "parser/ast.h"
+#include "symbol_table.h"
+
+/**
+ * @file ast_to_symtab.h
+ * @brief AST to Symbol Table translation interface.
+ *
+ * Provides utilities to parse AST declaration text nodes and populate symbol tables.
+ */
+
+/**
+ * @brief Converts a textual type representation from the AST (e.g., "int", "float") to its DataType enum.
+ *
+ * Unrecognized type strings default to fallback value `T_VOID`.
+ *
+ * @param typeName Name string of the data type.
+ * @return Corresponding DataType enum value.
+ */
+DataType st_resolve_type(const char *typeName);
+
+/**
+ * @brief Parses a combined declaration string from an AST node's text field into individual components.
+ *
+ * Splits formatted strings (e.g., "int x", "int arr[5]", "int functionName") into type, identifier name,
+ * and array metadata using memory allocated inside `arena`.
+ *
+ * @param arena       Pointer to the Arena allocator used for string memory.
+ * @param text        The raw declaration string from `node->text`.
+ * @param outTypeName Output pointer receiving the extracted type name string.
+ * @param outName     Output pointer receiving the extracted symbol identifier.
+ * @param isArray     Output flag set to 1 if declaration is an array, 0 otherwise.
+ * @param arraySize   Output integer receiving array capacity if applicable.
+ */
+void st_elaborate_decl(Arena *arena, const char *text,
+                             char **outTypeName, char **outName,
+                             int *isArray, int *arraySize);
+
+/**
+ * @brief Declares a variable or parameter symbol in a target scope from a node's declaration text.
+ *
+ * Parses `node->text` and registers the symbol in `scope`. Stamps resolution coordinates
+ * (`node->scopeLevel` and `node->offset`) directly onto the node for intermediate representation generation.
+ *
+ * @param arena Pointer to the memory arena used for temporary string parsing allocations.
+ * @param scope Pointer to the target Scope structure.
+ * @param node  Pointer to the AST node (`ND_VAR_DECL` or `ND_PARAM`).
+ * @return 1 on successful declaration, 0 if a redeclaration error occurs in the current scope.
+ */
+int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
+
+/**
+ * @brief Populates the global scope with top-level AST declarations (Pass 1).
+ *
+ * Traverses top-level children of `ND_PROGRAM` and populates the `global` symbol table with
+ * function signatures and global variables to resolve forward references.
+ *
+ * @param program Pointer to the root `ND_PROGRAM` AST node.
+ * @param global  Pointer to the target global Scope structure.
+ * @return Number of redeclaration errors encountered (0 indicates success).
+ */
+int st_resolve_global_namespace(ASTNode *program, Scope *global);
+
+#endif /* AST_TO_SYMTAB_H */
+
+// ==========================================
+// FILE: block.h
+// ==========================================
+
+#ifndef BLOCK_H
+#define BLOCK_H
+
+/*
+ * BasicBlock: campi comuni a tutti i blocchi base del compilatore.
+ *
+ * Usata direttamente dove prima esistevano RBlock (regalloc_utils.h)
+ * e LivenessBlock (liveness.h), che sono stati rimossi in favore di
+ * questo tipo unico. IRBlock la incorpora come campo nominato 'bb'
+ * aggiungendo predCount.
+ */
+typedef struct {
+    int start;      /* indice prima istruzione del blocco (incluso)  */
+    int end;        /* indice prima istruzione del blocco dopo (escluso) */
+    int succ[2];    /* successori nel CFG; -1 = assente              */
+} BasicBlock;
+
+#endif /* BLOCK_H */
+
+// ==========================================
+// FILE: bucket.c
+// ==========================================
+
+/**
+ * @file bucket.c
+ * @brief Degree-indexed bucket list — implementation.
+ *
+ * All storage is allocated from a module-level arena created by
+ * buckets_create() and released by buckets_free().  The arena avoids
+ * per-array malloc/free pairs and guarantees a single contiguous
+ * allocation for the lifetime of one register-allocation round.
+ */
+
+#include "bucket.h"
+#include "arena.h"
+#include <string.h>
+
+/* =========================================================================
+ * Module-level arena
+ * =========================================================================
+ * Owns the memory for head[], next[], prev[], and inBucket[].
+ * Only one Buckets instance may be live at a time; buckets_create()
+ * enforces this by destroying any leftover arena before creating a new one.
+ * ========================================================================= */
+static Arena *sArena = NULL;
+
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
+
+Buckets buckets_create(int nextVreg, int k) {
+    // Destroy any leftover arena from a previous (incorrectly unpaired) call.
+    if (sArena) {
+        arena_destroy(sArena);
+        sArena = NULL;
+    }
+    sArena = arena_create(0);
+
+    Buckets b;
+    b.k        = k;
+    b.nonempty = 0;
+
+    int nodesNum = (nextVreg > 0) ? nextVreg : 1;   // guard against zero-size allocation
+
+    b.head = arena_alloc(sArena, (size_t)k * sizeof(int));
+    memset(b.head, -1, (size_t)k * sizeof(int));   // -1 = empty sentinel for each bucket
+
+    b.next     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    b.prev     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    b.inBucket = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    memset(b.inBucket, 0, (size_t)nodesNum * sizeof(int));
+
+    return b;
+}
+
+void buckets_free(Buckets *b) {
+    (void)b;   // arrays are owned by sArena; the parameter exists for API symmetry
+    if (sArena) {
+        arena_destroy(sArena);
+        sArena = NULL;
+    }
+}
+
+void bucket_insert(Buckets *b, int node, int degree) {
+    // Prepend node to the doubly-linked list of bucket degree.
+    b->prev[node] = -1;
+    b->next[node] = b->head[degree];
+    if (b->head[degree] >= 0)
+        b->prev[b->head[degree]] = node;   // update old head's back-pointer
+    b->head[degree]     = node;
+    b->inBucket[node]   = 1;
+    b->nonempty        |= (1u << degree);  // mark bucket degree as non-empty
+}
+
+void bucket_remove(Buckets *b, int node, int degree) {
+    // Unlink node from the doubly-linked list of bucket degree.
+    if (b->prev[node] >= 0)
+        b->next[b->prev[node]] = b->next[node];
+    else
+        b->head[degree] = b->next[node];   // node was the head; promote its successor
+
+    if (b->next[node] >= 0)
+        b->prev[b->next[node]] = b->prev[node];
+
+    b->inBucket[node] = 0;
+    if (b->head[degree] < 0)
+        b->nonempty &= ~(1u << degree);  // bucket degree is now empty; clear its bit
+}
+
+int bucket_pop_any_low(Buckets *b, int *outDegree) {
+    if (!b->nonempty) return -1;
+
+    // __builtin_ctz finds the lowest set bit in O(1), giving the minimum-degree
+    // non-empty bucket without scanning all k entries.
+    *outDegree = __builtin_ctz(b->nonempty);
+    return b->head[*outDegree];
+}
+
+// ==========================================
+// FILE: bucket.h
+// ==========================================
+
+/**
+ * @file bucket.h
+ * @brief Degree-indexed bucket list for O(1) node extraction in graph coloring.
+ *
+ * Provides a fixed-width array of doubly-linked lists (one per degree 0..k-1)
+ * used by the Briggs-optimistic Simplify phase of the Chaitin-Briggs register
+ * allocator (ra_color.c).  The key invariant is that every active virtual
+ * register sits in the bucket whose index equals its current interference-graph
+ * degree, capped at k-1 (= PHYS_ALLOCATABLE - 1).
+ *
+ * Design
+ * ------
+ * Each bucket is a doubly-linked list threaded through the next/prev arrays,
+ * allowing O(1) insert and remove without touching a heap allocator.  A 32-bit
+ * bitmask (nonempty) records which buckets contain at least one node; the
+ * lowest set bit is found in one instruction via __builtin_ctz, making
+ * bucket_pop_any_low() O(1) as well.
+ *
+ * Ownership and lifetime
+ * ----------------------
+ * All storage (head, next, prev, inBucket) is allocated from a private
+ * module-level arena created by buckets_create() and destroyed by
+ * buckets_free().  Only one Buckets instance may exist at a time per process
+ * (the arena is a module-level singleton).  This matches the single-threaded,
+ * single-allocation-at-a-time usage pattern of the register allocator.
+ */
+
+#ifndef BUCKET_H
+#define BUCKET_H
+
+#include <stdint.h>
+
+/**
+ * @brief Degree-indexed bucket list for register-allocator Simplify.
+ *
+ * All pointer-like arrays are indexed by virtual register id (0..nextVreg-1).
+ * The head[] array is indexed by degree (0..k-1).
+ */
+typedef struct {
+    int     *head;      /**< head[degree]: first node in bucket degree, -1 if empty. */
+    int     *next;      /**< next[node]: next node in the same bucket as node.        */
+    int     *prev;      /**< prev[node]: previous node in the same bucket as node.    */
+    int     *inBucket;  /**< inBucket[node]: 1 if node is currently in any bucket.    */
+    int      k;         /**< Number of buckets (= PHYS_ALLOCATABLE).               */
+    uint32_t nonempty;  /**< Bitmask: bit degree is set iff head[degree] != -1.    */
+} Buckets;
+
+/**
+ * @brief Allocate and initialise a Buckets structure.
+ *
+ * Creates an internal arena, allocates head[], next[], prev[], and
+ * inBucket[] from it, and initialises all entries.  Only one instance may
+ * be live at a time (the arena is a module-level singleton).
+ *
+ * @param nextVreg Number of virtual registers (maximum node id + 1).
+ * @param k        Number of buckets (should equal PHYS_ALLOCATABLE).
+ * @return         Initialised Buckets value; all buckets are empty.
+ */
+Buckets buckets_create(int nextVreg, int k);
+
+/**
+ * @brief Destroy the Buckets structure and release the internal arena.
+ *
+ * The @p b parameter is accepted for API symmetry but the arrays it points
+ * to are owned by the module-level arena, which is freed here.  @p b itself
+ * must not be used after this call.
+ *
+ * @param b Pointer to the Buckets to destroy.
+ */
+void buckets_free(Buckets *b);
+
+/**
+ * @brief Insert node @p node into bucket @p degree.
+ *
+ * Prepends @p node to the doubly-linked list at head[degree] and sets bit degree in
+ * nonempty.  Behaviour is undefined if @p node is already in a bucket.
+ *
+ * @param b      Buckets structure to update.
+ * @param node   Node (virtual register id) to insert.
+ * @param degree Target bucket index (0 <= degree < b->k).
+ */
+void bucket_insert(Buckets *b, int node, int degree);
+
+/**
+ * @brief Remove node @p node from bucket @p degree.
+ *
+ * Unlinks @p node from the doubly-linked list at head[degree] and clears bit degree in
+ * nonempty if the bucket becomes empty.  Behaviour is undefined if @p node is
+ * not currently in bucket @p degree.
+ *
+ * @param b      Buckets structure to update.
+ * @param node   Node to remove.
+ * @param degree Bucket index that currently contains @p node.
+ */
+void bucket_remove(Buckets *b, int node, int degree);
+
+/**
+ * @brief Extract the head node from the lowest non-empty bucket.
+ *
+ * Uses __builtin_ctz on the nonempty bitmask for O(1) lookup of the
+ * minimum-degree bucket.  The node is removed from its bucket before
+ * being returned.
+ *
+ * @param b        Buckets structure.
+ * @param outDegree Set to the index of the bucket from which the node was taken.
+ * @return         The extracted node id, or -1 if all buckets are empty.
+ */
+int bucket_pop_any_low(Buckets *b, int *outDegree);
+
+#endif /* BUCKET_H */
+
+// ==========================================
+// FILE: constmap.c
+// ==========================================
+
+/**
+ * @file constmap.c
+ * @brief Constant-propagation lattice and ConstMap implementation.
+ *
+ * See constmap.h for the module overview, lattice definition, and full API
+ * documentation.  This file contains only implementation details.
+ *
+ * Representation notes
+ * --------------------
+ * LatVal is a small POD struct (12 bytes on typical 32-bit-aligned targets)
+ * stored by value throughout.  Returning and passing LatVal by value avoids
+ * heap allocation and pointer indirection in the hot dataflow loop in cp.c.
+ *
+ * ConstMap is a flat array of LatVal allocated entirely from the caller's
+ * Arena.  Indexed access is O(1) and the array is contiguous in memory,
+ * which benefits the entry-wise meet (const_map_meet) and equality check
+ * (const_map_equal) that iterate over all entries in the fixed-point loop.
+ *
+ * Division-by-zero policy
+ * -----------------------
+ * Both fold_binary_int and fold_binary_float return 0 (fold not performed) when
+ * the divisor is zero.  This defers the division to runtime, where it will
+ * either raise a signal or produce implementation-defined behaviour — the
+ * same outcome the unoptimised code would produce.  Folding a division by
+ * zero to an arbitrary constant would silently change program semantics.
+ */
+
+#include "constmap.h"
+#include "arena.h"
+#include <string.h>
+
+/* =========================================================================
+ * Lattice constructors
+ * ========================================================================= */
+
+LatVal lat_unknown(void) {
+    LatVal v = {0};
+    v.state = LAT_UNKNOWN;
+    return v;
+}
+
+LatVal lat_set_const_int(int ival) {
+    LatVal v = {0};
+    v.state      = LAT_CONST;
+    v.isFloat    = 0;
+    v.val.ival   = ival;
+    return v;
+}
+
+LatVal lat_set_const_float(float fval) {
+    LatVal v = {0};
+    v.state      = LAT_CONST;
+    v.isFloat    = 1;
+    v.val.fval   = fval;
+    return v;
+}
+
+LatVal lat_conflict(void) {
+    LatVal v = {0};
+    v.state = LAT_CONFLICT;
+    return v;
+}
+
+/* =========================================================================
+ * Lattice predicates
+ * ========================================================================= */
+
+int lat_is_const(LatVal v)    { return v.state == LAT_CONST;    }
+int lat_is_unknown(LatVal v)  { return v.state == LAT_UNKNOWN;  }
+int lat_is_conflict(LatVal v) { return v.state == LAT_CONFLICT; }
+
+/* =========================================================================
+ * Lattice meet (⊓)
+ * =========================================================================
+ * The meet of two lattice elements represents the information that is
+ * guaranteed to hold on ALL paths reaching a join point.  The ordering
+ * is UNKNOWN (most information: "not yet seen") > CONST > CONFLICT (least
+ * information: "could be anything").  UNKNOWN is the identity because
+ * meeting with "no information" leaves the other operand unchanged.
+ * CONFLICT is absorbing because once a variable's value is uncertain it
+ * can never become certain again within a single dataflow pass.
+ * ========================================================================= */
+
+/**
+ * @brief Compute the meet (⊓) of two lattice elements.
+ *
+ * Implementation follows the lattice ordering directly: UNKNOWN is the
+ * identity, CONFLICT is absorbing.  Two CONST elements with the same type
+ * and value meet to themselves; any mismatch (different numeric values or
+ * different types, e.g. int vs float) meets to CONFLICT.
+ */
+LatVal lat_meet(LatVal a, LatVal b) {
+    // UNKNOWN is the identity element: UNKNOWN ⊓ x = x
+    if (a.state == LAT_UNKNOWN) return b;
+    if (b.state == LAT_UNKNOWN) return a;
+
+    // CONFLICT is absorbing: CONFLICT ⊓ x = CONFLICT
+    if (a.state == LAT_CONFLICT || b.state == LAT_CONFLICT) return lat_conflict();
+
+    // Both are CONST: they must agree on type and value to remain CONST
+    if (a.isFloat != b.isFloat) return lat_conflict(); // int ⊓ float → ambiguous type
+    if (a.isFloat) {
+        if (a.val.fval == b.val.fval) return a;
+    } else {
+        if (a.val.ival == b.val.ival) return a;
+    }
+    return lat_conflict(); // same type but different values → not a single constant
+}
+
+/**
+ * @brief Return non-zero if @p a and @p b represent the same lattice element.
+ *
+ * Equality is used by the fixed-point loop to detect convergence: the loop
+ * terminates when no Out set changes between two successive iterations.
+ */
+int lat_equal(LatVal a, LatVal b) {
+    if (a.state != b.state) return 0;
+    if (a.state != LAT_CONST) return 1; // both UNKNOWN or both CONFLICT: always equal
+    if (a.isFloat != b.isFloat) return 0;
+    return a.isFloat ? (a.val.fval == b.val.fval) : (a.val.ival == b.val.ival);
+}
+
+/* =========================================================================
+ * ConstMap operations
+ * ========================================================================= */
+
+/**
+ * @brief Initialise a ConstMap, setting all entries to UNKNOWN.
+ *
+ * Allocating from the caller's arena avoids per-map malloc/free pairs and
+ * lets the caller reclaim all CP-related memory in a single arena_destroy().
+ */
+void const_map_init(ConstMap *m, int size, Arena *arena) {
+    m->size = size;
+    m->vals = arena_alloc(arena, (size_t)size * sizeof(LatVal));
+    // initialise every entry to UNKNOWN: no definitions seen yet on any path
+    for (int i = 0; i < size; i++) m->vals[i] = lat_unknown();
+}
+
+void const_map_copy(ConstMap *dst, const ConstMap *src) {
+    memcpy(dst->vals, src->vals, (size_t)src->size * sizeof(LatVal));
+}
+
+/**
+ * @brief Return non-zero if every entry in @p a equals the corresponding
+ *        entry in @p b.
+ *
+ * Short-circuits on the first mismatch for efficiency in the common case
+ * where the fixed-point has not yet been reached and many entries differ.
+ */
+int const_map_equal(const ConstMap *a, const ConstMap *b) {
+    for (int i = 0; i < a->size; i++)
+        if (!lat_equal(a->vals[i], b->vals[i])) return 0;
+    return 1;
+}
+
+/**
+ * @brief Apply the meet operation entry-wise to merge predecessor Out sets.
+ *
+ * Called once per predecessor at each join point: the first predecessor
+ * copies its Out into In[b] (const_map_copy), and each subsequent one applies
+ * this function so that In[b] accumulates the greatest lower bound.
+ */
+void const_map_meet(ConstMap *dest, const ConstMap *src) {
+    for (int i = 0; i < dest->size; i++)
+        dest->vals[i] = lat_meet(dest->vals[i], src->vals[i]);
+}
+
+/**
+ * @brief Return the lattice value for operand @p op from map @p m.
+ *
+ * Resolves @p op to an id via @p vm.  An id outside [0, m->size) indicates
+ * an operand that was not tracked (e.g. added after the VarMap was built);
+ * returning CONFLICT is the safe conservative choice.
+ */
+LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm) {
+    int id = varmap_operand_id(vm, op);
+    if (id < 0 || id >= m->size) return lat_conflict(); // id out of range → conservative
+    return m->vals[id];
+}
+
+/**
+ * @brief Substitute @p op with its constant value if one is known.
+ *
+ * Only variables and temporaries are candidates for substitution; constant
+ * operands and non-storage kinds are returned unchanged.  When folding
+ * succeeds, the returned operand carries the value inline (OPND_CONST_INT or
+ * OPND_CONST_FLOAT), so the instruction selector never needs to load it from
+ * a variable slot.
+ */
+Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm) {
+    if (op.kind != OPND_VAR && op.kind != OPND_TEMP) return op; // not a storage location
+    LatVal lv = const_map_get(m, op, vm);
+    if (lv.state != LAT_CONST) return op; // UNKNOWN or CONFLICT: cannot substitute
+    if (lv.isFloat) {
+        Operand o;
+        o.kind           = OPND_CONST_FLOAT;
+        o.data.floatVal  = lv.val.fval;
+        return o;
+    } else {
+        Operand o;
+        o.kind         = OPND_CONST_INT;
+        o.data.intVal  = lv.val.ival;
+        return o;
+    }
+}
+
+/* =========================================================================
+ * Transfer function helpers
+ * =========================================================================
+ * These are called by cp.c's transferInstr() to evaluate the constant value
+ * an instruction would produce given fully constant inputs.  They are also
+ * used by the rewriting phase to fold operations whose operands have been
+ * substituted with constants by const_map_try_fold().
+ * ========================================================================= */
+
+/**
+ * @brief Lift an Operand to a LatVal, consulting @p map for variables.
+ *
+ * Literal operands (OPND_CONST_INT, OPND_CONST_FLOAT) are always CONST
+ * regardless of the map; their values are available inline in the operand.
+ * Variables and temporaries are looked up in @p map via @p vm.
+ * All other kinds (label, function name, none) return CONFLICT because they
+ * cannot carry a numeric constant that can be propagated.
+ */
+LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm) {
+    switch (op.kind) {
+    case OPND_CONST_INT:   return lat_set_const_int(op.data.intVal);     // inline integer constant
+    case OPND_CONST_FLOAT: return lat_set_const_float(op.data.floatVal); // inline float constant
+    case OPND_VAR:
+    case OPND_TEMP:        return const_map_get(map, op, vm);         // look up in propagation state
+    default:               return lat_conflict();                     // label, func, none: not a value
+    }
+}
+
+int is_binary_op(IROp op) {
+    switch (op) {
+    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
+    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
+        return 1;
+    default: return 0;
+    }
+}
+
+int is_comparison_op(IROp op) {
+    switch (op) {
+    case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
+        return 1;
+    default: return 0;
+    }
+}
+
+/**
+ * @brief Constant-fold a binary integer operation.
+ *
+ * Guards division and modulo by zero: returning 0 (not folded) defers
+ * execution to runtime, preserving whatever behaviour the target platform
+ * defines for integer division by zero.  Folding to an arbitrary value
+ * would silently change program semantics.
+ */
+int fold_binary_int(IROp op, int a, int b, int *res) {
+    switch (op) {
+    case IR_ADD: *res = a + b;                        return 1;
+    case IR_SUB: *res = a - b;                        return 1;
+    case IR_MUL: *res = a * b;                        return 1;
+    case IR_DIV: if (!b) return 0; *res = a / b;      return 1; // b==0: defer to runtime
+    case IR_MOD: if (!b) return 0; *res = a % b;      return 1; // b==0: defer to runtime
+    case IR_LT:  *res = (a <  b);                     return 1;
+    case IR_LE:  *res = (a <= b);                     return 1;
+    case IR_GT:  *res = (a >  b);                     return 1;
+    case IR_GE:  *res = (a >= b);                     return 1;
+    case IR_EQ:  *res = (a == b);                     return 1;
+    case IR_NE:  *res = (a != b);                     return 1;
+    default:                                           return 0; // unhandled opcode
+    }
+}
+
+/**
+ * @brief Constant-fold a binary float operation.
+ *
+ * Float division by zero is guarded the same way as integer division.
+ * Comparison results are stored as float (0.0 or 1.0) and the caller is
+ * responsible for converting them to int when is_comparison_op() is true.
+ */
+int fold_binary_float(IROp op, float a, float b, float *res) {
+    switch (op) {
+    case IR_ADD: *res = a + b;                                 return 1;
+    case IR_SUB: *res = a - b;                                 return 1;
+    case IR_MUL: *res = a * b;                                 return 1;
+    case IR_DIV: if (b == 0.0f) return 0; *res = a / b;       return 1; // b==0: defer to runtime
+    case IR_LT:  *res = (float)(a <  b);                       return 1;
+    case IR_LE:  *res = (float)(a <= b);                       return 1;
+    case IR_GT:  *res = (float)(a >  b);                       return 1;
+    case IR_GE:  *res = (float)(a >= b);                       return 1;
+    case IR_EQ:  *res = (float)(a == b);                       return 1;
+    case IR_NE:  *res = (float)(a != b);                       return 1;
+    default:                                                    return 0;
+    }
+}
+
+/**
+ * @brief Constant-fold a unary operation (NEG or NOT) on a lattice value.
+ *
+ * Returns CONFLICT immediately if @p v is not CONST — there is nothing to
+ * fold when the operand's value is unknown or ambiguous.
+ * IR_NOT applied to a float follows C semantics: the result is an integer
+ * (0 or 1), stored as LAT_CONST with isFloat == 0.
+ */
+LatVal fold_unary(IROp op, LatVal v) {
+    if (v.state != LAT_CONST) return lat_conflict(); // can only fold a known constant
+    if (!v.isFloat) {
+        int i = v.val.ival;
+        if (op == IR_NEG) return lat_set_const_int(-i);
+        if (op == IR_NOT) return lat_set_const_int(!i);  // logical not: 0→1, non-zero→0
+    } else {
+        float f = v.val.fval;
+        if (op == IR_NEG) return lat_set_const_float(-f);
+        // IR_NOT on float: result is int (C semantics: !0.0f == 1, !non-zero == 0)
+        if (op == IR_NOT) return lat_set_const_int(f == 0.0f ? 1 : 0);
+    }
+    return lat_conflict(); // opcode not handled (should not occur in well-formed IR)
+}
+
+// ==========================================
+// FILE: constmap.h
+// ==========================================
+
+/**
+ * @file constmap.h
+ * @brief Constant-propagation lattice and per-variable constant map.
+ *
+ * This module provides two interrelated abstractions used exclusively by the
+ * Constant Propagation pass (cp.c):
+ *
+ *  1. LatVal — a single element of the constant-propagation lattice.
+ *  2. ConstMap — a dense array of LatVal, one entry per tracked variable id,
+ *     indexed by the compact integer ids produced by VarMap.
+ *
+ * The lattice
+ * -----------
+ * The lattice is ordered UNKNOWN < CONST(v) < CONFLICT and has three levels:
+ *
+ *   UNKNOWN   (⊤)  No definition of this variable has been seen yet on any
+ *                   reaching path.  Acts as the identity element for meet:
+ *                   UNKNOWN ⊓ x = x.
+ *
+ *   CONST(v)       The variable holds the same compile-time constant value v
+ *                   on every path reaching this point.  Both integer and
+ *                   float constants are represented.
+ *
+ *   CONFLICT  (⊥)  The variable's value differs across reaching paths, or
+ *                   comes from a non-constant definition (e.g. a load or call).
+ *                   Absorbs everything: CONFLICT ⊓ x = CONFLICT.
+ *
+ * Meet operation (⊓)
+ * ------------------
+ * Used at CFG join points to combine information from all predecessors:
+ *
+ *   UNKNOWN  ⊓  x         = x
+ *   CONST(a) ⊓  CONST(a)  = CONST(a)   (same value: still a constant)
+ *   CONST(a) ⊓  CONST(b)  = CONFLICT   (a ≠ b: cannot determine statically)
+ *   CONFLICT ⊓  x         = CONFLICT
+ *
+ * Transfer function helpers
+ * -------------------------
+ * The bottom half of this header declares the helpers called by cp.c's
+ * transferInstr() to evaluate whether an instruction produces a constant
+ * result and, if so, what value:
+ *
+ *   lat_get_value_from_operand — lift an Operand to a LatVal (inline constants or map lookup)
+ *   is_binary_op      — predicate: opcode takes two operands and produces a value
+ *   is_comparison_op  — predicate: opcode is a relational comparison
+ *   fold_binary_int   — constant-fold a binary integer operation
+ *   fold_binary_float — constant-fold a binary float operation
+ *   fold_unary       — constant-fold NEG or NOT
+ */
+
+#ifndef CONSTMAP_H
+#define CONSTMAP_H
+
+#include "ir.h"
+#include "varmap.h"
+#include "arena.h"
+
+/* =========================================================================
+ * Lattice level constants
+ * ========================================================================= */
+
+#define LAT_UNKNOWN   0   /**< No information yet (⊤, identity for meet). */
+#define LAT_CONST     1   /**< Variable holds a single known constant value. */
+#define LAT_CONFLICT  2   /**< Variable's value is non-constant or ambiguous (⊥). */
+
+/* =========================================================================
+ * LatVal — one lattice element
+ * ========================================================================= */
+
+/**
+ * @brief A single element of the constant-propagation lattice.
+ *
+ * When @c state is @c LAT_CONST, the @c val union holds the constant value
+ * and @c isFloat distinguishes between integer and floating-point constants.
+ * For @c LAT_UNKNOWN and @c LAT_CONFLICT the @c val and @c isFloat fields
+ * carry no meaningful information.
+ */
+typedef struct {
+    int state;       /**< One of LAT_UNKNOWN, LAT_CONST, LAT_CONFLICT. */
+    int isFloat;     /**< 1 when the constant is a float, 0 for integer. */
+    union {
+        int   ival;  /**< Integer constant value (when isFloat == 0). */
+        float fval;  /**< Float constant value   (when isFloat == 1). */
+    } val;
+} LatVal;
+
+/* =========================================================================
+ * Lattice constructors
+ * ========================================================================= */
+
+/** @brief Return the UNKNOWN (⊤) lattice element. */
+LatVal lat_unknown(void);
+
+/** @brief Return a CONST lattice element wrapping the integer @p ival. */
+LatVal lat_set_const_int(int ival);
+
+/** @brief Return a CONST lattice element wrapping the float @p fval. */
+LatVal lat_set_const_float(float fval);
+
+/** @brief Return the CONFLICT (⊥) lattice element. */
+LatVal lat_conflict(void);
+
+/* =========================================================================
+ * Lattice operations
+ * ========================================================================= */
+
+/**
+ * @brief Compute the meet (⊓) of two lattice elements.
+ *
+ * Implements the confluence operation for join points in the dataflow graph.
+ * UNKNOWN is the identity, CONFLICT is absorbing, and two equal CONST values
+ * meet to themselves; any other pair of CONST values meets to CONFLICT.
+ *
+ * @param a  First lattice element.
+ * @param b  Second lattice element.
+ * @return   The greatest lower bound of @p a and @p b in the lattice ordering.
+ */
+LatVal lat_meet(LatVal a, LatVal b);
+
+/**
+ * @brief Return non-zero if @p a and @p b represent the same lattice element.
+ *
+ * Two CONST elements are equal only when they share the same type (int/float)
+ * and the same value; all UNKNOWN elements are equal to each other, as are
+ * all CONFLICT elements.
+ *
+ * @param a  First lattice element.
+ * @param b  Second lattice element.
+ * @return   1 if equal, 0 otherwise.
+ */
+int lat_equal(LatVal a, LatVal b);
+
+/** @brief Return non-zero if @p v is a CONST lattice element. */
+int lat_is_const(LatVal v);
+
+/** @brief Return non-zero if @p v is the UNKNOWN lattice element. */
+int lat_is_unknown(LatVal v);
+
+/** @brief Return non-zero if @p v is the CONFLICT lattice element. */
+int lat_is_conflict(LatVal v);
+
+/* =========================================================================
+ * ConstMap — per-variable lattice state
+ * ========================================================================= */
+
+/**
+ * @brief Dense array mapping compact variable ids to their current LatVal.
+ *
+ * The index space corresponds to the ids assigned by VarMap: if VarMap
+ * assigns id @c k to operand @c op, then @c vals[k] holds the lattice
+ * value for @c op at the current program point.  All storage is owned by
+ * the caller's arena; no individual free is needed.
+ */
+typedef struct {
+    LatVal *vals;  /**< Array of lattice values, one per tracked operand id. */
+    int     size;  /**< Number of entries (equals VarMap::nextId at init time). */
+} ConstMap;
+
+/**
+ * @brief Initialise a ConstMap with @p size entries, all set to UNKNOWN.
+ *
+ * Allocates @c vals from @p arena (lifetime is managed by the caller).
+ *
+ * @param m     ConstMap to initialise.
+ * @param size  Number of entries (should equal VarMap::nextId).
+ * @param arena Arena from which @c vals is allocated.
+ */
+void const_map_init(ConstMap *m, int size, Arena *arena);
+
+/**
+ * @brief Copy all entries from @p src into @p dst (both must have the same size).
+ *
+ * @param dst  Destination ConstMap (overwritten).
+ * @param src  Source ConstMap (unchanged).
+ */
+void const_map_copy(ConstMap *dst, const ConstMap *src);
+
+/**
+ * @brief Return non-zero if @p a and @p b have identical lattice values
+ *        for every tracked variable.
+ *
+ * Used by the fixed-point loop to detect convergence.
+ *
+ * @param a  First ConstMap.
+ * @param b  Second ConstMap.
+ * @return   1 if all entries are equal, 0 otherwise.
+ */
+int const_map_equal(const ConstMap *a, const ConstMap *b);
+
+/**
+ * @brief Apply the meet operation entry-wise: dest[i] = meet(dest[i], src[i]).
+ *
+ * Used at CFG join points to merge the Out sets of all predecessors into
+ * the In set of the current block.
+ *
+ * @param dest  ConstMap updated in place (left operand of meet for each entry).
+ * @param src   ConstMap providing the right operand (unchanged).
+ */
+void const_map_meet(ConstMap *dest, const ConstMap *src);
+
+/**
+ * @brief Return the lattice value associated with operand @p op.
+ *
+ * Resolves @p op through @p vm to obtain its variable id, then returns
+ * @c m->vals[id].  Returns CONFLICT for operands with no valid id (constants,
+ * labels, functions) — the caller should use lat_get_value_from_operand() for those instead.
+ *
+ * @param m   ConstMap to query.
+ * @param op  Operand to look up.
+ * @param vm  VarMap providing the operand→id mapping.
+ * @return    The current LatVal for @p op, or CONFLICT if not found.
+ */
+LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm);
+
+/**
+ * @brief If @p op has a known constant value in @p m, return a folded operand.
+ *
+ * When @p op is a variable or temporary whose lattice value is CONST, returns
+ * a new OPND_CONST_INT or OPND_CONST_FLOAT operand carrying the constant
+ * inline.  Otherwise returns @p op unchanged.  Used by the CP rewriting phase
+ * to substitute variables with their constant values in place.
+ *
+ * @param op  Operand to attempt folding.
+ * @param m   ConstMap providing the current lattice state.
+ * @param vm  VarMap for id resolution.
+ * @return    A constant operand if folding succeeded, @p op otherwise.
+ */
+Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm);
+
+/* =========================================================================
+ * Transfer function helpers
+ * =========================================================================
+ * These functions are called by cp.c's transferInstr() to evaluate whether
+ * an IR instruction produces a constant result given the current ConstMap.
+ * They are declared here (rather than being static in cp.c) so that dce.c
+ * can reuse the folding kernels without duplicating the arithmetic logic.
+ * ========================================================================= */
+
+/**
+ * @brief Lift an Operand to a LatVal, consulting @p map for variables.
+ *
+ * Dispatch rules:
+ *   - OPND_CONST_INT   → CONST wrapping the inline integer value
+ *   - OPND_CONST_FLOAT → CONST wrapping the inline float value
+ *   - OPND_VAR / OPND_TEMP → const_map_get() lookup
+ *   - anything else (label, func, none) → CONFLICT (not a constant source)
+ *
+ * @param map  Current ConstMap.
+ * @param op   Operand to lift.
+ * @param vm   VarMap for variable id resolution.
+ * @return     The LatVal representing @p op's current compile-time value.
+ */
+LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm);
+
+/**
+ * @brief Return non-zero if @p op is a binary arithmetic or relational opcode.
+ *
+ * @param op  IR opcode to test.
+ * @return    1 if @p op takes two source operands and produces a value.
+ */
+int is_binary_op(IROp op);
+
+/**
+ * @brief Return non-zero if @p op is a relational comparison opcode.
+ *
+ * Used to decide whether a folded float result should be stored as int (0/1).
+ *
+ * @param op  IR opcode to test.
+ * @return    1 if @p op is one of LT, LE, GT, GE, EQ, NE.
+ */
+int is_comparison_op(IROp op);
+
+/**
+ * @brief Constant-fold a binary operation on two integer values.
+ *
+ * Evaluates @c a op b at compile time and writes the result into @p res.
+ * Division and modulo by zero are handled safely by returning 0 (not folded)
+ * rather than invoking undefined behaviour; the fold is deferred to runtime.
+ *
+ * @param op   Binary IR opcode (ADD, SUB, MUL, DIV, MOD, or a comparison).
+ * @param a    Left operand integer value.
+ * @param b    Right operand integer value.
+ * @param res  Receives the folded result when the function returns 1.
+ * @return     1 if folding succeeded, 0 if the operation cannot be folded
+ *             (unsupported opcode or division/modulo by zero).
+ */
+int fold_binary_int(IROp op, int a, int b, int *res);
+
+/**
+ * @brief Constant-fold a binary operation on two float values.
+ *
+ * Analogous to fold_binary_int() but for floating-point operands.
+ * Float division by zero is guarded the same way as integer division.
+ * Comparison opcodes produce a float result of 0.0 or 1.0; the caller is
+ * responsible for converting to int when storing a comparison result.
+ *
+ * @param op   Binary IR opcode.
+ * @param a    Left operand float value.
+ * @param b    Right operand float value.
+ * @param res  Receives the folded result when the function returns 1.
+ * @return     1 if folding succeeded, 0 otherwise.
+ */
+int fold_binary_float(IROp op, float a, float b, float *res);
+
+/**
+ * @brief Constant-fold a unary operation (NEG or NOT) on a LatVal.
+ *
+ * Returns CONFLICT if @p v is not CONST.  For NOT applied to a float,
+ * the result is an integer (0 or 1), following C's semantics for logical not.
+ *
+ * @param op  Unary IR opcode (IR_NEG or IR_NOT).
+ * @param v   Lattice value of the single source operand.
+ * @return    A CONST LatVal with the folded result, or CONFLICT on failure.
+ */
+LatVal fold_unary(IROp op, LatVal v);
+
+#endif /* CONSTMAP_H */
+
+// ==========================================
+// FILE: cp.c
+// ==========================================
+
+/**
+ * @file cp.c
+ * @brief Constant Propagation + CFG Pruning on the linear IR.
+ *
+ * Algorithm overview (forward dataflow, iterative to fixed point):
+ * ----------------------------------------------------------------
+ * Each basic block b has an in[b] and out[b] ConstMap.  A ConstMap
+ * maps every variable/temporary id (from VarMap) to a lattice value:
+ *
+ *   LAT_UNKNOWN  (⊤) — no definition reaches this point yet
+ *   LAT_CONST       — exactly one constant value reaches on all paths
+ *   LAT_CONFLICT (⊥) — two or more different values reach (not a constant)
+ *
+ * Lattice meet (join at confluence points):
+ *   UNKNOWN  meet X       = X
+ *   X        meet UNKNOWN = X
+ *   CONFLICT meet X       = CONFLICT
+ *   CONST(a) meet CONST(b) = CONST(a)  if a==b, else CONFLICT
+ *
+ * Forward transfer function for a block: start from in[b], simulate
+ * each instruction updating the map.  IR_ASSIGN of a known constant
+ * propagates it; any other definition sets the variable to CONFLICT.
+ *
+ * After convergence, rewrite pass:
+ *   - Replace variable uses with their known constant value inline.
+ *   - Fold binary/unary operations on newly constant operands.
+ *   - IR_IF_FALSE with constant condition → IR_GOTO (taken) or deleted
+ *     (not taken); update succ[]/predCount in the CFG (CFG pruning).
+ *   - Unconditional jumps to the immediately following instruction
+ *     (jump-to-next) → deleted (CFG pruning).
+ *   - Orphan IR_LABEL nodes (no jump references them) → deleted.
+ *
+ * The sweep step compacts the instruction array and adjusts block
+ * [start, end) ranges to match.
+ *
+ * Returns 1 if any instruction was rewritten or deleted (caller
+ * re-runs DCE and CP until fixed point).
+ *
+ * Internal structure
+ * ------------------
+ *  cp_build_varmap          — assign compact int ids to all operands
+ *  cp_run_forward_dataflow  — forward fixed-point loop filling in[]/out[]
+ *  cp_rewrite_block         — rewrite + CFG prune one block using in[b]
+ *  cp_sweep                 — compact instruction array, update block ranges
+ *  cp_optimize              — public entry point, orchestrates the above
+ *
+ * Helper delegation:
+ *  cp_transfer              — in-place ConstMap update for one instruction
+ *  cp_fold_binary           — int/float binary constant fold with promotion
+ *  cp_is_redundant_jump     — detect GOTO/IF_FALSE → immediately next instr
+ *  cp_mark_orphan_labels    — find IR_LABEL nodes with no referencing jump
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include "cp.h"
+#include "arena.h"
+#include "varmap.h"
+#include "constmap.h"
+
+/* =========================================================================
+ * Internal helpers
+ * ========================================================================= */
+
+/**
+ * @brief Structural equality for two Operand values.
+ *
+ * Used by the rewrite pass to detect when substituting a constant into
+ * an operand actually changed it (avoids spurious modified=1 signals).
+ */
+static inline int operand_equal(const Operand *a, const Operand *b) {
+    if (a->kind != b->kind) return 0;
+    if (a->kind == OPND_CONST_INT)   return a->data.intVal   == b->data.intVal;
+    if (a->kind == OPND_CONST_FLOAT) return a->data.floatVal == b->data.floatVal;
+    if (a->kind == OPND_VAR)
+        return a->data.varLevel  == b->data.varLevel &&
+               a->data.varOffset == b->data.varOffset;
+    if (a->kind == OPND_TEMP)  return a->data.tempId  == b->data.tempId;
+    if (a->kind == OPND_LABEL) return a->data.labelId == b->data.labelId;
+    if (a->kind == OPND_FUNC)  return strcmp(a->data.funcName, b->data.funcName) == 0;
+    return 1; /* OPND_NONE */
+}
+
+/* =========================================================================
+ * Transfer function
+ * ========================================================================= */
+
+/**
+ * @brief Update @p map in-place according to the effect of instruction @p in.
+ *
+ * Only instructions that define a variable/temporary are interesting:
+ *   - IR_ASSIGN from a known constant → propagate the constant.
+ *   - Binary/unary ops on two known constants → fold to constant.
+ *   - Any other defining instruction → set dst to LAT_CONFLICT
+ *     (value unknown at compile time).
+ *
+ * Non-defining opcodes (IR_PARAM, IR_GOTO, IR_IF_FALSE, IR_STORE_ARR,
+ * IR_RETURN, IR_LABEL) have no effect on the map.
+ */
+static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
+    int id = varmap_operand_id(vm, in->dst);
+    if (id < 0 || id >= map->size) return; // dst not a tracked storage location
+
+    LatVal result = lat_conflict(); // default: assume unknown/conflicting
+
+    if (in->op == IR_ASSIGN) {
+        // copy: propagate whatever lattice value src1 currently has
+        result = lat_get_value_from_operand(map, in->src1, vm);
+
+    } else if (is_binary_op(in->op)) {
+        LatVal lhs = lat_get_value_from_operand(map, in->src1, vm);
+        LatVal rhs = lat_get_value_from_operand(map, in->src2, vm);
+        // only fold when both operands are known constants
+        if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
+            if (!lhs.isFloat && !rhs.isFloat) {
+                int r;
+                if (fold_binary_int(in->op, lhs.val.ival, rhs.val.ival, &r))
+                    result = lat_set_const_int(r);
+            } else if (lhs.isFloat && rhs.isFloat) {
+                float r;
+                if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
+                    result = is_comparison_op(in->op)
+                             ? lat_set_const_int((int)r)   // comparison → int 0/1
+                             : lat_set_const_float(r);
+            }
+            // mixed int/float: leave as LAT_CONFLICT (no implicit promotion here)
+        }
+
+    } else if (in->op == IR_NEG || in->op == IR_NOT) {
+        result = fold_unary(in->op, lat_get_value_from_operand(map, in->src1, vm));
+    }
+
+    map->vals[id] = result;
+}
+
+/* =========================================================================
+ * Pass 1: build VarMap
+ * ========================================================================= */
+
+/**
+ * @brief Scan all instructions and assign a compact int id to every operand.
+ *
+ * Must be called before any ConstMap operations so that every
+ * variable/temporary that appears in the function has a valid id in [0, nextId).
+ */
+static void cp_build_varmap(IRFunction *f, VarMap *vm) {
+    varmap_init(vm);
+    for (int i = 0; i < f->count; i++) {
+        IRInstr *in = &f->instrs[i];
+        // register dst, src1, src2 — get-or-create semantics
+        varmap_operand_id(vm, in->dst);
+        varmap_operand_id(vm, in->src1);
+        varmap_operand_id(vm, in->src2);
+    }
+}
+
+/* =========================================================================
+ * Pass 3: forward dataflow
+ * ========================================================================= */
+
+/**
+ * @brief Compute in[b] and out[b] for every block to a fixed point.
+ *
+ * in[b]  = meet of out[p] for all predecessors p of b.
+ * out[b] = transfer(in[b], instructions of b).
+ *
+ * The iteration is purely forward; blocks are processed in index order,
+ * which is already roughly topological for reducible CFGs.  The outer
+ * while loop repeats until no Out[] set changes — guaranteed to terminate
+ * because lattice values only descend (UNKNOWN→CONST→CONFLICT).
+ *
+ * @param f       Function being analysed.
+ * @param in      Per-block input ConstMaps (one entry per block, arena-allocated).
+ * @param out     Per-block output ConstMaps.
+ * @param tmp     Scratch ConstMap (arena-allocated, same size as in[b]).
+ * @param numVars Total number of tracked variable ids (== vm->nextId).
+ * @param vm      VarMap for operand-to-id translation.
+ */
+static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
+                                  ConstMap *tmp, int numVars, VarMap *vm) {
+    (void)numVars;
+    int nBlocks = f->blockCount;
+    int changed = 1;
+
+    while (changed) {
+        changed = 0;
+        for (int b = 0; b < nBlocks; b++) {
+
+            // in[b] = meet of all predecessor out[p]
+            int hasPred = 0;
+            for (int p = 0; p < nBlocks; p++) {
+                for (int k = 0; k < 2; k++) {
+                    if (f->blocks[p].bb.succ[k] != b) continue;
+                    if (!hasPred) {
+                        const_map_copy(&in[b], &out[p]); // first predecessor: copy
+                        hasPred = 1;
+                    } else {
+                        const_map_meet(&in[b], &out[p]); // subsequent: meet (join)
+                    }
+                }
+            }
+            // block with no predecessors keeps in[b] = all UNKNOWN (initial value)
+
+            // compute new out[b] = transfer(in[b]) into tmp
+            const_map_copy(tmp, &in[b]);
+            for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
+                cp_transfer(&f->instrs[i], tmp, vm);
+
+            // if out[b] changed, record it and keep iterating
+            if (!const_map_equal(&out[b], tmp)) {
+                const_map_copy(&out[b], tmp);
+                changed = 1;
+            }
+        }
+    }
+}
+
+/* =========================================================================
+ * CFG pruning helpers
+ * ========================================================================= */
+
+/**
+ * @brief Fold a binary instruction in-place when both operands are constants.
+ *
+ * Handles int/float promotion: if either operand is float the operation
+ * is performed in float arithmetic.  Comparison operators always yield
+ * an int result (0 or 1) regardless of operand type.
+ *
+ * The arithmetic kernel (fold_binary_int / fold_binary_float) lives in
+ * constmap.c; this function only handles the int→float promotion logic
+ * and rewrites the instruction on success.
+ *
+ * On success rewrites @p in to IR_ASSIGN with the folded constant as src1.
+ * Division/modulo by zero is left unfolded (returns 0) so the runtime
+ * can raise the appropriate exception.
+ *
+ * @return 1 if folding succeeded, 0 otherwise.
+ */
+static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
+    int floatOp = (ns1->kind == OPND_CONST_FLOAT || ns2->kind == OPND_CONST_FLOAT);
+    IROp origOp = in->op;
+
+    if (floatOp) {
+        // promote int operand to float before folding
+        float a = (ns1->kind == OPND_CONST_INT) ? (float)ns1->data.intVal
+                                                 : ns1->data.floatVal;
+        float b = (ns2->kind == OPND_CONST_INT) ? (float)ns2->data.intVal
+                                                 : ns2->data.floatVal;
+        float result;
+        if (!fold_binary_float(origOp, a, b, &result)) return 0;
+
+        in->op   = IR_ASSIGN;
+        in->src2 = noOperand();
+        // comparisons produce int 0/1 even when operands are float
+        if (is_comparison_op(origOp)) {
+            in->src1 = (Operand){ .kind = OPND_CONST_INT,
+                                  .data.intVal = (int)result };
+        } else {
+            in->src1 = (Operand){ .kind = OPND_CONST_FLOAT,
+                                  .data.floatVal = result };
+        }
+
+    } else {
+        int a = ns1->data.intVal;
+        int b = ns2->data.intVal;
+        int result;
+        if (!fold_binary_int(origOp, a, b, &result)) return 0; // e.g. div/mod by 0
+
+        in->op   = IR_ASSIGN;
+        in->src1 = (Operand){ .kind = OPND_CONST_INT,
+                              .data.intVal = result };
+        in->src2 = noOperand();
+    }
+    return 1;
+}
+
+/**
+ * @brief Return 1 if the jump at @p idx unconditionally targets the next instr.
+ *
+ * A GOTO or IF_FALSE whose label resolves to the immediately following
+ * instruction is a no-op jump: it can be deleted, and the corresponding
+ * CFG edge removed.  We detect this by checking whether the instruction
+ * at idx+1 is an IR_LABEL with the same labelId as the jump target.
+ */
+static int cp_is_redundant_jump(IRFunction *f, int idx) {
+    if (idx + 1 >= f->count) return 0;
+    IRInstr *in = &f->instrs[idx];
+    if (in->op != IR_GOTO && in->op != IR_IF_FALSE) return 0;
+    int labelId = in->dst.data.labelId;
+    // scan blocks to confirm idx+1 is inside a block and starts with the label
+    for (int b = 0; b < f->blockCount; b++) {
+        int start = f->blocks[b].bb.start;
+        int end   = f->blocks[b].bb.end;
+        if (start <= idx + 1 && idx + 1 < end) {
+            if (f->instrs[idx + 1].op == IR_LABEL &&
+                f->instrs[idx + 1].dst.data.labelId == labelId) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Mark IR_LABEL instructions that no jump in the function references.
+ *
+ * An orphan label is safe to delete: it carries no semantic information
+ * since no control-flow edge targets it.  This typically arises after
+ * constant-folded IF_FALSE instructions are removed.
+ *
+ * @param f         Function to scan.
+ * @param eliminate Boolean array (one entry per instruction); entries for
+ *                  orphan labels are set to 1.
+ * @return          Number of labels newly marked for elimination.
+ */
+static int cp_mark_orphan_labels(IRFunction *f, char *eliminate) {
+    int count = 0;
+    // referenced[j] = 1 if instr j is an IR_LABEL targeted by some jump
+    char *referenced = calloc((size_t)f->count, 1);
+
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op != IR_GOTO && f->instrs[i].op != IR_IF_FALSE) continue;
+        int labelId = f->instrs[i].dst.data.labelId;
+        // find the IR_LABEL instruction with this id and mark it referenced
+        for (int j = 0; j < f->count; j++) {
+            if (f->instrs[j].op == IR_LABEL &&
+                f->instrs[j].dst.data.labelId == labelId) {
+                referenced[j] = 1;
+                break;
+            }
+        }
+    }
+
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op == IR_LABEL && !referenced[i]) {
+            eliminate[i] = 1;
+            count++;
+        }
+    }
+
+    free(referenced);
+    return count;
+}
+
+/* =========================================================================
+ * Pass 4: rewrite + CFG pruning (one block)
+ * ========================================================================= */
+
+/**
+ * @brief Rewrite one basic block using the constant information in @p in[b].
+ *
+ * Performs three kinds of transformations in a single forward scan:
+ *
+ *  1. Jump-to-next elimination: GOTO/IF_FALSE that jumps to the very next
+ *     instruction is deleted; the redundant CFG edge is removed.
+ *
+ *  2. IF_FALSE folding: if the condition is a known constant at this point,
+ *     replace with IR_GOTO (condition false → branch taken) or delete
+ *     (condition true → fall-through); update succ[]/predCount.
+ *
+ *  3. Constant substitution and binary folding: replace variable uses with
+ *     their known constant value; if both operands of a binary instruction
+ *     become constants, fold the instruction to IR_ASSIGN of the result.
+ *
+ * A local copy of the ConstMap (`live`) is maintained and advanced through
+ * the block so that constants defined early in the block are available
+ * for instructions later in the same block (within-block propagation).
+ *
+ * @return 1 if any instruction in the block was modified or eliminated.
+ */
+static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
+                             char *eliminate, VarMap *vm, Arena *arena) {
+    int numVars  = vm->nextId;
+    int modified = 0;
+
+    // local copy of inMap[b]: tracks values as we advance through the block
+    ConstMap live;
+    const_map_init(&live, numVars, arena);
+    const_map_copy(&live, &inMap[b]);
+
+    for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++) {
+        IRInstr *in = &f->instrs[i];
+
+        /* ---- 1. Jump-to-next elimination ---- */
+        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && cp_is_redundant_jump(f, i)) {
+            // the jumped-to block loses this predecessor
+            int s = (in->op == IR_GOTO)
+                    ? f->blocks[b].bb.succ[0]
+                    : f->blocks[b].bb.succ[1]; // taken edge of IF_FALSE
+            if (s >= 0) f->blocks[s].predCount--;
+
+            if (in->op == IR_GOTO) {
+                // GOTO deleted: only successor was succ[0], now none
+                f->blocks[b].bb.succ[0] = f->blocks[b].bb.succ[1];
+                f->blocks[b].bb.succ[1] = -1;
+            } else {
+                // IF_FALSE deleted: taken edge (succ[1]) removed; fall-through stays
+                f->blocks[b].bb.succ[1] = -1;
+            }
+            eliminate[i] = 1;
+            modified = 1;
+            cp_transfer(in, &live, vm); // still advance the map
+            continue;
+        }
+
+        /* ---- 2. IF_FALSE constant folding → CFG pruning ---- */
+        if (in->op == IR_IF_FALSE) {
+            Operand cond = const_map_try_fold(in->src1, &live, vm);
+            if (cond.kind == OPND_CONST_INT || cond.kind == OPND_CONST_FLOAT) {
+                int isZero = (cond.kind == OPND_CONST_INT)
+                             ? (cond.data.intVal   == 0)
+                             : (cond.data.floatVal == 0.0f);
+                int taken = isZero; // IF_FALSE jumps when condition is 0 (false)
+                int s0 = f->blocks[b].bb.succ[0]; // fall-through
+                int s1 = f->blocks[b].bb.succ[1]; // taken (jump target)
+
+                if (taken) {
+                    // condition is always false → branch always taken
+                    in->op   = IR_GOTO;
+                    in->src1 = in->src2 = (Operand){ .kind = OPND_NONE };
+                    f->blocks[b].bb.succ[0] = s1;
+                    f->blocks[b].bb.succ[1] = -1;
+                    if (s0 >= 0) f->blocks[s0].predCount--; // fall-through no longer reachable
+                } else {
+                    // condition is always true → branch never taken, delete IF_FALSE
+                    eliminate[i] = 1;
+                    f->blocks[b].bb.succ[1] = -1;
+                    if (s1 >= 0) f->blocks[s1].predCount--; // target no longer reachable
+                }
+                modified = 1;
+            } else if (!operand_equal(&cond, &in->src1)) {
+                // condition not constant but simplified (e.g. propagated a copy)
+                in->src1 = cond;
+                modified = 1;
+            }
+            cp_transfer(in, &live, vm);
+            continue;
+        }
+
+        /* ---- 3. Constant substitution + binary folding ---- */
+
+        // try to replace src1/src2 with known constants
+        Operand ns1 = const_map_try_fold(in->src1, &live, vm);
+        Operand ns2 = const_map_try_fold(in->src2, &live, vm);
+        if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
+        if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
+
+        // if both operands are now constants, try to fold the binary operation
+        if (in->op != IR_IF_FALSE && in->op != IR_LABEL &&
+            in->op != IR_GOTO     && in->op != IR_RETURN &&
+            (in->op == IR_ADD || in->op == IR_SUB || in->op == IR_MUL ||
+             in->op == IR_DIV || in->op == IR_MOD ||
+             in->op == IR_LT  || in->op == IR_LE  || in->op == IR_GT  ||
+             in->op == IR_GE  || in->op == IR_EQ  || in->op == IR_NE)) {
+
+            if ((ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
+                (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
+                modified |= cp_fold_binary(in, &ns1, &ns2);
+            }
+        }
+
+        cp_transfer(in, &live, vm); // advance local map past this instruction
+    }
+
+    return modified;
+}
+
+/* =========================================================================
+ * Pass 5: sweep
+ * ========================================================================= */
+
+/**
+ * @brief Compact the instruction array, removing eliminated instructions.
+ *
+ * Rebuilds f->instrs as a new flat array that omits every index marked
+ * in @p eliminate[].  Block [start, end) ranges are updated to reflect
+ * the new positions of the surviving instructions.
+ *
+ * @return 1 if any instruction was removed (i.e. the array shrank), 0 otherwise.
+ */
+static int cp_sweep(IRFunction *f, char *eliminate, int nBlocks) {
+    int nInstrs    = f->count;
+    IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
+    int newCount   = 0;
+
+    for (int b = 0; b < nBlocks; b++) {
+        int oldStart = f->blocks[b].bb.start;
+        int oldEnd   = f->blocks[b].bb.end;
+        int newStart = newCount;
+
+        for (int i = oldStart; i < oldEnd; i++) {
+            if (!eliminate[i])
+                newInstrs[newCount++] = f->instrs[i];
+        }
+
+        f->blocks[b].bb.start = newStart;
+        f->blocks[b].bb.end   = newCount;
+    }
+
+    free(f->instrs);
+    f->instrs        = newInstrs;
+    f->count         = newCount;
+    f->capacity      = newCount;
+    f->curBlockStart = 0;
+
+    return (newCount != nInstrs) ? 1 : 0; // 1 if something was removed
+}
+
+
+int cp_optimize(IRFunction *f) {
+    if (!f || f->blockCount == 0 || f->count == 0) return 0;
+
+    int nBlocks = f->blockCount;
+    Arena *arena = arena_create(0); // all dataflow storage lives here
+
+    /* Pass 1: VarMap */
+    VarMap vm;
+    cp_build_varmap(f, &vm);
+    int numVars = vm.nextId;
+
+    /* Pass 2: allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init */
+    ConstMap *in  = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
+    ConstMap *out = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
+    ConstMap  tmp;
+    const_map_init(&tmp, numVars, arena);
+    for (int b = 0; b < nBlocks; b++) {
+        const_map_init(&in[b],  numVars, arena);
+        const_map_init(&out[b], numVars, arena);
+    }
+
+    /* Pass 3: forward dataflow */
+    cp_run_forward_dataflow(f, in, out, &tmp, numVars, &vm);
+
+    /* Pass 4: rewrite + CFG pruning */
+    int modified = 0;
+    // eliminate[] is a boolean per-instruction: 1 = delete in sweep
+    char *eliminate = arena_alloc(arena, (size_t)f->count * sizeof(char));
+    memset(eliminate, 0, (size_t)f->count * sizeof(char));
+
+    for (int b = 0; b < nBlocks; b++)
+        modified |= cp_rewrite_block(f, b, in, eliminate, &vm, arena);
+
+    // orphan labels left after CFG pruning can be removed safely
+    modified |= (cp_mark_orphan_labels(f, eliminate) > 0);
+
+    /* Pass 5: sweep — only if something was marked for elimination */
+    if (modified)
+        modified = cp_sweep(f, eliminate, nBlocks);
+
+    arena_destroy(arena);
+    varmap_destroy(&vm);
+    return modified;
+}
+
+// ==========================================
+// FILE: cp.h
+// ==========================================
+
+/**
+ * @file cp.h
+ * @brief Constant Propagation + CFG Pruning on the linear IR.
+ *
+ * This pass combines two tightly coupled transformations that are most
+ * effective when run together:
+ *
+ * Constant Propagation
+ * --------------------
+ * Tracks, for every variable and temporary, whether it holds a single
+ * known constant value on ALL paths that reach a given program point.
+ * Uses a three-element lattice per variable:
+ *
+ *   LAT_UNKNOWN  (⊤) — no assignment has been seen yet (initial state)
+ *   LAT_CONST       — every reaching definition assigns the same constant
+ *   LAT_CONFLICT (⊥) — two or more different values reach this point
+ *
+ * Meet operator at join points: UNKNOWN meet X = X; CONST(a) meet CONST(b)
+ * = CONST(a) if a==b else CONFLICT; CONFLICT meet anything = CONFLICT.
+ * Values only descend in the lattice, guaranteeing termination.
+ *
+ * After the forward dataflow reaches a fixed point, every variable use
+ * that maps to LAT_CONST is replaced inline with the constant value.
+ * Binary and unary operations whose operands are both constant after
+ * substitution are further folded into a single IR_ASSIGN.
+ *
+ * CFG Pruning
+ * -----------
+ * Two structural simplifications that eliminate dead control-flow edges:
+ *
+ *  - IR_IF_FALSE with a constant condition is replaced by IR_GOTO (branch
+ *    always taken) or deleted (branch never taken); the unreachable
+ *    successor's predCount is decremented.
+ *
+ *  - GOTO / IF_FALSE that targets the immediately following instruction
+ *    (jump-to-next) is deleted; it contributes no reachable edge.
+ *
+ *  - IR_LABEL nodes that no remaining jump references are deleted (they
+ *    become orphans after CFG pruning removes their referencing jumps).
+ *
+ * Integration
+ * -----------
+ * cp_optimize() returns 1 if it modified the IR, 0 otherwise.  The caller
+ * (ir_buildFunction in ir.c) runs CP and DCE in a loop until both return 0,
+ * because constant folding can expose new dead code, and DCE can expose
+ * new constants by removing conflicting definitions.
+ *
+ * Dependencies: constmap.h (lattice + ConstMap), varmap.h (operand ids),
+ *               arena.h (all dataflow storage), ir.h (IRFunction).
+ */
+
+#ifndef CP_H
+#define CP_H
+
+#include "ir.h"
+
+/**
+ * @brief Run constant propagation and CFG pruning on a single IR function.
+ *
+ * Executes five internal passes in sequence:
+ *
+ *  1. Build VarMap — assign a compact integer id to every distinct
+ *     variable and temporary that appears in @p f.
+ *
+ *  2. Allocate ConstMaps — one in[b] and one out[b] per basic block,
+ *     all initialised to LAT_UNKNOWN (⊤).
+ *
+ *  3. Forward dataflow — iterate until no out[b] changes:
+ *       in[b]  = meet of out[p] for all CFG predecessors p of b
+ *       out[b] = transfer function applied to in[b] over b's instructions
+ *
+ *  4. Rewrite — scan each block with a local copy of in[b]:
+ *       - substitute variable uses with known constants
+ *       - fold binary/unary instructions whose operands became constant
+ *       - prune IR_IF_FALSE and jump-to-next edges from the CFG
+ *       - mark eliminated instructions in an eliminate[] boolean array
+ *
+ *  5. Sweep — compact f->instrs by removing eliminated instructions;
+ *     update block [start, end) ranges to match the new positions.
+ *
+ * All dataflow storage (ConstMaps, VarMap backing) is allocated from a
+ * temporary arena that is destroyed before returning.
+ *
+ * @param f  IR function to optimise (modified in place).
+ * @return   1 if @p f was modified, 0 if the IR was already at fixed point.
+ */
+int cp_optimize(IRFunction *f);
+
+#endif /* CP_H */
+
+// ==========================================
+// FILE: dce.c
+// ==========================================
+
+/**
+ * @file dce.c
+ * @brief Dead Code Elimination (DCE) pass on the linear IR.
+ *
+ * Overview
+ * --------
+ * DCE removes IR instructions whose results are provably never used, and
+ * discards every instruction inside unreachable basic blocks.  It is a
+ * cleanup pass: it does not discover optimisation opportunities on its own
+ * but relies on upstream passes (SVN, CP, LICM, SR) to first introduce dead
+ * code, which DCE then removes in O(n) time.
+ *
+ * Algorithm — four sequential phases
+ * ------------------------------------
+ *  1. Reachability  (mark_reachable_blocks)
+ *     Depth-first search from the entry block (index 0) over CFG successor
+ *     edges to identify unreachable blocks.  All instructions inside an
+ *     unreachable block are unconditionally marked for elimination; no
+ *     liveness information is needed for them.
+ *
+ *  2. Liveness  (liveness_computeIr)
+ *     Backward dataflow analysis producing block-level LiveIn/LiveOut sets.
+ *     A VarMap assigns compact integer ids to all Operands so that liveness
+ *     can be stored as bit vectors and updated with bitwise operations.
+ *
+ *  3. Mark  (dce_mark)
+ *     A single backward scan per reachable block, starting with LiveOut as
+ *     the initial live set.  An instruction is marked dead when it is pure,
+ *     defines a storage operand, and that operand is absent from the current
+ *     live set (i.e., dead at this point).  The live set is updated after
+ *     each instruction: sources are added, the destination is killed.
+ *
+ *  4. Sweep  (dce_sweep)
+ *     The flat instruction array is compacted in a single forward pass,
+ *     discarding eliminated entries.  Block start/end indices are rewritten
+ *     to reflect each block's position in the new layout.
+ *
+ * Purity
+ * ------
+ * An instruction is pure if it computes a value solely from its operands,
+ * without modifying memory, performing I/O, or affecting control flow:
+ *
+ *   Pure  : ADD, SUB, MUL, DIV, MOD, NEG, NOT, LT, LE, GT, GE, EQ, NE,
+ *            ASSIGN, LOAD_ARR
+ *   Impure: STORE_ARR, CALL, PARAM, RETURN, GOTO, IF_FALSE, LABEL
+ *
+ * LOAD_ARR is treated as pure (no alias analysis is performed); a store to
+ * the same location would appear as the impure STORE_ARR and would never be
+ * eliminated, preserving correctness.
+ *
+ * Interaction with the optimisation pipeline
+ * ------------------------------------------
+ * DCE is chained with CP in a fixed-point loop inside ir_buildFunction()
+ * (ir.c).  Constant propagation may introduce dead assignments (a variable
+ * replaced by a literal everywhere it is used); DCE removes them.  Removing
+ * dead definitions may, in turn, make their sources dead, enabling another
+ * CP + DCE round.  A second CP + DCE loop runs after LICM + SR to clean up
+ * dead multiplications that SR replaces with cheaper additions.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include "dce.h"
+#include "liveness.h"
+#include "arena.h"
+
+/* =========================================================================
+ * Purity predicate
+ * =========================================================================
+ * Only pure instructions with a dead destination may be eliminated.  Impure
+ * instructions are always kept regardless of whether their result is live,
+ * because removing them would alter observable program behaviour (memory
+ * writes, calls, control flow).
+ * ========================================================================= */
+
+/**
+ * @brief Return non-zero if opcode @p op has no observable side effects.
+ *
+ * Uses a precomputed bitmask for an O(1) test, avoiding a branch-heavy
+ * switch that could inhibit inlining.  The mask covers every opcode that
+ * computes a value without touching memory or affecting control flow.
+ *
+ * @param op  IR opcode to test.
+ * @return    1 if @p op is a pure computation, 0 if it has side effects.
+ */
+static inline int is_pure(IROp op) {
+    switch (op) {
+    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
+    case IR_NEG: case IR_NOT:
+    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
+    case IR_ASSIGN:
+    case IR_LOAD_ARR: // treated as pure: no alias analysis, but STORE_ARR is impure
+        return 1;    //   so a store to the same slot is never eliminated anyway
+    default: return 0;
+    }
+}
+
+/* =========================================================================
+ * Phase 1 — Reachability analysis
+ * =========================================================================
+ * A depth-first search from the entry block (index 0) marks every block that
+ * can be reached via CFG successor edges.  Blocks left unmarked can never
+ * execute; all their instructions are dead by definition.
+ *
+ * Unreachable blocks arise naturally after CP folds a conditional branch into
+ * an unconditional one, leaving one target with no live predecessors, or
+ * after SR / LICM restructure the CFG during loop transformations.
+ * ========================================================================= */
+
+/**
+ * @brief Mark every basic block reachable from the entry block (index 0).
+ *
+ * Uses an explicit stack-based DFS to avoid call-stack overflow on functions
+ * with deeply nested control flow.  @p reachable must be zero-initialised by
+ * the caller; on return, reachable[b] is 1 for every block reachable from
+ * block 0 via succ[] edges.
+ *
+ * @param f          IR function whose CFG is traversed.
+ * @param reachable  Output array of length @c f->blockCount (caller-zeroed).
+ */
+static void mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) {
+    if (f->blockCount == 0) return;
+
+    // worst case: every block on the stack once → blockCount entries suffice
+    int *stack = arena_alloc(arena, (size_t)f->blockCount * sizeof(int));
+    int top = 0;
+
+    // seed the DFS from the function entry block
+    stack[top++] = 0;
+    reachable[0] = 1; // mark before push so we never push the same block twice
+
+    while (top > 0) {
+        int b = stack[--top];
+        for (int k = 0; k < 2; k++) { // each block has at most 2 successors (succ[0], succ[1])
+            int s = f->blocks[b].bb.succ[k];
+            // bounds check guards against sentinel -1 and stale succ values
+            if (s >= 0 && s < f->blockCount && !reachable[s]) {
+                reachable[s] = 1; // mark before push: prevents re-enqueuing in cyclic CFGs
+                stack[top++] = s;
+            }
+        }
+    }
+}
+
+/* =========================================================================
+ * Phase 3 — Mark: backward liveness scan
+ * =========================================================================
+ * One backward pass per block over the flat instruction array.  The live set
+ * is seeded with the block-level LiveOut computed by liveness_computeIr()
+ * and updated instruction by instruction using the standard backward
+ * dataflow transfer function:
+ *
+ *   live_before(i) = (live_after(i) - def(i)) ∪ use(i)
+ *
+ * An instruction qualifies for elimination when its opcode is pure, it
+ * defines a storage operand (variable or temporary), and that operand's id
+ * is absent from the current live set — meaning no successor instruction on
+ * any execution path reads the value before it is overwritten or discarded.
+ * ========================================================================= */
+
+/**
+ * @brief Populate @p eliminate[] by scanning each block backward.
+ *
+ * For every instruction @c i in every reachable block:
+ *   - Unreachable blocks: all instructions are flagged unconditionally.
+ *   - Reachable blocks: an instruction is flagged only when it is pure,
+ *     defines a storage operand, and that operand is not live at this point.
+ *     Otherwise the live set is updated: source operands are marked live,
+ *     the destination operand is killed.
+ *
+ * A per-block LiveSet is allocated from @p arena (one allocation per block)
+ * and is reclaimed when the arena is destroyed by the caller.
+ *
+ * @param f          IR function to analyse.
+ * @param reachable  Per-block reachability flags (from mark_reachable_blocks).
+ * @param liv        Liveness result from liveness_computeIr(); provides
+ *                   LiveOut per block and the VarMap for operand id lookup.
+ * @param arena      Scratch arena for the per-block live set allocation.
+ * @param eliminate  Output byte array of length @c f->count (caller-zeroed);
+ *                   entries set to 1 identify instructions to be discarded.
+ */
+static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
+                      Arena *arena, char *eliminate) {
+    int nBlocks = f->blockCount;
+    int words   = liv->blockSets.words;
+    int nInstrs = f->count;
+
+    memset(eliminate, 0, (size_t)nInstrs);
+
+    for (int b = 0; b < nBlocks; b++) {
+
+        // unreachable block: all instructions are dead by definition
+        if (!reachable[b]) {
+            for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
+                eliminate[i] = 1;
+            continue;
+        }
+
+        // seed the backward scan with the block's live-out set
+        LiveSet live = liveset_new(arena, words);
+        liveset_copy(&live, &liv->blockSets.LiveOut[b]);
+
+        for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
+            IRInstr *in = &f->instrs[i];
+
+            // two-part check: opcode must write a dst AND dst must be a trackable
+            // storage location (OPND_VAR or OPND_TEMP); labels and function names
+            // are not tracked by the VarMap and must not be treated as defs
+            int def   = ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind);
+            int dstId = def ? varmap_operand_id(&liv->varMap, in->dst) : -1; // avoid lookup when not a def
+
+            // pure instruction whose destination is dead at this point: eliminate
+            if (is_pure(in->op) && def && dstId >= 0 && !liveset_test(&live, dstId)) {
+                eliminate[i] = 1;
+                // do NOT update the live set: sources of a dead instruction are
+                // themselves potentially dead and must not be kept alive artificially
+                continue;
+            }
+
+            // update live set: make sources live, kill the destination.
+            // order matters — sources are added BEFORE the destination is killed.
+            // this correctly handles self-referential patterns like "x = x + 1":
+            // if we killed dst first, src (same variable) would look dead and its
+            // liveness would not propagate backwards past this instruction
+            if (ir_OperandIsStorage(in->src1.kind)) {
+                int id = varmap_operand_id(&liv->varMap, in->src1);
+                if (id >= 0) liveset_set(&live, id);
+            }
+            if (ir_OperandIsStorage(in->src2.kind)) {
+                int id = varmap_operand_id(&liv->varMap, in->src2);
+                if (id >= 0) liveset_set(&live, id);
+            }
+            if (def && dstId >= 0)
+                liveset_clrbit(&live, dstId); // dst is defined here, so not live above
+        }
+    }
+}
+
+/* =========================================================================
+ * Phase 4 — Sweep: compact the instruction array
+ * =========================================================================
+ * A single forward pass discards every entry flagged in eliminate[], writing
+ * survivors into a fresh heap allocation.  Block start/end indices are
+ * updated to reflect each block's new position in the compacted array.
+ *
+ * Note: this function is structurally identical to cp_sweep() in cp.c.
+ * Factoring it into a shared helper (e.g. ir_compact_instrs() in ir.c)
+ * would eliminate the duplication; left as-is to keep both passes
+ * self-contained and avoid coupling their internal layouts.
+ * ========================================================================= */
+
+/**
+ * @brief Compact @c f->instrs, discarding every instruction flagged in @p eliminate.
+ *
+ * Allocates a fresh instruction array, copies surviving instructions into it,
+ * and replaces @c f->instrs with the new allocation (freeing the old one).
+ * Updates @c f->blocks[b].bb.start and @c .end for every block and resets
+ * @c f->curBlockStart to 0, since the compacted layout always starts at 0.
+ *
+ * @param f          IR function to compact (modified in place).
+ * @param eliminate  Byte flag array of length @c f->count; 1 → discard.
+ * @param nBlocks    Number of blocks (must equal @c f->blockCount).
+ * @return           1 if at least one instruction was removed, 0 otherwise.
+ */
+static int dce_sweep(IRFunction *f, char *eliminate, int nBlocks) {
+    int nInstrs = f->count;
+    // upper bound: at most nInstrs survivors, so no realloc needed
+    IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
+    int newCount = 0;
+
+    for (int b = 0; b < nBlocks; b++) {
+        int oldStart = f->blocks[b].bb.start;
+        int oldEnd   = f->blocks[b].bb.end;
+        int newStart = newCount; // snapshot position before copying this block's survivors
+
+        for (int i = oldStart; i < oldEnd; i++) {
+            if (!eliminate[i])
+                newInstrs[newCount++] = f->instrs[i];
+        }
+
+        // rewrite indices to reflect the compacted layout
+        f->blocks[b].bb.start = newStart;
+        f->blocks[b].bb.end   = newCount; // newCount is now one past the last survivor
+    }
+
+    free(f->instrs);
+    f->instrs        = newInstrs;
+    f->count         = newCount;
+    f->capacity      = newCount; // allocation is exactly sized; no slack needed
+    f->curBlockStart = 0;        // reset: meaningful only during IR construction
+
+    // changed iff the total count shrank — no extra flag variable needed
+    return newCount != nInstrs;
+}
+
+/* =========================================================================
+ * Public entry point
+ * ========================================================================= */
+
+/**
+ * @brief Run one DCE iteration over @p f, returning whether anything changed.
+ *
+ * Orchestrates the four phases in order:
+ *   1. Reachability  — identify blocks that can never execute.
+ *   2. Liveness      — backward dataflow to determine live variables.
+ *   3. Mark          — flag pure instructions with dead destinations.
+ *   4. Sweep         — compact the instruction array, update block indices.
+ *
+ * All liveness data is allocated in a local arena that is destroyed on
+ * return.  The VarMap embedded in the LivenessResult owns a hash table and
+ * must be destroyed explicitly before the arena, as the hash table's backing
+ * memory was allocated with malloc (not in the arena).
+ *
+ * @pre  @p f must have a valid, fully resolved CFG (succ[] filled for all blocks).
+ * @post Unreachable instructions and dead pure instructions have been removed.
+ *       All block start/end indices are consistent with the new layout.
+ *
+ * @param f  IR function to optimise (modified in place).
+ * @return   1 if at least one instruction was eliminated, 0 if IR is unchanged.
+ */
+int dce_optimize(IRFunction *f) {
+    if (!f || f->blockCount == 0 || f->count == 0) return 0;
+
+    int nBlocks = f->blockCount;
+    Arena *arena = arena_create(0);
+
+    // phase 1: identify unreachable blocks
+    char *reachable = arena_alloc(arena, (size_t)nBlocks);
+    memset(reachable, 0, (size_t)nBlocks);
+    mark_reachable_blocks(f, reachable, arena);
+
+    // passing reachable to liveness_computeIr lets the dataflow engine skip
+    // unreachable blocks entirely — both a performance win and a correctness
+    // guard (unreachable blocks may have malformed or stale succ[] entries)
+
+    // phase 2: backward liveness dataflow over the IR
+    LivenessResult liv = liveness_computeIr(f, reachable, arena);
+
+    // allocate eliminate AFTER liveness: f->count is stable at this point
+    // (liveness_computeIr is read-only with respect to the instruction array)
+
+    // phase 3: mark dead instructions
+    char *eliminate = arena_alloc(arena, (size_t)f->count);
+    dce_mark(f, reachable, &liv, arena, eliminate);
+
+    // phase 4: compact the instruction array
+    int changed = dce_sweep(f, eliminate, nBlocks);
+
+    // varmap_destroy MUST come before arena_destroy: the VarMap's hash table
+    // pool was allocated with malloc (not inside the arena), so the arena
+    // cannot free it — only varmap_destroy() can
+    varmap_destroy(&liv.varMap);
+    arena_destroy(arena);
+
+    return changed;
+}
+
+// ==========================================
+// FILE: dce.h
+// ==========================================
+
+/**
+ * @file dce.h
+ * @brief Dead Code Elimination (DCE) pass interface.
+ *
+ * Exposes a single entry point, dce_optimize(), which removes IR instructions
+ * whose computed values are provably unused along every execution path, and
+ * unconditionally eliminates all instructions inside unreachable basic blocks.
+ *
+ * See dce.c for the full algorithm description.
+ *
+ * Pipeline position
+ * -----------------
+ * DCE is invoked at multiple points inside ir_buildFunction() (ir.c),
+ * always paired with at least one other pass that may expose new dead code:
+ *
+ *   SVN → DCE → (CP + DCE)* → LICM + SR → (CP + DCE)*
+ *
+ * The (CP + DCE) loop runs to a fixed point: constant propagation may
+ * materialise dead assignments, and eliminating those assignments may in
+ * turn expose further propagation opportunities.  After LICM + SR, the
+ * hoisted and strength-reduced instructions leave behind dead multiplications
+ * in the loop body that a final CP + DCE round cleans up.
+ *
+ * Idempotence
+ * -----------
+ * Running dce_optimize() twice in a row on unchanged IR always returns 0 on
+ * the second call — it is safe to call in a loop until no progress is made.
+ */
+
+#ifndef DCE_H
+#define DCE_H
+
+#include "ir.h"
+
+/**
+ * @brief Run one Dead Code Elimination iteration over @p f.
+ *
+ * Removes instructions that are either:
+ *   - Inside an unreachable basic block (no path from the entry reaches it), or
+ *   - Pure computations (no side effects) whose destination operand is dead
+ *     at every point past the instruction (i.e., the value is never read).
+ *
+ * A pure instruction is one whose only effect is computing a value:
+ * arithmetic, comparisons, logical operators, assignments, and array loads.
+ * Impure instructions — stores, calls, returns, branches, labels — are
+ * never eliminated regardless of whether their destination is live.
+ *
+ * @pre  @p f must have a valid, fully resolved CFG (succ[] set for all blocks).
+ * @post Instructions in unreachable blocks and pure instructions with dead
+ *       destinations have been removed.  All block start/end indices are
+ *       updated to reflect the compacted layout.
+ *
+ * @param f  IR function to optimise (modified in place).
+ * @return   1 if at least one instruction was removed, 0 if IR is unchanged.
+ */
+int dce_optimize(IRFunction *f);
+
+#endif /* DCE_H */
+
+// ==========================================
+// FILE: hash_table.c
+// ==========================================
+
+#include "hash_table.h"
+
+/* ── Forward declarations ───────────────────────────────────────────────── */
+
+static Entry *create_entry(void *key, size_t keySize,
+                            void *value, size_t valueSize,
+                            unsigned long hash);
+
+static int ht_resize(Hash_Table *table);
+
+static int is_prime(size_t n);
+
+static size_t next_prime(size_t n);
+
+static inline void save_entry(Entry *e, FILE *f);
+
+static inline int keys_equal(const void *a, size_t aSize, const void *b, size_t bSize);
+
+
+/* ── API implementation ──────────────────────────────────────────────── */
+
+Hash_Table *ht_create(size_t initialCapacity, hash_func hashFunction) {
+    // Allocate memory for the main structure
+    Hash_Table *table = malloc(sizeof(Hash_Table));
+    if (!table) return NULL;
+
+    table->size = 0;
+    // Ensure capacity is at least the default value
+    table->capacity = initialCapacity > 0 ? initialCapacity : HT_DEFAULT_CAPACITY;
+
+    // Allocate bucket array and initialize with NULL pointers
+    table->pool = calloc(table->capacity, sizeof(Entry *));
+    if (!table->pool) {
+        free(table); return NULL;
+    }
+
+    table->hashFunction = hashFunction;
+    return table;
+}
+
+void ht_snapshot(Hash_Table *table, const char *path) {
+    if (!table || !path) return;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror("ht_snapshot: fopen"); return; }
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        for (Entry *e = table->pool[i]; e; e = e->next)
+            save_entry(e, f);
+    }
+    fclose(f);
+}
+
+int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
+           void * restrict value, size_t valueSize) {
+    if (!table || !key) return 0;
+
+    unsigned long h = table->hashFunction(key, keySize);
+    unsigned int index = h % table->capacity;
+
+    for (Entry *e = table->pool[index]; e; e = e->next) {
+        if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
+
+        void *newValue = malloc(valueSize);
+        if (!newValue) return 0;
+        free(e->value);
+        e->value = newValue;
+        memcpy(e->value, value, valueSize);
+        e->size = valueSize;
+
+        return 1;
+    }
+
+    if (table->size + 1 >= table->capacity) {
+        if (!ht_resize(table)) return 0;
+        index = h % table->capacity;
+    }
+
+    Entry *newEntry = create_entry(key, keySize, value, valueSize, h);
+    if (!newEntry) return 0;
+
+    newEntry->next = table->pool[index];
+    table->pool[index] = newEntry;
+    table->size++;
+
+    return 1;
+}
+
+int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
+           void * restrict destBuffer, size_t destSize) {
+    if (!table || !key || !destBuffer) return 0;
+
+    unsigned int index = table->hashFunction(key, keySize) % table->capacity;
+    for (Entry *e = table->pool[index]; e; e = e->next) {
+        if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
+
+        size_t n = e->size < destSize ? e->size : destSize;
+        memcpy(destBuffer, e->value, n);
+        return 1;
+    }
+
+    return 0;
+}
+
+int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize) {
+    if (!table || !key) return 0;
+
+    unsigned int index = table->hashFunction(key, keySize) % table->capacity;
+    Entry *prev = NULL;
+    Entry *e = table->pool[index];
+
+    while (e && !keys_equal(e->key, e->keySize, key, keySize)) {
+        prev = e;
+        e = e->next;
+    }
+
+    if (!e) return 0;
+
+    if (prev) prev->next = e->next;
+    else table->pool[index] = e->next;
+
+    free(e->key);
+    free(e->value);
+    free(e);
+    table->size--;
+
+    return 1;
+}
+
+static int ht_resize(Hash_Table *table) {
+    size_t  newCap  = next_prime(table->capacity * 2);
+    Entry **newPool = calloc(newCap, sizeof(Entry *));
+    if (!newPool) return 0;
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        Entry *e = table->pool[i];
+        while (e) {
+            Entry *next = e->next;
+            unsigned int newIndex = e->hash % newCap;
+
+            e->next = newPool[newIndex];
+            newPool[newIndex] = e;
+            e = next;
+        }
+    }
+
+    free(table->pool);
+    table->pool = newPool;
+    table->capacity = newCap;
+    return 1;
+}
+
+static inline int keys_equal(const void *a, size_t aSize,
+                              const void *b, size_t bSize) {
+    return aSize == bSize && memcmp(a, b, aSize) == 0;
+}
+
+void ht_destroy(Hash_Table *table, const char *persistenceFilePath) {
+    if (!table) return;
+
+    if (persistenceFilePath) ht_snapshot(table, persistenceFilePath);
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        Entry *e = table->pool[i];
+        while (e) {
+            Entry *next = e->next;
+            free(e->key);
+            free(e->value);
+            free(e);
+            e = next;
+        }
+    }
+
+    free(table->pool);
+    free(table);
+}
+
+int ht_load(Hash_Table *table, const char *path) {
+    if (!table || !path) return 0;
+
+    if (table->size > 0) {
+        fprintf(stderr, "ht_load: table is not empty, aborting\n");
+        return 0;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    size_t keyLen, valLen;
+    char  *key = NULL;
+
+    while (fread(&keyLen, sizeof(size_t), 1, f) == 1) {
+        if (keyLen == 0 || keyLen > MAX_KEY_LEN) {
+            fprintf(stderr, "ht_load: invalid key length %zu, aborting\n", keyLen);
+            break;
+        }
+
+        key = malloc(keyLen);
+        if (!key) break;
+
+        if (fread(key, 1, keyLen, f) != keyLen) goto clean;
+
+        if (fread(&valLen, sizeof(size_t), 1, f) != 1) goto clean;
+        if (valLen == 0 || valLen > MAX_VALUE_SIZE) {
+            fprintf(stderr, "ht_load: invalid value length %zu, aborting\n", valLen);
+            goto clean;
+        }
+
+        char *val = malloc(valLen);
+        if (!val) goto clean;
+
+        if (fread(val, 1, valLen, f) == valLen) {
+            ht_set(table, key, keyLen, val, valLen);
+        }
+
+        free(val);
+        free(key);
+        key = NULL;
+    }
+
+clean:
+    if (key) free(key);
+    fclose(f);
+    return 1;
+}
+
+void ht_foreach(Hash_Table *table, ht_foreach_cb callback, void *userdata) {
+    if (!table || !callback) return;
+
+    for (size_t i = 0; i < table->capacity; i++) {
+        for (Entry *e = table->pool[i]; e; e = e->next) {
+            callback(e->key, e->keySize, e->value, e->size, userdata);
+        }
+    }
+}
+
+
+/* ── Static helpers ──────────────────────────────────────────────────── */
+
+static inline void save_entry(Entry *e, FILE *f) {
+    fwrite(&e->keySize, sizeof(size_t), 1, f);
+    fwrite(e->key,       e->keySize,    1, f);
+    fwrite(&e->size,    sizeof(size_t), 1, f);
+    fwrite(e->value,     e->size,       1, f);
+}
+
+static Entry *create_entry(void *key, size_t keySize,
+                            void *value, size_t valueSize,
+                            unsigned long hash) {
+    Entry *e = malloc(sizeof(Entry));
+    if (!e) return NULL;
+    e->key = e->value = NULL;
+
+    e->key = malloc(keySize);
+    if (!e->key) goto error;
+    memcpy(e->key, key, keySize);
+    e->keySize = keySize;
+
+    e->value = malloc(valueSize);
+    if (!e->value) goto error;
+    memcpy(e->value, value, valueSize);
+
+    e->size = valueSize;
+    e->hash = hash;
+    e->next = NULL;
+    return e;
+
+error:
+    free(e->key);
+    free(e->value);
+    free(e);
+    return NULL;
+}
+
+static int is_prime(size_t n) {
+    if (n < 2) return 0;
+    if (n == 2 || n == 3) return 1;
+    if (n % 2 == 0 || n % 3 == 0) return 0;
+
+    for (size_t i = 5; i * i <= n; i += 6) {
+        if (n % i == 0 || n % (i + 2) == 0) return 0;
+    }
+    return 1;
+}
+
+static size_t next_prime(size_t n) {
+    if (n < 2) return 2;
+    if (n % 2 == 0) n++;
+    while (!is_prime(n)) n += 2;
+    return n;
+}
+
+// ==========================================
+// FILE: hash_table.h
+// ==========================================
+
+/**
+ * @file hash_table.h
+ * @brief Hash table generica con separate chaining e supporto a chiavi/valori binari.
+ *
+ * Versione ALLEGGERITA per uso interno single-thread (es. come mattone per
+ * la symbol table di un compilatore): rispetto all'originale sono stati
+ * rimossi il readers-writer lock (pthread_rwlock_t) e il seed anti hash-
+ * flooding (generate_seed/lettura di /dev/urandom), inutili in un contesto
+ * dove non c'e' concorrenza e le chiavi non provengono da input ostile.
+ * L'API pubblica e la logica di collision/resize restano identiche.
+ */
+
+#ifndef HASH_TABLE_H
+#define HASH_TABLE_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_KEY_LEN     (1 << 12)
+#define MAX_VALUE_SIZE  (1 << 20)
+#define HT_DEFAULT_CAPACITY 101
+
+/* Niente piu' parametro 'seed': la funzione di hash e' deterministica,
+   coerente con l'uso da compilatore (le stesse chiavi devono sempre
+   produrre lo stesso hash, run dopo run, utile anche per il debug). */
+typedef unsigned long (*hash_func)(const void *key, size_t keySize);
+
+/**
+ * @brief Callback for table traversal.
+ */
+typedef void (*ht_foreach_cb)(void *key, size_t keySize,
+                               void *value, size_t valueSize,
+                               void *userdata);
+
+typedef struct Entry {
+    void *key;
+    size_t keySize;
+    void *value;
+    size_t size;
+    unsigned long hash;
+    struct Entry *next;
+} Entry;
+
+typedef struct {
+    Entry **pool;
+    size_t size;
+    size_t capacity;
+    hash_func hashFunction;
+    /* 'seed' e 'lock' rimossi rispetto alla versione originale */
+} Hash_Table;
+
+/* ── API ─────────────────────────────────────────────────────────────── */
+
+/**
+ * @brief Creates and initializes a new hash table.
+ * @pre initialCapacity > 0 (recommended), hashFunction != NULL
+ * @post A new Hash_Table instance is allocated and returned
+ * @return Pointer to the new Hash_Table, or NULL on failure.
+ */
+Hash_Table *ht_create(size_t initialCapacity, hash_func hashFunction);
+
+/**
+ * @brief Saves a snapshot of the table to a binary file.
+ */
+void ht_snapshot(Hash_Table *table, const char *path);
+
+/**
+ * @brief Inserts or updates a key-value pair in the table.
+ * @return 1 on success, 0 on failure
+ */
+int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
+           void * restrict value, size_t valueSize);
+
+/**
+ * @brief Retrieves a copy of the value associated with a key.
+ * @return 1 if found, 0 otherwise.
+ */
+int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
+           void * restrict destBuffer, size_t destSize);
+
+/**
+ * @brief Removes an entry from the table.
+ * @return 1 if found and deleted, 0 otherwise.
+ */
+int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize);
+
+/**
+ * @brief Destroys the table and frees all allocated resources.
+ * @param persistenceFilePath Optional path to save a final snapshot before destruction.
+ */
+void ht_destroy(Hash_Table *table, const char *persistenceFilePath);
+
+/**
+ * @brief Loads table content from a binary snapshot.
+ * @return 1 on success, 0 on failure.
+ */
+int ht_load(Hash_Table *table, const char *path);
+
+/**
+ * @brief Iterates over every entry in the table.
+ */
+void ht_foreach(Hash_Table *table, ht_foreach_cb cb, void *userdata);
+
+#endif
+
+// ==========================================
+// FILE: instr_selector.c
+// ==========================================
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "instr_selector.h"
+#include "varmap.h"   /* sostituisce la VarMap locale */
+
+/* =========================================================================
+ * Nomi registri fisici — ordine identico all'enum MachPhysReg.
+ * ========================================================================= */
+static const char *physName64[] = {
+    "%rax", "%rcx", "%rdx", "%rsi", "%rdi",
+    "%r8",  "%r9",  "%r10", "%r11",
+    "%rbx", "%r12", "%r13", "%r14", "%r15",
+    "%rbp", "%rsp", "%al"
+};
+
+/* =========================================================================
+ * Costruttori operandi.
+ * ========================================================================= */
+static inline MachOperand mo_none(void) {
+    return (MachOperand){ .kind = MO_NONE };
+}
+static inline MachOperand mo_vreg(int id) {
+    return (MachOperand){ .kind = MO_VREG, .vregId = id };
+}
+static inline MachOperand mo_phys(MachPhysReg r) {
+    return (MachOperand){ .kind = MO_PHYS, .physReg = (int)r };
+}
+static inline MachOperand mo_imm(long v) {
+    return (MachOperand){ .kind = MO_IMM, .imm = v };
+}
+static inline MachOperand mo_label(int id) {
+    return (MachOperand){ .kind = MO_LABEL, .labelId = id };
+}
+static inline MachOperand mo_func(const char *name) {
+    return (MachOperand){ .kind = MO_FUNC, .func = name };
+}
+static inline MachOperand mo_mem(int base, int index, int scale, int disp) {
+    return (MachOperand){ .kind = MO_MEM,
+                          .data.mem = { .baseVreg = base,
+                                       .indexVreg = index,
+                                       .scale     = scale,
+                                       .disp      = disp } };
+}

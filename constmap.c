@@ -13,12 +13,12 @@
  *
  * ConstMap is a flat array of LatVal allocated entirely from the caller's
  * Arena.  Indexed access is O(1) and the array is contiguous in memory,
- * which benefits the entry-wise meet (constMap_meet) and equality check
- * (constMap_equal) that iterate over all entries in the fixed-point loop.
+ * which benefits the entry-wise meet (const_map_meet) and equality check
+ * (const_map_equal) that iterate over all entries in the fixed-point loop.
  *
  * Division-by-zero policy
  * -----------------------
- * Both foldBinaryInt and foldBinaryFloat return 0 (fold not performed) when
+ * Both fold_binary_int and fold_binary_float return 0 (fold not performed) when
  * the divisor is zero.  This defers the division to runtime, where it will
  * either raise a signal or produce implementation-defined behaviour — the
  * same outcome the unoptimised code would produce.  Folding a division by
@@ -39,7 +39,7 @@ LatVal lat_unknown(void) {
     return v;
 }
 
-LatVal lat_setConstInt(int ival) {
+LatVal lat_set_const_int(int ival) {
     LatVal v = {0};
     v.state      = LAT_CONST;
     v.isFloat    = 0;
@@ -47,7 +47,7 @@ LatVal lat_setConstInt(int ival) {
     return v;
 }
 
-LatVal lat_setConstFloat(float fval) {
+LatVal lat_set_const_float(float fval) {
     LatVal v = {0};
     v.state      = LAT_CONST;
     v.isFloat    = 1;
@@ -65,9 +65,9 @@ LatVal lat_conflict(void) {
  * Lattice predicates
  * ========================================================================= */
 
-int lat_isConst(LatVal v)    { return v.state == LAT_CONST;    }
-int lat_isUnknown(LatVal v)  { return v.state == LAT_UNKNOWN;  }
-int lat_isConflict(LatVal v) { return v.state == LAT_CONFLICT; }
+int lat_is_const(LatVal v)    { return v.state == LAT_CONST;    }
+int lat_is_unknown(LatVal v)  { return v.state == LAT_UNKNOWN;  }
+int lat_is_conflict(LatVal v) { return v.state == LAT_CONFLICT; }
 
 /* =========================================================================
  * Lattice meet (⊓)
@@ -130,14 +130,14 @@ int lat_equal(LatVal a, LatVal b) {
  * Allocating from the caller's arena avoids per-map malloc/free pairs and
  * lets the caller reclaim all CP-related memory in a single arena_destroy().
  */
-void constMap_init(ConstMap *m, int size, Arena *arena) {
+void const_map_init(ConstMap *m, int size, Arena *arena) {
     m->size = size;
     m->vals = arena_alloc(arena, (size_t)size * sizeof(LatVal));
     // initialise every entry to UNKNOWN: no definitions seen yet on any path
     for (int i = 0; i < size; i++) m->vals[i] = lat_unknown();
 }
 
-void constMap_copy(ConstMap *dst, const ConstMap *src) {
+void const_map_copy(ConstMap *dst, const ConstMap *src) {
     memcpy(dst->vals, src->vals, (size_t)src->size * sizeof(LatVal));
 }
 
@@ -148,7 +148,7 @@ void constMap_copy(ConstMap *dst, const ConstMap *src) {
  * Short-circuits on the first mismatch for efficiency in the common case
  * where the fixed-point has not yet been reached and many entries differ.
  */
-int constMap_equal(const ConstMap *a, const ConstMap *b) {
+int const_map_equal(const ConstMap *a, const ConstMap *b) {
     for (int i = 0; i < a->size; i++)
         if (!lat_equal(a->vals[i], b->vals[i])) return 0;
     return 1;
@@ -158,10 +158,10 @@ int constMap_equal(const ConstMap *a, const ConstMap *b) {
  * @brief Apply the meet operation entry-wise to merge predecessor Out sets.
  *
  * Called once per predecessor at each join point: the first predecessor
- * copies its Out into In[b] (constMap_copy), and each subsequent one applies
+ * copies its Out into In[b] (const_map_copy), and each subsequent one applies
  * this function so that In[b] accumulates the greatest lower bound.
  */
-void constMap_meet(ConstMap *dest, const ConstMap *src) {
+void const_map_meet(ConstMap *dest, const ConstMap *src) {
     for (int i = 0; i < dest->size; i++)
         dest->vals[i] = lat_meet(dest->vals[i], src->vals[i]);
 }
@@ -173,7 +173,7 @@ void constMap_meet(ConstMap *dest, const ConstMap *src) {
  * an operand that was not tracked (e.g. added after the VarMap was built);
  * returning CONFLICT is the safe conservative choice.
  */
-LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm) {
+LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm) {
     int id = varmap_operand_id(vm, op);
     if (id < 0 || id >= m->size) return lat_conflict(); // id out of range → conservative
     return m->vals[id];
@@ -188,9 +188,9 @@ LatVal constMap_get(const ConstMap *m, Operand op, VarMap *vm) {
  * OPND_CONST_FLOAT), so the instruction selector never needs to load it from
  * a variable slot.
  */
-Operand constMap_tryFold(Operand op, const ConstMap *m, VarMap *vm) {
+Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm) {
     if (op.kind != OPND_VAR && op.kind != OPND_TEMP) return op; // not a storage location
-    LatVal lv = constMap_get(m, op, vm);
+    LatVal lv = const_map_get(m, op, vm);
     if (lv.state != LAT_CONST) return op; // UNKNOWN or CONFLICT: cannot substitute
     if (lv.isFloat) {
         Operand o;
@@ -211,7 +211,7 @@ Operand constMap_tryFold(Operand op, const ConstMap *m, VarMap *vm) {
  * These are called by cp.c's transferInstr() to evaluate the constant value
  * an instruction would produce given fully constant inputs.  They are also
  * used by the rewriting phase to fold operations whose operands have been
- * substituted with constants by constMap_tryFold().
+ * substituted with constants by const_map_try_fold().
  * ========================================================================= */
 
 /**
@@ -223,17 +223,17 @@ Operand constMap_tryFold(Operand op, const ConstMap *m, VarMap *vm) {
  * All other kinds (label, function name, none) return CONFLICT because they
  * cannot carry a numeric constant that can be propagated.
  */
-LatVal lat_getValueFromOperand(const ConstMap *map, Operand op, VarMap *vm) {
+LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm) {
     switch (op.kind) {
-    case OPND_CONST_INT:   return lat_setConstInt(op.data.intVal);     // inline integer constant
-    case OPND_CONST_FLOAT: return lat_setConstFloat(op.data.floatVal); // inline float constant
+    case OPND_CONST_INT:   return lat_set_const_int(op.data.intVal);     // inline integer constant
+    case OPND_CONST_FLOAT: return lat_set_const_float(op.data.floatVal); // inline float constant
     case OPND_VAR:
-    case OPND_TEMP:        return constMap_get(map, op, vm);         // look up in propagation state
+    case OPND_TEMP:        return const_map_get(map, op, vm);         // look up in propagation state
     default:               return lat_conflict();                     // label, func, none: not a value
     }
 }
 
-int isBinaryOp(IROp op) {
+int is_binary_op(IROp op) {
     switch (op) {
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
@@ -242,7 +242,7 @@ int isBinaryOp(IROp op) {
     }
 }
 
-int isComparisonOp(IROp op) {
+int is_comparison_op(IROp op) {
     switch (op) {
     case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
         return 1;
@@ -258,7 +258,7 @@ int isComparisonOp(IROp op) {
  * defines for integer division by zero.  Folding to an arbitrary value
  * would silently change program semantics.
  */
-int foldBinaryInt(IROp op, int a, int b, int *res) {
+int fold_binary_int(IROp op, int a, int b, int *res) {
     switch (op) {
     case IR_ADD: *res = a + b;                        return 1;
     case IR_SUB: *res = a - b;                        return 1;
@@ -280,9 +280,9 @@ int foldBinaryInt(IROp op, int a, int b, int *res) {
  *
  * Float division by zero is guarded the same way as integer division.
  * Comparison results are stored as float (0.0 or 1.0) and the caller is
- * responsible for converting them to int when isComparisonOp() is true.
+ * responsible for converting them to int when is_comparison_op() is true.
  */
-int foldBinaryFloat(IROp op, float a, float b, float *res) {
+int fold_binary_float(IROp op, float a, float b, float *res) {
     switch (op) {
     case IR_ADD: *res = a + b;                                 return 1;
     case IR_SUB: *res = a - b;                                 return 1;
@@ -306,17 +306,17 @@ int foldBinaryFloat(IROp op, float a, float b, float *res) {
  * IR_NOT applied to a float follows C semantics: the result is an integer
  * (0 or 1), stored as LAT_CONST with isFloat == 0.
  */
-LatVal foldUnary(IROp op, LatVal v) {
+LatVal fold_unary(IROp op, LatVal v) {
     if (v.state != LAT_CONST) return lat_conflict(); // can only fold a known constant
     if (!v.isFloat) {
         int i = v.val.ival;
-        if (op == IR_NEG) return lat_setConstInt(-i);
-        if (op == IR_NOT) return lat_setConstInt(!i);  // logical not: 0→1, non-zero→0
+        if (op == IR_NEG) return lat_set_const_int(-i);
+        if (op == IR_NOT) return lat_set_const_int(!i);  // logical not: 0→1, non-zero→0
     } else {
         float f = v.val.fval;
-        if (op == IR_NEG) return lat_setConstFloat(-f);
+        if (op == IR_NEG) return lat_set_const_float(-f);
         // IR_NOT on float: result is int (C semantics: !0.0f == 1, !non-zero == 0)
-        if (op == IR_NOT) return lat_setConstInt(f == 0.0f ? 1 : 0);
+        if (op == IR_NOT) return lat_set_const_int(f == 0.0f ? 1 : 0);
     }
     return lat_conflict(); // opcode not handled (should not occur in well-formed IR)
 }

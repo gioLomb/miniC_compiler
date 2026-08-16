@@ -3,7 +3,7 @@
 #include <string.h>
 #include "ast_to_symtab.h"
 
-DataType st_resolveType(const char *typeName) {
+DataType st_resolve_type(const char *typeName) {
     if (!typeName) return T_VOID;
 
     // Check first character to determine data type
@@ -14,7 +14,7 @@ DataType st_resolveType(const char *typeName) {
     }
 }
 
-void st_elaborateDecl(Arena *arena, const char *text,
+void st_elaborate_decl(Arena *arena, const char *text,
                              char **outTypeName, char **outName,
                              int *isArray, int *arraySize) {
     // Reset output flags and parameters
@@ -50,17 +50,17 @@ void st_elaborateDecl(Arena *arena, const char *text,
     }
 }
 
-int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node) {
+int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
     char *typeName, *name;
     int isArray, arraySize;
 
     // Parse declaration details from node text string
-    st_elaborateDecl(arena, node->text, &typeName, &name, &isArray, &arraySize);
+    st_elaborate_decl(arena, node->text, &typeName, &name, &isArray, &arraySize);
 
     // Build symbol table entry instance
     Symbol sym = {
         .kind       = SYM_VAR,
-        .dataType   = st_resolveType(typeName),
+        .dataType   = st_resolve_type(typeName),
         .isArray    = isArray,
         .arraySize  = arraySize,
         .scopeLevel = scope->level,
@@ -79,7 +79,7 @@ int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node) {
     return 1;
 }
 
-int st_resolveGlobalNamespace(ASTNode *program, Scope *global) {
+int st_resolve_global_namespace(ASTNode *program, Scope *global) {
     int errors = 0;
 
     // Allocate internal scratch arena for parsing top-level global declarations
@@ -91,10 +91,10 @@ int st_resolveGlobalNamespace(ASTNode *program, Scope *global) {
 
         char *typeName, *name;
         int isArray, arraySize;
-        st_elaborateDecl(arena, decl->text, &typeName, &name, &isArray, &arraySize);
+        st_elaborate_decl(arena, decl->text, &typeName, &name, &isArray, &arraySize);
 
         Symbol sym = {0};
-        sym.dataType = st_resolveType(typeName);
+        sym.dataType = st_resolve_type(typeName);
 
         // Process function declaration nodes
         if (decl->kind == ND_FUNC_DECL) {
@@ -115,10 +115,10 @@ int st_resolveGlobalNamespace(ASTNode *program, Scope *global) {
             for (int p = 0; p < paramCount; p++) {
                 char *ptypeName, *pname;
                 int pIsArray, pArraySize;
-                st_elaborateDecl(arena, decl->children[p]->text,
+                st_elaborate_decl(arena, decl->children[p]->text,
                                         &ptypeName, &pname, &pIsArray, &pArraySize);
 
-                DataType pType = st_resolveType(ptypeName);
+                DataType pType = st_resolve_type(ptypeName);
                 symtab_pack_param_type(&sym.paramTypes, p, pType);
             }
 

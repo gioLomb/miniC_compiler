@@ -62,14 +62,14 @@
  *  1. Build VarMap — assign a compact integer id to every distinct
  *     variable and temporary that appears in @p f.
  *
- *  2. Allocate ConstMaps — one In[b] and one Out[b] per basic block,
+ *  2. Allocate ConstMaps — one in[b] and one out[b] per basic block,
  *     all initialised to LAT_UNKNOWN (⊤).
  *
- *  3. Forward dataflow — iterate until no Out[b] changes:
- *       In[b]  = meet of Out[p] for all CFG predecessors p of b
- *       Out[b] = transfer function applied to In[b] over b's instructions
+ *  3. Forward dataflow — iterate until no out[b] changes:
+ *       in[b]  = meet of out[p] for all CFG predecessors p of b
+ *       out[b] = transfer function applied to in[b] over b's instructions
  *
- *  4. Rewrite — scan each block with a local copy of In[b]:
+ *  4. Rewrite — scan each block with a local copy of in[b]:
  *       - substitute variable uses with known constants
  *       - fold binary/unary instructions whose operands became constant
  *       - prune IR_IF_FALSE and jump-to-next edges from the CFG

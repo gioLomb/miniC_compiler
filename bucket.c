@@ -19,7 +19,7 @@
  * Only one Buckets instance may be live at a time; buckets_create()
  * enforces this by destroying any leftover arena before creating a new one.
  * ========================================================================= */
-static Arena *s_arena = NULL;
+static Arena *sArena = NULL;
 
 /* =========================================================================
  * Public API
@@ -27,11 +27,11 @@ static Arena *s_arena = NULL;
 
 Buckets buckets_create(int nextVreg, int k) {
     // Destroy any leftover arena from a previous (incorrectly unpaired) call.
-    if (s_arena) {
-        arena_destroy(s_arena);
-        s_arena = NULL;
+    if (sArena) {
+        arena_destroy(sArena);
+        sArena = NULL;
     }
-    s_arena = arena_create(0);
+    sArena = arena_create(0);
 
     Buckets b;
     b.k        = k;
@@ -39,22 +39,22 @@ Buckets buckets_create(int nextVreg, int k) {
 
     int nodesNum = (nextVreg > 0) ? nextVreg : 1;   // guard against zero-size allocation
 
-    b.head = arena_alloc(s_arena, (size_t)k * sizeof(int));
+    b.head = arena_alloc(sArena, (size_t)k * sizeof(int));
     memset(b.head, -1, (size_t)k * sizeof(int));   // -1 = empty sentinel for each bucket
 
-    b.next     = arena_alloc(s_arena, (size_t)nodesNum * sizeof(int));
-    b.prev     = arena_alloc(s_arena, (size_t)nodesNum * sizeof(int));
-    b.inBucket = arena_alloc(s_arena, (size_t)nodesNum * sizeof(int));
+    b.next     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    b.prev     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    b.inBucket = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
     memset(b.inBucket, 0, (size_t)nodesNum * sizeof(int));
 
     return b;
 }
 
 void buckets_free(Buckets *b) {
-    (void)b;   // arrays are owned by s_arena; the parameter exists for API symmetry
-    if (s_arena) {
-        arena_destroy(s_arena);
-        s_arena = NULL;
+    (void)b;   // arrays are owned by sArena; the parameter exists for API symmetry
+    if (sArena) {
+        arena_destroy(sArena);
+        sArena = NULL;
     }
 }
 

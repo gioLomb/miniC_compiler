@@ -21,7 +21,7 @@
  * @param typeName Name string of the data type.
  * @return Corresponding DataType enum value.
  */
-DataType st_resolveType(const char *typeName);
+DataType st_resolve_type(const char *typeName);
 
 /**
  * @brief Parses a combined declaration string from an AST node's text field into individual components.
@@ -36,7 +36,7 @@ DataType st_resolveType(const char *typeName);
  * @param isArray     Output flag set to 1 if declaration is an array, 0 otherwise.
  * @param arraySize   Output integer receiving array capacity if applicable.
  */
-void st_elaborateDecl(Arena *arena, const char *text,
+void st_elaborate_decl(Arena *arena, const char *text,
                              char **outTypeName, char **outName,
                              int *isArray, int *arraySize);
 
@@ -51,7 +51,7 @@ void st_elaborateDecl(Arena *arena, const char *text,
  * @param node  Pointer to the AST node (`ND_VAR_DECL` or `ND_PARAM`).
  * @return 1 on successful declaration, 0 if a redeclaration error occurs in the current scope.
  */
-int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node);
+int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
 
 /**
  * @brief Populates the global scope with top-level AST declarations (Pass 1).
@@ -63,6 +63,6 @@ int st_bindSymbol(Arena *arena, Scope *scope, ASTNode *node);
  * @param global  Pointer to the target global Scope structure.
  * @return Number of redeclaration errors encountered (0 indicates success).
  */
-int st_resolveGlobalNamespace(ASTNode *program, Scope *global);
+int st_resolve_global_namespace(ASTNode *program, Scope *global);
 
 #endif /* AST_TO_SYMTAB_H */

@@ -12,7 +12,7 @@
  *
  * Algorithm — four sequential phases
  * ------------------------------------
- *  1. Reachability  (markReachableBlocks)
+ *  1. Reachability  (mark_reachable_blocks)
  *     Depth-first search from the entry block (index 0) over CFG successor
  *     edges to identify unreachable blocks.  All instructions inside an
  *     unreachable block are unconditionally marked for elimination; no
@@ -85,7 +85,7 @@
  * @param op  IR opcode to test.
  * @return    1 if @p op is a pure computation, 0 if it has side effects.
  */
-static inline int isPure(IROp op) {
+static inline int is_pure(IROp op) {
     switch (op) {
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_NEG: case IR_NOT:
@@ -120,7 +120,7 @@ static inline int isPure(IROp op) {
  * @param f          IR function whose CFG is traversed.
  * @param reachable  Output array of length @c f->blockCount (caller-zeroed).
  */
-static void markReachableBlocks(IRFunction *f, char *reachable, Arena *arena) {
+static void mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) {
     if (f->blockCount == 0) return;
 
     // worst case: every block on the stack once → blockCount entries suffice
@@ -174,7 +174,7 @@ static void markReachableBlocks(IRFunction *f, char *reachable, Arena *arena) {
  * and is reclaimed when the arena is destroyed by the caller.
  *
  * @param f          IR function to analyse.
- * @param reachable  Per-block reachability flags (from markReachableBlocks).
+ * @param reachable  Per-block reachability flags (from mark_reachable_blocks).
  * @param liv        Liveness result from liveness_computeIr(); provides
  *                   LiveOut per block and the VarMap for operand id lookup.
  * @param arena      Scratch arena for the per-block live set allocation.
@@ -212,7 +212,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
             int dstId = def ? varmap_operand_id(&liv->varMap, in->dst) : -1; // avoid lookup when not a def
 
             // pure instruction whose destination is dead at this point: eliminate
-            if (isPure(in->op) && def && dstId >= 0 && !liveset_test(&live, dstId)) {
+            if (is_pure(in->op) && def && dstId >= 0 && !liveset_test(&live, dstId)) {
                 eliminate[i] = 1;
                 // do NOT update the live set: sources of a dead instruction are
                 // themselves potentially dead and must not be kept alive artificially
@@ -329,7 +329,7 @@ int dce_optimize(IRFunction *f) {
     // phase 1: identify unreachable blocks
     char *reachable = arena_alloc(arena, (size_t)nBlocks);
     memset(reachable, 0, (size_t)nBlocks);
-    markReachableBlocks(f, reachable, arena);
+    mark_reachable_blocks(f, reachable, arena);
 
     // passing reachable to liveness_computeIr lets the dataflow engine skip
     // unreachable blocks entirely — both a performance win and a correctness

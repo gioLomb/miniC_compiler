@@ -28,7 +28,7 @@ struct Arena {
 /**
  * @brief Aligns requested byte size upward to the target architecture's pointer alignment.
  */
-static size_t alignUp(size_t n) {
+static size_t align_up(size_t n) {
     size_t a = sizeof(void *);
     return (n + a - 1) & ~(a - 1);
 }
@@ -36,7 +36,7 @@ static size_t alignUp(size_t n) {
 /**
  * @brief Allocates a new physical memory block on heap containing header and payload space.
  */
-static ArenaBlock *blockCreate(size_t capacity) {
+static ArenaBlock *block_create(size_t capacity) {
     // Allocate header size + raw payload capacity in a single malloc call
     ArenaBlock *block = malloc(sizeof(ArenaBlock) + capacity);
     if (!block) {
@@ -60,14 +60,14 @@ Arena *arena_create(size_t blockSize) {
     }
 
     arena->defaultBlockSize = blockSize;
-    arena->head             = blockCreate(blockSize);
+    arena->head             = block_create(blockSize);
     arena->current          = arena->head;
     return arena;
 }
 
 void *arena_alloc(Arena *arena, size_t size) {
     // Ensure all allocations align with standard alignment boundaries
-    size_t aligned = alignUp(size);
+    size_t aligned = align_up(size);
 
     // Check if the current block has enough capacity for requested size
     if (arena->current->capacity - arena->current->used < aligned) {
@@ -76,7 +76,7 @@ void *arena_alloc(Arena *arena, size_t size) {
         if (aligned > newCapacity) newCapacity = aligned;
 
         // Append new block to chain and advance active block pointer
-        ArenaBlock *block = blockCreate(newCapacity);
+        ArenaBlock *block = block_create(newCapacity);
         arena->current->next = block;
         arena->current       = block;
     }
