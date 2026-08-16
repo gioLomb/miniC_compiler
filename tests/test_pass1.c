@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     printf("Parsing: %d errori.\n", totalErrorCount());
 
     Scope *global = sym_scopeCreate(NULL);
-    int symErrors = st_resolveGlobalNamespace(root, global);
+    int symErrors = st_resolve_global_namespace(root, global);
     printf("Pass 1 (popolamento scope globale): %d errori.\n\n", symErrors);
 
     printf("=== SCOPE GLOBALE ===\n");

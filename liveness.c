@@ -6,73 +6,18 @@
  *
  * Internal organisation
  * ---------------------
- *  1. LiveSet primitives  — bit-set operations used everywhere.
- *  2. liveness_computeCore  — generic backward dataflow engine.
- *  3. liveness_computePerInstr  — single backward sweep for per-instruction sets.
- *  4. IR front-end  — irExtract callback + liveness_computeIr wrapper.
- *  5. Machine front-end  — machExtract callback + liveness_computeMach wrapper.
- *  6. IR predicates  — ir_DefinesDst, ir_OperandIsStorage.
+ *  1. liveness_computeCore     — generic backward dataflow engine.
+ *  2. liveness_computePerInstr — single backward sweep for per-instruction sets.
+ *  3. IR front-end             — irExtract callback + liveness_computeIr wrapper.
+ *  4. Machine front-end        — machExtract callback + liveness_computeMach wrapper.
+ *
+ * Note: bit-set primitives live in bitset.h (all inline); LiveSet is a
+ * typedef of BitSet defined in liveness.h.
  */
 
 #include <stdlib.h>
 #include <string.h>
 #include "liveness.h"
-
-/* =========================================================================
- * LiveSet primitives
- * ========================================================================= */
-
-LiveSet liveset_new(Arena *arena, int words) {
-    LiveSet s;
-    s.words = words;
-    s.bits  = arena_alloc(arena, (size_t)words * sizeof(uint64_t));
-    memset(s.bits, 0, (size_t)words * sizeof(uint64_t));
-    return s;
-}
-
-/** Zero all words of @p s in one memset. */
-static inline void liveset_clear(LiveSet *s) {
-    memset(s->bits, 0, (size_t)s->words * sizeof(uint64_t));
-}
-
-void liveset_set(LiveSet *s, int id) {
-    s->bits[id >> 6] |= 1ULL << (id & 63);
-}
-
-void liveset_clrbit(LiveSet *s, int id) {
-    s->bits[id >> 6] &= ~(1ULL << (id & 63));
-}
-
-int liveset_test(const LiveSet *s, int id) {
-    return (s->bits[id >> 6] >> (id & 63)) & 1ULL;
-}
-
-/** dst |= src  (word-by-word OR). */
-static inline void liveset_union(LiveSet *dst, const LiveSet *src) {
-    for (int i = 0; i < dst->words; i++) dst->bits[i] |= src->bits[i];
-}
-
-/** dst = a | b  (three-operand form avoids a copy when dst aliases neither). */
-static inline void liveset_unionInto(LiveSet *dst,
-                                       const LiveSet *a, const LiveSet *b) {
-    for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] | b->bits[i];
-}
-
-/** dst = a & ~b  (set difference: a minus b). */
-static inline void liveset_diff(LiveSet *dst,
-                                 const LiveSet *a, const LiveSet *b) {
-    for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] & ~b->bits[i];
-}
-
-int liveset_equal(const LiveSet *a, const LiveSet *b) {
-    for (int i = 0; i < a->words; i++)
-        if (a->bits[i] != b->bits[i]) return 0;
-    return 1;
-}
-
-void liveset_copy(LiveSet *dst, const LiveSet *src) {
-    memcpy(dst->bits, src->bits, (size_t)src->words * sizeof(uint64_t));
-}
 
 /* =========================================================================
  * Generic backward dataflow engine
@@ -131,15 +76,15 @@ LivenessBlockSets liveness_computeCore(int nBlocks, const BasicBlock *blocks,
             extract(ctx, i, uses, &nUses, defs, &nDefs);
             // A use counts only if the variable has not yet been defined in this block.
             for (int k = 0; k < nUses; k++)
-                if (!liveset_test(&r.Def[b], uses[k]))
-                    liveset_set(&r.Use[b], uses[k]);
+                if (!bitset_test(&r.Def[b], uses[k]))
+                    bitset_set(&r.Use[b], uses[k]);
             for (int k = 0; k < nDefs; k++)
-                liveset_set(&r.Def[b], defs[k]);
+                bitset_set(&r.Def[b], defs[k]);
         }
     }
 
     // --- Backward iterative fixed-point. ---
-    LiveSet tmp = liveset_new(arena, r.words);
+    LiveSet tmp = bitset_new(arena, r.words);
     int changed = 1;
     while (changed) {
         changed = 0;
@@ -148,19 +93,19 @@ LivenessBlockSets liveness_computeCore(int nBlocks, const BasicBlock *blocks,
             if (reachable && !reachable[b]) continue;
 
             // LiveOut[b] = union of LiveIn[s] for all successors s.
-            liveset_clear(&r.LiveOut[b]);
+            bitset_clear(&r.LiveOut[b]);
             for (int k = 0; k < 2; k++) {
                 int s = blocks[b].succ[k];
                 if (s >= 0 && s < nBlocks && !(reachable && !reachable[s]))
-                    liveset_union(&r.LiveOut[b], &r.LiveIn[s]);
+                    bitset_or(&r.LiveOut[b], &r.LiveIn[s]);
             }
 
             // LiveIn[b] = Use[b] ∪ (LiveOut[b] − Def[b]).
-            liveset_diff(&tmp, &r.LiveOut[b], &r.Def[b]);
-            liveset_unionInto(&tmp, &tmp, &r.Use[b]);
+            bitset_diff(&tmp, &r.LiveOut[b], &r.Def[b]);
+            bitset_union_into(&tmp, &tmp, &r.Use[b]);
 
-            if (!liveset_equal(&r.LiveIn[b], &tmp)) {
-                liveset_copy(&r.LiveIn[b], &tmp);
+            if (!bitset_equal(&r.LiveIn[b], &tmp)) {
+                bitset_copy(&r.LiveIn[b], &tmp);
                 changed = 1;
             }
         }
@@ -200,14 +145,14 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
 
     for (int b = 0; b < nBlocks; b++) {
         // Seed the sweep with the block-level live-out.
-        liveset_copy(&live, &blockLiveOut[b]);
+        bitset_copy(&live, &blockLiveOut[b]);
 
         for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
-            liveset_copy(&liveAfter[i], &live);
+            bitset_copy(&liveAfter[i], &live);
             extract(ctx, i, uses, &nUses, defs, &nDefs);
             // Remove definitions, then add uses (standard backward transfer).
-            for (int k = 0; k < nDefs; k++) liveset_clrbit(&live, defs[k]);
-            for (int k = 0; k < nUses; k++) liveset_set(&live, uses[k]);
+            for (int k = 0; k < nDefs; k++) bitset_clr(&live, defs[k]);
+            for (int k = 0; k < nUses; k++) bitset_set(&live, uses[k]);
         }
     }
     return liveAfter;

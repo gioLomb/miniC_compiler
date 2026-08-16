@@ -27,7 +27,7 @@ static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     lexer_close();
 
     Scope *global = sym_scopeCreate(NULL);
-    st_resolveGlobalNamespace(root, global);
+    st_resolve_global_namespace(root, global);
     semantic_check(root, global);
     sym_finalize(global);
 

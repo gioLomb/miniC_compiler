@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
 
     /* ---- Analisi semantica ---- */
     Scope *global    = sym_scopeCreate(NULL);
-    int pass1Errors  = st_resolveGlobalNamespace(root, global);
+    int pass1Errors  = st_resolve_global_namespace(root, global);
     int semErrors    = semantic_check(root, global);
 
     if (!emit_asm) {

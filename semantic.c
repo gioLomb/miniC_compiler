@@ -362,7 +362,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
  * @param returnType  Return type of the enclosing function; threaded through
  *                    the recursion so ND_RETURN nodes can be validated.
  * @param arena       Scratch arena forwarded to declaration helpers
- *                    (st_bindSymbol, st_elaborateDecl).
+ *                    (st_bind_symbol, st_elaborate_decl).
  * @param errors      Incremented once per semantic error found.
  */
 static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
@@ -375,7 +375,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
     case ND_VAR_DECL: {
         // Register the variable in the current scope and stamp the node with
         // (scopeLevel, offset); returns 0 on redeclaration.
-        if (!st_bindSymbol(arena, scope, stmt)) {
+        if (!st_bind_symbol(arena, scope, stmt)) {
             (*errors)++;
             break; // no initializer check if the declaration itself failed
         }
@@ -386,9 +386,9 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
         // initializer compatibility checking.
         char *typeNameBuf, *varName;
         int isArray, arraySize;
-        st_elaborateDecl(arena, stmt->text, &typeNameBuf, &varName,
+        st_elaborate_decl(arena, stmt->text, &typeNameBuf, &varName,
                                 &isArray, &arraySize);
-        DataType declType = st_resolveType(typeNameBuf);
+        DataType declType = st_resolve_type(typeNameBuf);
 
         if (!isArray) {
             // Scalar initializer: exactly one expression child.
@@ -501,10 +501,10 @@ static void checkFunctionBody(ASTNode *decl, Scope *global,
     // (format: "retType funcName", e.g. "int main" or "float compute").
     char *typeNameBuf, *funcName;
     int isArray, arraySize;
-    st_elaborateDecl(arena, decl->text, &typeNameBuf, &funcName,
+    st_elaborate_decl(arena, decl->text, &typeNameBuf, &funcName,
                             &isArray, &arraySize);
 
-    DataType returnType = st_resolveType(typeNameBuf);
+    DataType returnType = st_resolve_type(typeNameBuf);
 
     // Parameter scope is a direct child of global so forward references to
     // other top-level functions are visible from inside the body.
@@ -513,7 +513,7 @@ static void checkFunctionBody(ASTNode *decl, Scope *global,
     // All children except the last are parameters (ND_PARAM nodes).
     int paramCount = decl->nchildren - 1;
     for (int p = 0; p < paramCount; p++) {
-        if (!st_bindSymbol(arena, fnScope, decl->children[p]))
+        if (!st_bind_symbol(arena, fnScope, decl->children[p]))
             (*errors)++;
     }
 
@@ -536,7 +536,7 @@ int semantic_check(ASTNode *program, Scope *global) {
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         // Global variable declarations were fully handled by Pass 1
-        // (st_resolveGlobalNamespace); only function bodies need walking here.
+        // (st_resolve_global_namespace); only function bodies need walking here.
         if (decl->kind != ND_FUNC_DECL) continue;
         checkFunctionBody(decl, global, arena, &errors);
     }

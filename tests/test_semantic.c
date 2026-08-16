@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
 
     Scope *global = sym_scopeCreate(NULL);
 
-    int pass1Errors = st_resolveGlobalNamespace(root, global);
+    int pass1Errors = st_resolve_global_namespace(root, global);
     printf("Pass 1 (signature globali): %d errori.\n", pass1Errors);
 
     int semErrors = semantic_check(root, global);

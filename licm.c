@@ -172,7 +172,7 @@ static int moveInvariants(IRFunction *f, Loop *L, LiveSet *Dom,
         if (!dominatesAllExits(L, Dom, blk)) continue;
         int dstId = varmap_operand_id(vm, f->instrs[j].dst);
         if (dstId < 0 || defCount[dstId] != 1) continue;
-        if (liveset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
+        if (bitset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
         doMove[j] = 1; moved++;
     }
 

@@ -295,7 +295,7 @@ int sr_optimize(IRFunction *f) {
     int words   = (nBlocks + BITS_PER_WORD-1) / BITS_PER_WORD;
     Arena *arena = arena_create(0);
 
-    LiveSet *Dom  = loop_compute_dominators(f, words, arena);
+    BitSet  *Dom  = loop_compute_dominators(f, words, arena);
     Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
     int      nLoops = loop_find(f, Dom, loops, arena);
     if (nLoops == 0) { arena_destroy(arena); return 0; }

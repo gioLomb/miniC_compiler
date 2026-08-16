@@ -170,7 +170,7 @@ static void mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) 
  *     Otherwise the live set is updated: source operands are marked live,
  *     the destination operand is killed.
  *
- * A per-block LiveSet is allocated from @p arena (one allocation per block)
+ * A per-block BitSet is allocated from @p arena (one allocation per block)
  * and is reclaimed when the arena is destroyed by the caller.
  *
  * @param f          IR function to analyse.
@@ -199,8 +199,8 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
         }
 
         // seed the backward scan with the block's live-out set
-        LiveSet live = liveset_new(arena, words);
-        liveset_copy(&live, &liv->blockSets.LiveOut[b]);
+        BitSet live = bitset_new(arena, words);
+        bitset_copy(&live, &liv->blockSets.LiveOut[b]);
 
         for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
             IRInstr *in = &f->instrs[i];
@@ -212,7 +212,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
             int dstId = def ? varmap_operand_id(&liv->varMap, in->dst) : -1; // avoid lookup when not a def
 
             // pure instruction whose destination is dead at this point: eliminate
-            if (is_pure(in->op) && def && dstId >= 0 && !liveset_test(&live, dstId)) {
+            if (is_pure(in->op) && def && dstId >= 0 && !bitset_test(&live, dstId)) {
                 eliminate[i] = 1;
                 // do NOT update the live set: sources of a dead instruction are
                 // themselves potentially dead and must not be kept alive artificially
@@ -226,14 +226,14 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
             // liveness would not propagate backwards past this instruction
             if (ir_OperandIsStorage(in->src1.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src1);
-                if (id >= 0) liveset_set(&live, id);
+                if (id >= 0) bitset_set(&live, id);
             }
             if (ir_OperandIsStorage(in->src2.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src2);
-                if (id >= 0) liveset_set(&live, id);
+                if (id >= 0) bitset_set(&live, id);
             }
             if (def && dstId >= 0)
-                liveset_clrbit(&live, dstId); // dst is defined here, so not live above
+                bitset_clr(&live, dstId); // dst is defined here, so not live above
         }
     }
 }

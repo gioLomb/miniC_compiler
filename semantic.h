@@ -25,7 +25,7 @@
  * nothing needs to be exported or re-queried.
  *
  * @pre  @p global must already be populated with all top-level signatures
- *       by st_resolveGlobalNamespace() (Pass 1, ast_to_symtab.h) before
+ *       by st_resolve_global_namespace() (Pass 1, ast_to_symtab.h) before
  *       calling semantic_check().  Forward references between functions
  *       (a function calling another declared later in the file) would not
  *       resolve otherwise.
@@ -55,7 +55,7 @@
  * another symbol-table lookup.
  *
  * @param program  Root ND_PROGRAM node produced by ParseProgram().
- * @param global   Global scope pre-populated by st_resolveGlobalNamespace().
+ * @param global   Global scope pre-populated by st_resolve_global_namespace().
  * @return         Total number of semantic errors (0 = no errors).
  */
 int semantic_check(ASTNode *program, Scope *global);
