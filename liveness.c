@@ -185,15 +185,15 @@ static void irExtract(void *ctxP, int instrIdx,
     IRInstr *in = &ctx->f->instrs[instrIdx];
     *nUses = 0; *nDefs = 0;
 
-    if (ir_OperandIsStorage(in->src1.kind)) {
+    if (ir_operand_is_storage(in->src1.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->src1);
         if (id >= 0) uses[(*nUses)++] = id;
     }
-    if (ir_OperandIsStorage(in->src2.kind)) {
+    if (ir_operand_is_storage(in->src2.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->src2);
         if (id >= 0) uses[(*nUses)++] = id;
     }
-    if (ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind)) {
+    if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->dst);
         if (id >= 0) defs[(*nDefs)++] = id;
     }

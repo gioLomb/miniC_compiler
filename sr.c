@@ -1,3 +1,20 @@
+/**
+ * @file sr.c
+ * @brief Strength reduction optimization pass implementation.
+ *
+ * See sr.h for the module overview and transformation details.
+ *
+ * Internal organization
+ * ---------------------
+ *  foldInt                 - Integer constant folding helper.
+ *  sameOperand             - Operand equivalence comparison.
+ *  findInductionBase       - Identifies basic induction variables (i = i +/- c).
+ *  findDerived             - Identifies derived induction variables (t = i * d).
+ *  make_instr              - IR instruction factory helper.
+ *  applyStrengthReduction  - Rewrites loop body and inserts pre-header initializers.
+ *  sr_optimize             - Driver function for the pass.
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include "sr.h"
@@ -5,8 +22,19 @@
 #include "liveness.h"
 #include "arena.h"
 
-/* ---- Helpers ----------------------------------------------------------- */
+/* =========================================================================
+ * Helper Functions & Data Structures
+ * ========================================================================= */
 
+/**
+ * @brief Attempts to fold a binary integer arithmetic operation at compile time.
+ *
+ * @param op  IR opcode (IR_MUL, IR_ADD, or IR_SUB).
+ * @param a   First integer operand.
+ * @param b   Second integer operand.
+ * @param res Output pointer for the result.
+ * @return 1 if folding succeeded, 0 otherwise.
+ */
 static inline int foldInt(IROp op, int a, int b, int *res) {
     switch (op) {
     case IR_MUL: *res = a * b; return 1;
@@ -16,6 +44,13 @@ static inline int foldInt(IROp op, int a, int b, int *res) {
     }
 }
 
+/**
+ * @brief Tests two operands for structural identity.
+ *
+ * @param a First operand.
+ * @param b Second operand.
+ * @return 1 if both operands reference the same variable or temporary, 0 otherwise.
+ */
 static inline int sameOperand(Operand a, Operand b) {
     if (a.kind != b.kind) return 0;
     if (a.kind == OPND_VAR)
@@ -26,30 +61,53 @@ static inline int sameOperand(Operand a, Operand b) {
     return 0;
 }
 
-/* ---- Strutture --------------------------------------------------------- */
-
+/**
+ * @brief Descriptor for a basic induction variable in a loop.
+ *
+ * Basic induction variables are modified inside the loop exclusively via addition
+ * or subtraction of a loop-invariant constant.
+ */
 typedef struct {
-    Operand var;
-    int     varId;
-    int     step;
-    int     incrInstr;
+    Operand var;        /**< Operand representing the basic induction variable. */
+    int     varId;      /**< Unique variable ID from VarMap. */
+    int     step;       /**< Constant step value added/subtracted per iteration. */
+    int     incrInstr;  /**< Instruction index where the step is applied. */
 } InductionBase;
 
+/**
+ * @brief Descriptor for a derived induction variable.
+ *
+ * Derived induction variables are defined as the multiplication of a basic
+ * induction variable by a loop-invariant constant factor.
+ */
 typedef struct {
-    int     mulInstr;
-    int     dstId;
-    Operand dst;
-    int     multiplier;
-    int     stride;
-    int     srTempId;
-    int     baseIdx;
+    int     mulInstr;   /**< Instruction index of the multiplication. */
+    int     dstId;      /**< Unique variable ID for the target destination operand. */
+    Operand dst;        /**< Target destination operand. */
+    int     multiplier; /**< Constant multiplier scaling factor. */
+    int     stride;     /**< Calculated stride (step * multiplier). */
+    int     srTempId;   /**< ID of the generated strength-reduction temporary. */
+    int     baseIdx;    /**< Index into the parent basic induction variable array. */
 } InductionDerived;
 
-#define MAX_IVARS   16
-#define MAX_DERIVED 64
 
-/* ---- Ricerca variabili induttive base ---------------------------------- */
 
+/* =========================================================================
+ * Induction Variable Analysis
+ * ========================================================================= */
+
+/**
+ * @brief Scans a loop body to locate basic induction variables.
+ *
+ * Identifies variables defined exactly once within the loop matching `i = i +/- CONST`.
+ *
+ * @param f     IR function containing the loop.
+ * @param L     Loop descriptor.
+ * @param vm    Variable mapping table.
+ * @param ivars Output array populated with discovered basic induction variables.
+ * @param arena Scratch memory arena for intermediate allocations.
+ * @return Number of basic induction variables found.
+ */
 static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
                               InductionBase *ivars, Arena *arena) {
     int count   = 0;
@@ -57,16 +115,18 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
     int *defCount = arena_alloc(arena, (size_t)numVars * sizeof(int));
     memset(defCount, 0, (size_t)numVars * sizeof(int));
 
+    // Count definitions of each variable in the loop body
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
         for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
             IRInstr *in = &f->instrs[j];
-            if (!ir_DefinesDst(in->op)) continue;
+            if (!ir_defines_dst(in->op)) continue;
             int id = varmap_operand_id(vm, in->dst);
             if (id >= 0) defCount[id]++;
         }
     }
 
+    // Filter candidate basic induction variables (pattern: dst = dst +/- CONST)
     for (int i = 0; i < L->bodyCount && count < MAX_IVARS; i++) {
         int b = L->body[i];
         for (int j = f->blocks[b].bb.start;
@@ -74,9 +134,8 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
              j++) {
             const IRInstr *in = &f->instrs[j];
 
-            /* cerca pattern: dst = dst ± CONST, unica def nel loop */
             if (in->op != IR_ADD && in->op != IR_SUB)          continue;
-            if (!ir_OperandIsStorage(in->dst.kind))        continue;
+            if (!ir_operand_is_storage(in->dst.kind))            continue;
             if (!sameOperand(in->dst, in->src1))               continue;
             if (in->src2.kind != OPND_CONST_INT)               continue;
 
@@ -98,8 +157,20 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
     return count;
 }
 
-/* ---- Ricerca variabili induttive derivate ------------------------------ */
-
+/**
+ * @brief Scans a loop body for derived induction variables based on basic IVs.
+ *
+ * Looks for multiplications of the form `t = i * CONST` or `t = CONST * i`.
+ *
+ * @param f          IR function containing the loop.
+ * @param L          Loop descriptor.
+ * @param vm         Variable mapping table.
+ * @param ivars      Array of basic induction variables in the loop.
+ * @param ivarCount  Number of basic induction variables.
+ * @param derived    Output array populated with derived induction variables.
+ * @param nextTemp   Pointer to counter for generating new unique temporary IDs.
+ * @return Number of derived induction variables found.
+ */
 static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
                         InductionBase *ivars, int ivarCount,
                         InductionDerived *derived, int *nextTemp) {
@@ -113,8 +184,9 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
             const IRInstr *in = &f->instrs[j];
 
             if (in->op != IR_MUL) continue;
-            if (!ir_OperandIsStorage(in->dst.kind)) continue;
+            if (!ir_operand_is_storage(in->dst.kind)) continue;
 
+            // Check whether either multiplication operand matches a known basic IV
             for (int v = 0; v < ivarCount; v++) {
                 InductionBase *iv = &ivars[v];
                 int d = 0;
@@ -126,6 +198,7 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
                 else
                     continue;
 
+                // Stride = basic_step * multiplier
                 int stride;
                 if (!foldInt(IR_MUL, iv->step, d, &stride)) continue;
 
@@ -149,8 +222,20 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
     return count;
 }
 
-/* ---- Helper: costruisce una IRInstr azzerata con campi minimi ---------- */
+/* =========================================================================
+ * Code Transformation
+ * ========================================================================= */
 
+/**
+ * @brief Constructs a zeroed IR instruction with essential fields initialized.
+ *
+ * @param op        IR opcode.
+ * @param dst       Destination operand.
+ * @param src1      First source operand.
+ * @param src2      Second source operand.
+ * @param loopDepth Loop nesting depth.
+ * @return Fully initialized IRInstr structure.
+ */
 static inline IRInstr make_instr(IROp op, Operand dst,
                                   Operand src1, Operand src2,
                                   int loopDepth) {
@@ -159,8 +244,21 @@ static inline IRInstr make_instr(IROp op, Operand dst,
                       .loopDepth = loopDepth };
 }
 
-/* ---- Applicazione della strength reduction ----------------------------- */
-
+/**
+ * @brief Performs the strength reduction rewrite on loop instructions.
+ *
+ * 1. Emits pre-header initializers (`t_sr = i * multiplier`).
+ * 2. Replaces loop body multiplications with copies (`t = t_sr`).
+ * 3. Appends incremental updates (`t_sr = t_sr + stride`) following basic IV increments.
+ *
+ * @param f            IR function being transformed.
+ * @param L            Target loop descriptor.
+ * @param ivars        Array of basic induction variables.
+ * @param ivarCount    Number of basic induction variables.
+ * @param derived      Array of derived induction variables.
+ * @param derivedCount Number of derived induction variables.
+ * @return 1 if instructions were rewritten, 0 otherwise.
+ */
 static int applyStrengthReduction(IRFunction *f, Loop *L,
                                    InductionBase *ivars, int ivarCount,
                                    InductionDerived *derived, int derivedCount) {
@@ -172,7 +270,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     int nBlocks  = f->blockCount;
     int insertAt = f->blocks[header].bb.start;
 
-    /* loopDepth del corpo (prima istruzione dell'header) e dell'esterno */
+    // Retrieve loop body and outer nesting depths
     int bodyDepth  = f->instrs[insertAt].loopDepth;
     int outerDepth = bodyDepth > 0 ? bodyDepth - 1 : 0;
 
@@ -185,7 +283,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
 
     int phInitStart = -1, phInitEnd = -1;
 
-    /* Emette l'init SR di tutte le derived variables nel pre-header */
+    // Emit pre-header initialization instructions for derived temporaries
     #define EMIT_PH_INITS()                                                  \
         do {                                                                  \
             phInitStart = newCount;                                           \
@@ -206,12 +304,12 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
 
     for (int j = 0; j < nInstrs; j++) {
 
-        /* inserisci init SR prima dell'header (una sola volta) */
+        // Emit pre-header initializers immediately before the loop header
         if (j == insertAt) EMIT_PH_INITS();
 
         IRInstr *in = &f->instrs[j];
 
-        /* t = i * d  →  t = t_sr */
+        // Replace multiplication: t = i * d -> t = t_sr
         int isDerived = 0;
         for (int d = 0; d < derivedCount; d++) {
             if (j != derived[d].mulInstr) continue;
@@ -231,7 +329,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             newInstrs[newCount++] = *in;
         }
 
-        /* dopo i = i + c: inserisci t_sr = t_sr + stride */
+        // Insert step update after basic IV increment: t_sr = t_sr + stride
         for (int v = 0; v < ivarCount; v++) {
             if (j != ivars[v].incrInstr) continue;
             for (int d = 0; d < derivedCount; d++) {
@@ -247,8 +345,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
         }
     }
 
-    /* caso degenere: insertAt == nInstrs (loop vuoto, non dovrebbe accadere
-       in pratica, ma meglio gestirlo) */
+    // Handle empty loop edge case (insertAt == nInstrs)
     if (phInitStart == -1) EMIT_PH_INITS();
 
     #undef EMIT_PH_INITS
@@ -258,8 +355,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     f->count    = newCount;
     f->capacity = newCount;
 
-    /* Aggiorna start/end dei blocchi usando oldToNew[] per i blocchi body
-     * e phInitStart/phInitEnd per il pre-header */
+    // Update instruction bounds [start, end) for basic blocks
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
             f->blocks[b].bb.start = phInitStart;
@@ -273,7 +369,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             if (newS == -1) newS = oldToNew[j];
             newE = oldToNew[j] + 1;
         }
-        /* fallback per blocchi body che iniziano dopo insertAt senza map */
+        // Fallback for body blocks starting after insertion point without direct mapping
         if (newS == -1 && oldS >= insertAt) {
             newS = oldS + derivedCount;
             newE = oldE + derivedCount;
@@ -286,13 +382,15 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     return 1;
 }
 
-/* ---- Punto di ingresso ------------------------------------------------- */
+/* =========================================================================
+ * Public Interface
+ * ========================================================================= */
 
 int sr_optimize(IRFunction *f) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
-    int words   = (nBlocks + BITS_PER_WORD-1) / BITS_PER_WORD;
+    int words   = (nBlocks + BITS_PER_WORD - 1) / BITS_PER_WORD;
     Arena *arena = arena_create(0);
 
     BitSet  *Dom  = loop_compute_dominators(f, words, arena);
@@ -304,7 +402,7 @@ int sr_optimize(IRFunction *f) {
     LivenessResult  liv     = liveness_computeIr(f, NULL, livArena);
     VarMap         *vm      = &liv.varMap;
 
-    /* calcola nextTemp in un unico scan su tutte le istruzioni */
+    // Compute highest temporary ID in use across all function instructions
     int nextTemp = 0;
     for (int i = 0; i < f->count; i++) {
         const IRInstr *in = &f->instrs[i];

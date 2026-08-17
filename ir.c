@@ -144,6 +144,18 @@ static inline int ir_isTerminator(IROp op) {
     return (mask & (1U << op)) != 0;
 }
 
+
+int ir_is_pure(IROp op) {
+    // bitmask: bit i set ↔ IROp i is pure (no memory/control-flow side effects)
+    static const unsigned int mask =
+        (1U << IR_ADD)  | (1U << IR_SUB) | (1U << IR_MUL) |
+        (1U << IR_DIV)  | (1U << IR_MOD) | (1U << IR_NEG) |
+        (1U << IR_NOT)  | (1U << IR_LT)  | (1U << IR_LE)  |
+        (1U << IR_GT)   | (1U << IR_GE)  | (1U << IR_EQ)  |
+        (1U << IR_NE)   | (1U << IR_ASSIGN);
+    return (op < 32) && ((mask >> op) & 1U);
+}
+
 /**
  * @brief Append a new IRBlock covering instrs[start..end) to @p f.
  *
@@ -974,7 +986,7 @@ void ir_free(IRProgram *prog) {
  * IR front-end predicates
  * ========================================================================= */
 
-int ir_DefinesDst(IROp op) {
+int ir_defines_dst(IROp op) {
     // Bitmask: bit i set ↔ IROp i writes a destination operand.
     // Opcodes that do NOT define dst: IR_STORE_ARR, IR_PARAM, IR_RETURN,
     // IR_GOTO, IR_IF_FALSE, IR_LABEL.
@@ -995,6 +1007,6 @@ int ir_isCommutative(IROp op) {
     return (mask >> op) & 1U;
 }
 
-int ir_OperandIsStorage(OperandKind kind) {
+int ir_operand_is_storage(OperandKind kind) {
     return kind == OPND_VAR || kind == OPND_TEMP;
 }

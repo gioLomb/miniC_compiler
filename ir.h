@@ -219,6 +219,18 @@ typedef struct {
 IRProgram *ir_generate(ASTNode *program);
 
 /**
+ * @brief Return non-zero if @p op is a pure, side-effect-free computation.
+ *
+ * Uses a bitmask for O(1) test.  Only pure instructions are candidates
+ * for hoisting; impure instructions must remain in the loop body.
+ *
+ * @param op  IR opcode to test.
+ * @return    1 if @p op is pure, 0 otherwise.
+ */
+int ir_is_pure(IROp op);
+
+
+/**
  * @brief Return an operand of kind OPND_NONE (unused slot).
  */
 Operand noOperand(void);
@@ -251,7 +263,7 @@ void ir_free(IRProgram *prog);
  * (IR_STORE_ARR, IR_PARAM, IR_RETURN, IR_GOTO, IR_IF_FALSE, IR_LABEL)
  * are absent from the mask.
  */
-int ir_DefinesDst(IROp op);
+int ir_defines_dst(IROp op);
 
 /**
  * @brief Return non-zero if operand kind @p kind is a tracked variable or temp.
@@ -259,7 +271,7 @@ int ir_DefinesDst(IROp op);
  * Only OPND_VAR and OPND_TEMP contribute to the liveness sets; constants,
  * labels, and function names are transparent to the dataflow.
  */
-int ir_OperandIsStorage(OperandKind kind);
+int ir_operand_is_storage(OperandKind kind);
 
 int ir_isCommutative(IROp op);
 #endif /* IR_H */

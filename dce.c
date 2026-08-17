@@ -85,7 +85,7 @@
  * @param op  IR opcode to test.
  * @return    1 if @p op is a pure computation, 0 if it has side effects.
  */
-static inline int is_pure(IROp op) {
+static inline int ir_is_pure(IROp op) {
     switch (op) {
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_NEG: case IR_NOT:
@@ -208,11 +208,11 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
             // two-part check: opcode must write a dst AND dst must be a trackable
             // storage location (OPND_VAR or OPND_TEMP); labels and function names
             // are not tracked by the VarMap and must not be treated as defs
-            int def   = ir_DefinesDst(in->op) && ir_OperandIsStorage(in->dst.kind);
+            int def   = ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind);
             int dstId = def ? varmap_operand_id(&liv->varMap, in->dst) : -1; // avoid lookup when not a def
 
             // pure instruction whose destination is dead at this point: eliminate
-            if (is_pure(in->op) && def && dstId >= 0 && !bitset_test(&live, dstId)) {
+            if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && dstId >= 0 && !bitset_test(&live, dstId)) {
                 eliminate[i] = 1;
                 // do NOT update the live set: sources of a dead instruction are
                 // themselves potentially dead and must not be kept alive artificially
@@ -224,11 +224,11 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
             // this correctly handles self-referential patterns like "x = x + 1":
             // if we killed dst first, src (same variable) would look dead and its
             // liveness would not propagate backwards past this instruction
-            if (ir_OperandIsStorage(in->src1.kind)) {
+            if (ir_operand_is_storage(in->src1.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src1);
                 if (id >= 0) bitset_set(&live, id);
             }
-            if (ir_OperandIsStorage(in->src2.kind)) {
+            if (ir_operand_is_storage(in->src2.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src2);
                 if (id >= 0) bitset_set(&live, id);
             }
