@@ -3,30 +3,43 @@
 
 #include "instr_selector.h"
 
-/*
- * Instruction Scheduler — Local List Scheduling per blocco base.
+/**
+ * @file sched.h
+ * @brief Instruction Scheduler interface — Local List Scheduling per basic block.
  *
- * Target: Intel Core i5 (architettura x86-64 Out-of-Order, Haswell/Broadwell).
+ * Target: Intel x86-64 Out-of-Order architectures (Haswell / Broadwell).
  *
- * Obiettivo: riordinare le istruzioni dentro ogni blocco base per:
- *   1. Anticipare istruzioni ad alta latenza (IMUL, IDIV, LOAD, STORE)
- *      in modo che la CPU OoO trovi i valori pronti il prima possibile.
- *   2. Preservare le coppie CMP/TEST + Jcc adiacenti per favorire la
- *      macro-fusion del decodificatore Intel (due istruzioni → 1 μop).
- *   3. Rispettare tutte le dipendenze RAW, WAR, WAW per correttezza.
+ * Objective:
+ * Reorder instructions within individual basic blocks to:
+ *   1. Hoist high-latency instructions (e.g., IMUL, IDIV, LOAD, STORE) early so
+ *      that the out-of-order execution pipeline finds operands ready ahead of time.
+ *   2. Preserve adjacent CMP/TEST + Jcc instruction pairs to leverage Intel decoder
+ *      macro-fusion (merging two instructions into a single micro-op).
+ *   3. Enforce all True (RAW), Anti (WAR), and Output (WAW) data dependencies for correctness.
  *
- * Algoritmo: forward list scheduling con priorità = altezza del cammino
- * critico ponderato per latenza (longest latency-weighted path to a sink).
+ * Algorithm:
+ * Forward list scheduling using a priority queue ordered by node height on the
+ * latency-weighted critical path toward a sink (longest path to basic block end).
  *
- * Struttura interna: array di puntatori a nodi DAG (EaC §4.4.3) per
- * accesso casuale O(1) durante costruzione archi e scansione ready list.
+ * Internal Structure:
+ * Uses an array of DAG node pointers (EaC §4.4.3) for $O(1)$ random access during edge
+ * construction and ready-list scanning.
  *
- * Limitazioni note:
- *   - Scheduling locale (per blocco base): ignora dipendenze inter-blocco.
- *   - Latenze stimate (tabelle Agner Fog Haswell): non tengono conto di
- *     cache miss, esecuzione speculativa, throughput vs latenza.
- *   - WAR/WAW su virtual register: trattate come dipendenze hard per
- *     correttezza; l'hardware le risolve con register renaming a runtime.
+ * Known Limitations:
+ *   - Local scheduling scope (basic-block level only); ignores inter-block dataflow.
+ *   - Static latency model (Agner Fog Haswell tables); ignores cache misses, branch
+ *     prediction, and execution port throughput bottlenecks.
+ *   - Register renaming eliminates false WAR/WAW dependencies on virtual registers during
+ *     DAG build; physical register dependencies are treated as hard edges.
+ */
+
+/**
+ * @brief Performs local list instruction scheduling across all functions in a program.
+ *
+ * Drives basic-block identification, DAG construction, and list scheduling for every
+ * machine function contained in the program instance.
+ *
+ * @param mp Pointer to the target machine program.
  */
 void sched_schedule(MachProgram *mp);
 

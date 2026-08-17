@@ -6,20 +6,18 @@
 #include "arena.h"
 
 /* =========================================================================
- * Arena interna del modulo.
- *
- * Una sola arena per l'intera durata del programma; viene RESETTATA
- * (non distrutta/ricreata) ad ogni build_dag. Questo riusa i blocchi
- * già allocati senza nessun malloc/free tra blocchi consecutivi.
- *
- * Lifecycle: sched_dag_arena_init() → N × build_dag() → sched_dag_arena_fini().
- * Non è thread-safe (compilatore single-threaded).
+ * Internal Module Arena State
+ * =========================================================================
+ * A single persistent arena instance is shared across DAG constructions.
+ * The arena is reset (not destroyed) on every build_dag call to reuse memory
+ * without incurring repeated malloc/free overhead.
  * ========================================================================= */
+
 static Arena *s_arena = NULL;
 
 void sched_dag_arena_init(void) {
     if (s_arena) {
-        fprintf(stderr, "sched_dag: arena_init chiamata due volte\n");
+        fprintf(stderr, "sched_dag: arena_init called twice\n");
         return;
     }
     s_arena = arena_create(0);
@@ -31,27 +29,38 @@ void sched_dag_arena_fini(void) {
 }
 
 /* =========================================================================
- * SparseMap — alloca nell'arena interna.
+ * SparseMap Implementation
  * ========================================================================= */
 
 void smap_init(SparseMap *m, int cap) {
     m->sparse = arena_alloc(s_arena, (size_t)cap * sizeof(int));
     m->dense  = arena_alloc(s_arena, (size_t)cap * sizeof(int));
     m->val    = arena_alloc(s_arena, (size_t)cap * sizeof(int));
-    m->n = 0; m->cap = cap;
+    m->n = 0; 
+    m->cap = cap;
 }
 
 int smap_get(const SparseMap *m, int k) {
     if ((unsigned)k >= (unsigned)m->cap) return -1;
+    
+    // Validate sparse index pointer against dense array boundaries and key match
     unsigned pos = (unsigned)m->sparse[k];
     if (pos >= (unsigned)m->n || m->dense[pos] != k) return -1;
+    
     return m->val[pos];
 }
 
 void smap_set(SparseMap *m, int k, int v) {
     if ((unsigned)k >= (unsigned)m->cap) return;
+    
+    // Update value in-place if key is already registered in the set
     unsigned pos = (unsigned)m->sparse[k];
-    if (pos < (unsigned)m->n && m->dense[pos] == k) { m->val[pos] = v; return; }
+    if (pos < (unsigned)m->n && m->dense[pos] == k) { 
+        m->val[pos] = v; 
+        return; 
+    }
+    
+    // Append new entry to the dense array
     m->sparse[k]   = m->n;
     m->dense[m->n] = k;
     m->val[m->n]   = v;
@@ -59,16 +68,21 @@ void smap_set(SparseMap *m, int k, int v) {
 }
 
 /* =========================================================================
- * MaxHeap
+ * MaxHeap Implementation
  * ========================================================================= */
 
 void heap_push(MaxHeap *h, int v, const DAGNode *nodes) {
     int i = h->size++;
     h->data[i] = v;
+    
+    // Sift up to maintain maximum latency-weighted height invariant
     while (i > 0) {
-        int p = (i - 1) >> 1;
+        int p = (i - 1) >> 1; // Compute parent node index
         if (nodes[h->data[p]].height >= nodes[h->data[i]].height) break;
-        int t = h->data[p]; h->data[p] = h->data[i]; h->data[i] = t;
+        
+        int t = h->data[p]; 
+        h->data[p] = h->data[i]; 
+        h->data[i] = t;
         i = p;
     }
 }
@@ -76,25 +90,40 @@ void heap_push(MaxHeap *h, int v, const DAGNode *nodes) {
 int heap_pop(MaxHeap *h, const DAGNode *nodes) {
     int top    = h->data[0];
     h->data[0] = h->data[--h->size];
+    
+    // Sift down to maintain heap order invariant
     for (int i = 0;;) {
-        int l = 2*i+1, r = 2*i+2, b = i;
+        int l = 2 * i + 1, r = 2 * i + 2, b = i;
+        
         if (l < h->size && nodes[h->data[l]].height > nodes[h->data[b]].height) b = l;
         if (r < h->size && nodes[h->data[r]].height > nodes[h->data[b]].height) b = r;
         if (b == i) break;
-        int t = h->data[b]; h->data[b] = h->data[i]; h->data[i] = t;
+        
+        int t = h->data[b]; 
+        h->data[b] = h->data[i]; 
+        h->data[i] = t;
         i = b;
     }
     return top;
 }
 
 /* =========================================================================
- * build_dag — helpers interni
+ * DAG Edge Management
  * ========================================================================= */
 
+/**
+ * @brief Adds a directed dependency edge from node `from` to node `to`.
+ *
+ * Avoids self-loops and duplicate edges between node pairs.
+ */
 static void dag_add_edge(DAGNode *nodes, int from, int to) {
     if (from == to) return;
+    
+    // Deduplicate existing outgoing dependency links
     for (SuccNode *s = nodes[from].succs; s; s = s->next)
         if (s->to == to) return;
+        
+    // Allocate successor list node from internal arena
     SuccNode *sn      = arena_alloc(s_arena, sizeof(SuccNode));
     sn->to            = to;
     sn->next          = nodes[from].succs;
@@ -104,20 +133,18 @@ static void dag_add_edge(DAGNode *nodes, int from, int to) {
 }
 
 /* =========================================================================
- * build_dag
- *
- * Resetta l'arena interna all'inizio: riusa la memoria del blocco
- * precedente. currentName, SparseMap e SuccNode allocati nell'arena;
- * nodes[] è del caller e sopravvive al reset.
+ * DAG Construction
  * ========================================================================= */
+
 void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes) {
-    /* reset O(num_blocchi_arena) ≈ O(1) nel caso comune — riusa memoria */
+    // Reset internal arena allocations ($O(1)$ block reset, retaining capacity)
     arena_reset(s_arena);
 
     int n        = end - start;
     int universe = f->nextVreg + PHYS_ALLOCATABLE;
-    int cap      = universe + n; /* renamed ID in [universe, cap) */
+    int cap      = universe + n; // Space allocated for dynamically renamed registers
 
+    // Initialize register renaming mapping table
     int *currentName = arena_alloc(s_arena, (size_t)universe * sizeof(int));
     for (int r = 0; r < universe; r++) currentName[r] = r;
     int nextFresh = universe;
@@ -125,7 +152,7 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes) {
     SparseMap smap;
     smap_init(&smap, cap);
 
-    /* Inizializza nodi e marca coppie CMP/TEST+Jcc per macro-fusion */
+    // Initialize DAG node structures and identify Intel macro-fusion pairs
     for (int i = 0; i < n; i++) {
         nodes[i] = (DAGNode){
             .instrIdx  = start + i,
@@ -133,6 +160,8 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes) {
             .height    = sched_latency_of(f->instrs[start + i].op),
         };
     }
+    
+    // Mark CMP/TEST instructions directly followed by a Jcc branch for macro-fusion
     for (int i = 0; i + 1 < n; i++) {
         if (sched_is_cmp_or_test(f->instrs[start + i].op) &&
             sched_is_jcc(f->instrs[start + i + 1].op))
@@ -141,10 +170,11 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes) {
 
     int lastSideEffect = -1;
 
+    // Process basic block instructions to build dependency edges
     for (int j = 0; j < n; j++) {
         const MachInstr *inj = &f->instrs[start + j];
 
-        /* RAW: risolvi uso nel renamed-space e cerca il definiente */
+        // RAW (Read-After-Write): resolve register usage in renamed space
         int uses[5]; int nuses;
         sched_uses(inj, f->nextVreg, uses, &nuses);
         for (int u = 0; u < nuses; u++) {
@@ -154,15 +184,14 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes) {
             if (dep >= 0) dag_add_edge(nodes, dep, j);
         }
 
-        /* Serializzazione effetti collaterali */
+        // Serialize side effects (e.g., volatile memory accesses, volatile operations)
         if (sched_has_side_effect(inj->op)) {
             if (lastSideEffect >= 0)
                 dag_add_edge(nodes, lastSideEffect, j);
             lastSideEffect = j;
         }
 
-        /* Def: rinomina → elimina WAR/WAW, registra per future RAW.
-         * WAW: nuova def dipende dalla vecchia def dello stesso registro. */
+        // Definitions: apply register renaming to break anti/output (WAR/WAW) dependencies
         int d = sched_def(inj, f->nextVreg);
         if (d >= 0 && d < universe) {
             int oldRenamed = currentName[d];
@@ -175,7 +204,7 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes) {
         }
     }
 
-    /* Altezze: backward pass (cammino critico ponderato per latenza) */
+    // Backward pass: calculate critical path height weighted by instruction latency
     for (int i = n - 1; i >= 0; i--) {
         int maxH = 0;
         for (SuccNode *s = nodes[i].succs; s; s = s->next)

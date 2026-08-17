@@ -229,6 +229,20 @@ IRProgram *ir_generate(ASTNode *program);
  */
 int ir_is_pure(IROp op);
 
+/* =========================================================================
+ * Pass 5: sweep
+ * ========================================================================= */
+
+/**
+ * @brief Compact the instruction array, removing eliminated instructions.
+ *
+ * Rebuilds f->instrs as a new flat array that omits every index marked
+ * in @p eliminate[].  Block [start, end) ranges are updated to reflect
+ * the new positions of the surviving instructions.
+ *
+ * @return 1 if any instruction was removed (i.e. the array shrank), 0 otherwise.
+ */
+int ir_sweep(IRFunction *f, char *eliminate, int nBlocks);
 
 /**
  * @brief Return an operand of kind OPND_NONE (unused slot).

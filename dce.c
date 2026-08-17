@@ -30,7 +30,7 @@
  *     live set (i.e., dead at this point).  The live set is updated after
  *     each instruction: sources are added, the destination is killed.
  *
- *  4. Sweep  (dce_sweep)
+ *  4. Sweep  (ir_sweep)
  *     The flat instruction array is compacted in a single forward pass,
  *     discarding eliminated entries.  Block start/end indices are rewritten
  *     to reflect each block's position in the new layout.
@@ -208,62 +208,6 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
     }
 }
 
-/* =========================================================================
- * Phase 4 — Sweep: compact the instruction array
- * =========================================================================
- * A single forward pass discards every entry flagged in eliminate[], writing
- * survivors into a fresh heap allocation.  Block start/end indices are
- * updated to reflect each block's new position in the compacted array.
- *
- * Note: this function is structurally identical to cp_sweep() in cp.c.
- * Factoring it into a shared helper (e.g. ir_compact_instrs() in ir.c)
- * would eliminate the duplication; left as-is to keep both passes
- * self-contained and avoid coupling their internal layouts.
- * ========================================================================= */
-
-/**
- * @brief Compact @c f->instrs, discarding every instruction flagged in @p eliminate.
- *
- * Allocates a fresh instruction array, copies surviving instructions into it,
- * and replaces @c f->instrs with the new allocation (freeing the old one).
- * Updates @c f->blocks[b].bb.start and @c .end for every block and resets
- * @c f->curBlockStart to 0, since the compacted layout always starts at 0.
- *
- * @param f          IR function to compact (modified in place).
- * @param eliminate  Byte flag array of length @c f->count; 1 → discard.
- * @param nBlocks    Number of blocks (must equal @c f->blockCount).
- * @return           1 if at least one instruction was removed, 0 otherwise.
- */
-static int dce_sweep(IRFunction *f, char *eliminate, int nBlocks) {
-    int nInstrs = f->count;
-    // upper bound: at most nInstrs survivors, so no realloc needed
-    IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
-    int newCount = 0;
-
-    for (int b = 0; b < nBlocks; b++) {
-        int oldStart = f->blocks[b].bb.start;
-        int oldEnd   = f->blocks[b].bb.end;
-        int newStart = newCount; // snapshot position before copying this block's survivors
-
-        for (int i = oldStart; i < oldEnd; i++) {
-            if (!eliminate[i])
-                newInstrs[newCount++] = f->instrs[i];
-        }
-
-        // rewrite indices to reflect the compacted layout
-        f->blocks[b].bb.start = newStart;
-        f->blocks[b].bb.end   = newCount; // newCount is now one past the last survivor
-    }
-
-    free(f->instrs);
-    f->instrs        = newInstrs;
-    f->count         = newCount;
-    f->capacity      = newCount; // allocation is exactly sized; no slack needed
-    f->curBlockStart = 0;        // reset: meaningful only during IR construction
-
-    // changed iff the total count shrank — no extra flag variable needed
-    return newCount != nInstrs;
-}
 
 /* =========================================================================
  * Public entry point
@@ -316,7 +260,7 @@ int dce_optimize(IRFunction *f) {
     dce_mark(f, reachable, &liv, arena, eliminate);
 
     // phase 4: compact the instruction array
-    int changed = dce_sweep(f, eliminate, nBlocks);
+    int changed = ir_sweep(f, eliminate, nBlocks);
 
     // varmap_destroy MUST come before arena_destroy: the VarMap's hash table
     // pool was allocated with malloc (not inside the arena), so the arena

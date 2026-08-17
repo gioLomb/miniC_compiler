@@ -3,79 +3,142 @@
 
 #include "instr_selector.h"
 
+/**
+ * @file sched_dag.h
+ * @brief Data structures and DAG construction routines for instruction scheduling.
+ */
+
 /* =========================================================================
- * SparseMap — mappa intera chiave → valore intero, O(1) per operazione.
+ * SparseMap Interface
+ * =========================================================================
+ * Dense/Sparse map mapping integer keys -> integer values with O(1) operations.
  *
- * Invariante classica sparse-set (EaC §B):
- *   dense[sparse[k]] == k   sse   k è presente
+ * Classic sparse-set invariant (EaC §B):
+ *   dense[sparse[k]] == k   iff   k is present in the set.
  *
- * sparse[] non inizializzato: membership test usa cross-check su dense[],
- * eliminando false-positive. Lettura di memoria non inizializzata è UB
- * formale in C, ma corretto su qualunque hardware reale (tecnica standard
- * in motori di gioco e compilatori).
+ * Note: `sparse[]` is left uninitialized; membership testing validates against
+ * `dense[]` bounds to eliminate false positives.
  * ========================================================================= */
+
+/**
+ * @brief Sparse set representation mapping integer keys to values in $O(1)$ time.
+ */
 typedef struct {
-    int *sparse; /* sparse[key] → posizione in dense (non inizializzato) */
-    int *dense;  /* dense[pos]  → chiave                                 */
-    int *val;    /* val[pos]    → valore associato a dense[pos]           */
-    int  n;      /* entry attive                                          */
-    int  cap;    /* universo: chiavi valide in [0, cap)                   */
+    int *sparse; /**< Sparse index table (`sparse[key]` -> position in `dense`). */
+    int *dense;  /**< Dense array storing registered key identifiers.             */
+    int *val;    /**< Value array corresponding to `dense[pos]`.                */
+    int  n;      /**< Current number of active populated entries.                */
+    int  cap;    /**< Total key universe capacity (`keys in [0, cap)`).         */
 } SparseMap;
 
-void smap_init(SparseMap *m, int cap);   /* usa arena interna del modulo */
-int  smap_get (const SparseMap *m, int k);
-void smap_set (SparseMap *m, int k, int v);
+/**
+ * @brief Initializes a SparseMap using internal module arena allocation.
+ *
+ * @param m   Pointer to the SparseMap structure.
+ * @param cap Maximum key universe size.
+ */
+void smap_init(SparseMap *m, int cap);
+
+/**
+ * @brief Look up a key's associated value in $O(1)$ time.
+ *
+ * @param m Pointer to the SparseMap instance.
+ * @param k Key identifier to query.
+ * @return Associated integer value, or `-1` if key is not present.
+ */
+int smap_get(const SparseMap *m, int k);
+
+/**
+ * @brief Binds or updates a key-value pair in $O(1)$ time.
+ *
+ * @param m Pointer to the SparseMap instance.
+ * @param k Key identifier.
+ * @param v Value to associate with `k`.
+ */
+void smap_set(SparseMap *m, int k, int v);
 
 /* =========================================================================
- * MaxHeap — coda con priorità (altezza decrescente) per la ready list.
+ * MaxHeap Priority Queue
  * ========================================================================= */
-typedef struct { int *data; int size; } MaxHeap;
 
-/* Nodo del DAG delle dipendenze. */
+/**
+ * @brief Binary Max-Heap priority queue ordered by latency-weighted path height.
+ */
+typedef struct {
+    int *data; /**< Array of DAG node indices. */
+    int  size; /**< Active element count.      */
+} MaxHeap;
+
+/**
+ * @brief Edge list node representing a successor dependency in the DAG.
+ */
+typedef struct SuccNode {
+    int              to;   /**< Index of the successor DAG node. */
+    struct SuccNode *next; /**< Pointer to the next successor link.   */
+} SuccNode;
+
+/**
+ * @brief Representation of an instruction node within the dependency DAG.
+ */
 typedef struct DAGNode {
-    int       instrIdx;
-    int       latency;
-    int       height;          /* cammino critico ponderato verso un sink  */
-    int       predCount;       /* predecessori non ancora schedulati        */
-    int       scheduled;
-    int       pinnedForFusion; /* CMP/TEST prima di Jcc: macro-fusion Intel */
-    struct SuccNode *succs;
-    int       nSuccs;
+    int       instrIdx;        /**< Index in the target function's instruction array.   */
+    int       latency;         /**< Estimated execution latency of the instruction.     */
+    int       height;          /**< Critical path height weighted by latency to a sink. */
+    int       predCount;       /**< Count of unscheduled predecessor instructions.       */
+    int       scheduled;       /**< Flag indicating if node has been scheduled.         */
+    int       pinnedForFusion; /**< Macro-fusion flag (e.g., CMP/TEST pairing Jcc).      */
+    SuccNode *succs;           /**< Head of the linked list of successor nodes.          */
+    int       nSuccs;          /**< Total number of outgoing successor edges.            */
 } DAGNode;
 
-/* Lista concatenata dei successori (allocata nell'arena interna). */
-typedef struct SuccNode { int to; struct SuccNode *next; } SuccNode;
-
-/* Operazioni heap (nodes necessario per confronto priorità). */
+/**
+ * @brief Pushes a node index into the MaxHeap based on critical path height.
+ *
+ * @param h     Pointer to the heap instance.
+ * @param v     DAG node index to insert.
+ * @param nodes Array of DAG nodes used for priority comparisons.
+ */
 void heap_push(MaxHeap *h, int v, const DAGNode *nodes);
-int  heap_pop (MaxHeap *h, const DAGNode *nodes);
+
+/**
+ * @brief Pops the highest priority DAG node index from the heap.
+ *
+ * @param h     Pointer to the heap instance.
+ * @param nodes Array of DAG nodes used for priority comparisons.
+ * @return Index of the highest priority DAG node.
+ */
+int heap_pop(MaxHeap *h, const DAGNode *nodes);
 
 /* =========================================================================
- * Lifecycle arena interna del modulo.
- *
- * sched_dag_arena_init()  — crea l'arena una volta sola (chiamare prima
- *                           di qualunque build_dag).
- * sched_dag_arena_fini()  — distrugge l'arena (chiamare a fine programma
- *                           o dopo l'ultimo sched_schedule).
- *
- * build_dag chiama internamente arena_reset() prima di ogni costruzione:
- * la memoria viene riusata tra blocchi senza malloc/free aggiuntivi.
- * I SuccNode del blocco precedente diventano invalidi al reset, ma
- * schedule_block consuma ogni DAG completamente prima di chiamare
- * build_dag sul blocco successivo — nessun dangling pointer.
+ * Arena Lifecycle Management
  * ========================================================================= */
+
+/**
+ * @brief Allocates and initializes the internal module arena.
+ * Must be called prior to invoking `build_dag()`.
+ */
 void sched_dag_arena_init(void);
+
+/**
+ * @brief Releases the internal module arena and associated resources.
+ */
 void sched_dag_arena_fini(void);
 
 /* =========================================================================
- * build_dag — costruisce il DAG di dipendenze per il blocco [start, end).
- *
- * Chiama arena_reset() all'inizio: riusa la memoria dell'arena interna
- * senza deallocare/riallocare. Tutti i buffer temporanei (currentName,
- * SparseMap, SuccNode) vivono nell'arena interna del modulo.
- *
- * nodes[] è allocato dal caller (tipicamente nella propria arena locale).
+ * DAG Construction
  * ========================================================================= */
+
+/**
+ * @brief Constructs the dependency DAG for instructions in the basic block range [start, end).
+ *
+ * Resets internal arena memory and builds data dependency edges (RAW, WAR, WAW)
+ * alongside side-effect serialization links.
+ *
+ * @param f     Pointer to the enclosing machine function.
+ * @param start Inclusive start index of the basic block.
+ * @param end   Exclusive end index of the basic block.
+ * @param nodes Pre-allocated output array of `DAGNode` structures allocated by caller.
+ */
 void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes);
 
 #endif /* SCHED_DAG_H */

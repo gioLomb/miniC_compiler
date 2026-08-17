@@ -71,22 +71,11 @@ static inline int sched_is_cmp_or_test(MachOp op) {
     return op == MACH_CMP || op == MACH_TEST;
 }
 
-/* =========================================================================
- * Helper registri — encoding univoco pre-regalloc:
- *   vreg   → id            (0 .. nextVreg-1)
- *   phys p → nextVreg + p  (nextVreg .. nextVreg+PHYS_ALLOCATABLE-1)
- *
- * PHYS_AL normalizzato a PHYS_RAX (alias architetturale).
- * ========================================================================= */
-
-static inline int sched_normalize_phys(int physReg) {
-    return (physReg == PHYS_AL) ? PHYS_RAX : physReg;
-}
 
 static inline int sched_reg(const MachOperand *o, int nextVreg) {
     switch (o->kind) {
     case MO_VREG: return o->vregId;
-    case MO_PHYS: return nextVreg + sched_normalize_phys(o->physReg);
+    case MO_PHYS: return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
     case MO_MEM:  return (o->mem.baseVreg  >= 0) ? o->mem.baseVreg  : -1;
     default:      return -1;
     }

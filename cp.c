@@ -41,7 +41,7 @@
  *  cp_build_varmap          — assign compact int ids to all operands
  *  cp_run_forward_dataflow  — forward fixed-point loop filling in[]/out[]
  *  cp_rewrite_block         — rewrite + CFG prune one block using in[b]
- *  cp_sweep                 — compact instruction array, update block ranges
+ *  ir_sweep                 — compact instruction array, update block ranges
  *  cp_optimize              — public entry point, orchestrates the above
  *
  * Helper delegation:
@@ -465,46 +465,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
     return modified;
 }
 
-/* =========================================================================
- * Pass 5: sweep
- * ========================================================================= */
 
-/**
- * @brief Compact the instruction array, removing eliminated instructions.
- *
- * Rebuilds f->instrs as a new flat array that omits every index marked
- * in @p eliminate[].  Block [start, end) ranges are updated to reflect
- * the new positions of the surviving instructions.
- *
- * @return 1 if any instruction was removed (i.e. the array shrank), 0 otherwise.
- */
-static int cp_sweep(IRFunction *f, char *eliminate, int nBlocks) {
-    int nInstrs    = f->count;
-    IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
-    int newCount   = 0;
-
-    for (int b = 0; b < nBlocks; b++) {
-        int oldStart = f->blocks[b].bb.start;
-        int oldEnd   = f->blocks[b].bb.end;
-        int newStart = newCount;
-
-        for (int i = oldStart; i < oldEnd; i++) {
-            if (!eliminate[i])
-                newInstrs[newCount++] = f->instrs[i];
-        }
-
-        f->blocks[b].bb.start = newStart;
-        f->blocks[b].bb.end   = newCount;
-    }
-
-    free(f->instrs);
-    f->instrs        = newInstrs;
-    f->count         = newCount;
-    f->capacity      = newCount;
-    f->curBlockStart = 0;
-
-    return (newCount != nInstrs) ? 1 : 0; // 1 if something was removed
-}
 
 
 int cp_optimize(IRFunction *f) {
@@ -545,7 +506,7 @@ int cp_optimize(IRFunction *f) {
 
     /* Pass 5: sweep — only if something was marked for elimination */
     if (modified)
-        modified = cp_sweep(f, eliminate, nBlocks);
+        modified = ir_sweep(f, eliminate, nBlocks);
 
     arena_destroy(arena);
     varmap_destroy(&vm);

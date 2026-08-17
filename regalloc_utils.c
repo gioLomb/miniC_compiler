@@ -1,9 +1,5 @@
 #include "regalloc_utils.h"
 
-static inline int regalloc_normalize_phys(int p) {
-    return (p == PHYS_AL) ? PHYS_RAX : p;
-}
-
 int regalloc_spill_weight(int loopDepth) {
     static const int weights[] = {1, 10, 100, 1000, 10000, 100000};
     if (loopDepth < 0) loopDepth = 0;
@@ -14,7 +10,7 @@ int regalloc_spill_weight(int loopDepth) {
 static inline int regalloc_operand_reg(const MachOperand *o) {
     switch (o->kind) {
     case MO_VREG: return o->vregId;
-    case MO_PHYS: return regalloc_normalize_phys(o->physReg);
+    case MO_PHYS: return (o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg;
     case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
     default:      return -1;
     }

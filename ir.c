@@ -156,6 +156,35 @@ int ir_is_pure(IROp op) {
     return (op < 32) && ((mask >> op) & 1U);
 }
 
+
+int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
+    int nInstrs    = f->count;
+    IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
+    int newCount   = 0;
+
+    for (int b = 0; b < nBlocks; b++) {
+        int oldStart = f->blocks[b].bb.start;
+        int oldEnd   = f->blocks[b].bb.end;
+        int newStart = newCount;
+
+        for (int i = oldStart; i < oldEnd; i++) {
+            if (!eliminate[i])
+                newInstrs[newCount++] = f->instrs[i];
+        }
+
+        f->blocks[b].bb.start = newStart;
+        f->blocks[b].bb.end   = newCount;
+    }
+
+    free(f->instrs);
+    f->instrs        = newInstrs;
+    f->count         = newCount;
+    f->capacity      = newCount;
+    f->curBlockStart = 0;
+
+    return (newCount != nInstrs); // 1 if something was removed
+}
+
 /**
  * @brief Append a new IRBlock covering instrs[start..end) to @p f.
  *
