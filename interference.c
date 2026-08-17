@@ -22,26 +22,20 @@ static void ig_add_edge(IGraph *g, int i, int j) {
     g->matrix[idx >> 6] |= 1ULL << (idx & 63);
 
     AdjList *ai = &g->adj[i];
-    if (ai->len == ai->cap) {
-        ai->cap  = ai->cap ? ai->cap * 2 : 4;
-        ai->data = realloc(ai->data, (size_t)ai->cap * sizeof(int));
-    }
-    ai->data[ai->len++] = j;
+    int_vector_push(ai, j);
 
     AdjList *aj = &g->adj[j];
-    if (aj->len == aj->cap) {
-        aj->cap  = aj->cap ? aj->cap * 2 : 4;
-        aj->data = realloc(aj->data, (size_t)aj->cap * sizeof(int));
-    }
-    aj->data[aj->len++] = i;
+    int_vector_push(aj, i);
 
     g->degree[i]++;
     g->degree[j]++;
 }
 
 void ig_free(IGraph *g) {
+    if (!g || !g->adj) return;
+
     for (int i = 0; i < g->n; i++)
-        free(g->adj[i].data);
+        int_vector_free(&g->adj[i]);
 }
 
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
@@ -59,7 +53,8 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
 
     /* --- Array di AdjList struct ----------------------------------------- */
     g.adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
-    memset(g.adj, 0, (size_t)totalNodes * sizeof(AdjList));
+    for (int i = 0; i < totalNodes; i++)
+        int_vector_init(&g.adj[i]);
 
     /* --- Array interi paralleli ------------------------------------------ */
     g.degree      = arena_alloc(arena, (size_t)totalNodes * sizeof(int));

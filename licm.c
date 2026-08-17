@@ -78,6 +78,7 @@
 #include "loop.h"
 #include "liveness.h"
 #include "arena.h"
+#include "dynamic_array.h"
 
 
 /* =========================================================================
@@ -229,30 +230,15 @@ static int src_is_invariant(IRFunction *f, Loop *L, Operand src,
  * usedBy list is added to the worklist for re-evaluation.
  * ========================================================================= */
 
-/** Dynamic list of instruction indices that use a given operand id. */
-typedef struct {
-    int *data;
-    int  len;
-    int  cap;
-} UsedByList;
-
-/**
- * @brief Append instruction index @p instrIdx to @p list, growing as needed.
- */
-static void used_by_append(UsedByList *list, int instrIdx) {
-    if (list->len == list->cap) {
-        list->cap  = list->cap ? list->cap * 2 : 4;
-        list->data = realloc(list->data, (size_t)list->cap * sizeof(int));
-    }
-    list->data[list->len++] = instrIdx;
-}
+/** Historical name preserved: UsedByList is now just an IntVector. */
+typedef IntVector UsedByList;
 
 /**
  * @brief Free the dynamic arrays of all @p numVars UsedByList entries.
  */
 static void free_used_by(UsedByList *usedBy, int numVars) {
     for (int i = 0; i < numVars; i++)
-        free(usedBy[i].data);
+        int_vector_free(&usedBy[i]);
 }
 
 /**
@@ -269,7 +255,7 @@ static void free_used_by(UsedByList *usedBy, int numVars) {
  * @param numVars   Total number of tracked operand ids.
  * @param defCount  Per-id definition counts from count_defs_in_loop.
  * @param invariant Output array of length f->count, zeroed by the caller.
- * @param arena     Arena for the worklist allocation.
+ * @param arena     Arena used for the phase-local output arrays.
  */
 static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
                             int numVars, const int *defCount,
@@ -277,9 +263,13 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
     int n = f->count;
 
     // usedBy[id] = list of instruction indices (in the loop) that read operand id
-    UsedByList *usedBy   = calloc((size_t)numVars, sizeof(UsedByList));
-    // worklist: instruction indices to (re-)evaluate
-    int        *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
+    UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
+    if (!usedBy) abort();
+    for (int id = 0; id < numVars; id++)
+        int_vector_init(&usedBy[id]);
+
+    /* worklist: dimensione massima nota, quindi arena */
+    int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
     int wHead = 0, wTail = 0;
 
     // seed: scan the loop body for pure instructions and build usedBy
@@ -296,7 +286,7 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
             Operand srcs[2] = { in->src1, in->src2 };
             for (int s = 0; s < 2; s++) {
                 int id = varmap_operand_id(vm, srcs[s]);
-                if (id >= 0) used_by_append(&usedBy[id], j);
+                if (id >= 0) int_vector_push(&usedBy[id], j);
             }
 
             // immediately enqueue: sources may already be invariant
@@ -324,7 +314,8 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
         if (dstId >= 0) {
             for (int k = 0; k < usedBy[dstId].len; k++) {
                 int dep = usedBy[dstId].data[k];
-                if (!invariant[dep]) worklist[wTail++] = dep;
+                if (!invariant[dep])
+                    worklist[wTail++] = dep;
             }
         }
     }

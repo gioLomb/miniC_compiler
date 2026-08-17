@@ -66,36 +66,6 @@
 #include "liveness.h"
 #include "arena.h"
 
-/* =========================================================================
- * Purity predicate
- * =========================================================================
- * Only pure instructions with a dead destination may be eliminated.  Impure
- * instructions are always kept regardless of whether their result is live,
- * because removing them would alter observable program behaviour (memory
- * writes, calls, control flow).
- * ========================================================================= */
-
-/**
- * @brief Return non-zero if opcode @p op has no observable side effects.
- *
- * Uses a precomputed bitmask for an O(1) test, avoiding a branch-heavy
- * switch that could inhibit inlining.  The mask covers every opcode that
- * computes a value without touching memory or affecting control flow.
- *
- * @param op  IR opcode to test.
- * @return    1 if @p op is a pure computation, 0 if it has side effects.
- */
-static inline int ir_is_pure(IROp op) {
-    switch (op) {
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
-    case IR_NEG: case IR_NOT:
-    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
-    case IR_ASSIGN:
-    case IR_LOAD_ARR: // treated as pure: no alias analysis, but STORE_ARR is impure
-        return 1;    //   so a store to the same slot is never eliminated anyway
-    default: return 0;
-    }
-}
 
 /* =========================================================================
  * Phase 1 — Reachability analysis
