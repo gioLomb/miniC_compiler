@@ -11,26 +11,26 @@
  *
  * Objective:
  * Reorder instructions within individual basic blocks to:
- *   1. Hoist high-latency instructions (e.g., IMUL, IDIV, LOAD, STORE) early so
- *      that the out-of-order execution pipeline finds operands ready ahead of time.
- *   2. Preserve adjacent CMP/TEST + Jcc instruction pairs to leverage Intel decoder
- *      macro-fusion (merging two instructions into a single micro-op).
- *   3. Enforce all True (RAW), Anti (WAR), and Output (WAW) data dependencies for correctness.
+ * 1. Hoist high-latency instructions (e.g., IMUL, IDIV, LOAD, STORE) early so
+ * that the out-of-order execution pipeline finds operands ready ahead of time.
+ * 2. Preserve adjacent CMP/TEST + Jcc instruction pairs to leverage Intel decoder
+ * macro-fusion (merging two instructions into a single micro-op).
+ * 3. Enforce all True (RAW), Anti (WAR), and Output (WAW) data dependencies for correctness.
  *
  * Algorithm:
  * Forward list scheduling using a priority queue ordered by node height on the
  * latency-weighted critical path toward a sink (longest path to basic block end).
  *
  * Internal Structure:
- * Uses an array of DAG node pointers (EaC §4.4.3) for $O(1)$ random access during edge
+ * Uses an array of DAG node pointers (EaC §4.4.3) for O(1) random access during edge
  * construction and ready-list scanning.
  *
  * Known Limitations:
- *   - Local scheduling scope (basic-block level only); ignores inter-block dataflow.
- *   - Static latency model (Agner Fog Haswell tables); ignores cache misses, branch
- *     prediction, and execution port throughput bottlenecks.
- *   - Register renaming eliminates false WAR/WAW dependencies on virtual registers during
- *     DAG build; physical register dependencies are treated as hard edges.
+ * - Local scheduling scope (basic-block level only); ignores inter-block dataflow.
+ * - Static latency model (Agner Fog Haswell tables); ignores cache misses, branch
+ * prediction, and execution port throughput bottlenecks.
+ * - Register renaming eliminates false WAR/WAW dependencies on virtual registers during
+ * DAG build; physical register dependencies are treated as hard edges.
  */
 
 /**
