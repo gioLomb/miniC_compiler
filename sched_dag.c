@@ -57,9 +57,9 @@ static void dag_add_edge(DAGNode *nodes, int from, int to, Arena *arena) {
 
 void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
                Arena *arena) {
-    int n        = end - start;
+    int n = end - start;
     int universe = f->nextVreg + PHYS_ALLOCATABLE;
-    int cap      = universe + n;  /* extra slots for renamed registers */
+    int cap = universe + n;
 
     int *currentName = arena_alloc(arena, (size_t)universe * sizeof(int));
     for (int r = 0; r < universe; r++) currentName[r] = r;
@@ -68,7 +68,7 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
     SparseMap smap;
     smap_init(&smap, cap, arena);
 
-    /* initialize nodes */
+    /* Inizializza nodi (come già presente) */
     for (int i = 0; i < n; i++) {
         nodes[i] = (DAGNode){
             .instrIdx = start + i,
@@ -77,7 +77,7 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
         };
     }
 
-    /* mark CMP/TEST + Jcc pairs for macro-fusion */
+    /* Macro‑fusion (invariato) */
     for (int i = 0; i + 1 < n; i++) {
         if (sched_is_cmp_or_test(f->instrs[start + i].op) &&
             sched_is_jcc(f->instrs[start + i + 1].op))
@@ -85,11 +85,12 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
     }
 
     int lastSideEffect = -1;
+    int lastMemoryOp   = -1;   // <-- NUOVA VARIABILE
 
     for (int j = 0; j < n; j++) {
         const MachInstr *inj = &f->instrs[start + j];
 
-        /* RAW: use depends on last write of the (renamed) register */
+        /* ---- RAW: use dipende dall'ultima definizione (rinominata) ---- */
         int uses[5], nuses;
         sched_uses(inj, f->nextVreg, uses, &nuses);
         for (int u = 0; u < nuses; u++) {
@@ -99,14 +100,22 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
             if (dep >= 0) dag_add_edge(nodes, dep, j, arena);
         }
 
-        /* serialize side effects (stores, calls, idiv, …) */
+        /* ---- Serializzazione effetti collaterali (CALL, IDIV, ecc.) ---- */
         if (sched_has_side_effect(inj->op)) {
             if (lastSideEffect >= 0)
                 dag_add_edge(nodes, lastSideEffect, j, arena);
             lastSideEffect = j;
         }
 
-        /* WAW/WAR: rename the defined register to break false deps */
+        /* ---- NUOVO: Serializzazione delle operazioni di memoria ---- */
+        /* LOAD e STORE devono rimanere nell'ordine originale tra loro     */
+        if (inj->op == MACH_LOAD || inj->op == MACH_STORE) {
+            if (lastMemoryOp >= 0)
+                dag_add_edge(nodes, lastMemoryOp, j, arena);
+            lastMemoryOp = j;
+        }
+
+        /* ---- WAW/WAR: rinomina la definizione ---- */
         int d = sched_def(inj, f->nextVreg);
         if (d >= 0 && d < universe) {
             int oldRenamed = currentName[d];
@@ -119,7 +128,7 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
         }
     }
 
-    /* backward pass: critical-path height weighted by latency */
+    /* Backward pass per l'altezza (invariato) */
     for (int i = n - 1; i >= 0; i--) {
         int maxH = 0;
         for (SuccNode *s = nodes[i].succs; s; s = s->next)
