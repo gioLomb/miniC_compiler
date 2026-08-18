@@ -1,51 +1,52 @@
-/**
- * @file regalloc_utils.c
- * @brief Instruction-analysis utilities — implementation.
- *
- * See regalloc_utils.h for the module overview and full API documentation.
- */
-
 #include "regalloc_utils.h"
 
 /* =========================================================================
- * Spill-cost weighting
+ * Spill cost weighting
+ * =========================================================================
+ * Weight is 10^loopDepth (capped at depth 5 = 100 000) so that variables
+ * live inside hot loops are strongly preferred for register allocation over
+ * variables that are rarely executed.  The register allocator sums these
+ * weights across all def/use sites to build a per-vreg spill cost.
  * ========================================================================= */
 
 int regalloc_spill_weight(int loopDepth) {
-    // precomputed powers of 10 indexed by depth; depth is clamped to [0, 5]
-    static const int weights[] = { 1, 10, 100, 1000, 10000, 100000 };
+    static const int weights[] = {1, 10, 100, 1000, 10000, 100000};
     if (loopDepth < 0) loopDepth = 0;
     if (loopDepth > 5) loopDepth = 5;
     return weights[loopDepth];
 }
 
 /* =========================================================================
- * Internal operand-to-register helpers
+ * Operand → register-id helpers (file-internal)
+ * =========================================================================
+ * These mirror the sched_utils.h helpers but operate in the register-
+ * allocator's id space: physical registers are represented as raw
+ * MachPhysReg values (not offset by nextVreg).  PHYS_AL is normalised to
+ * PHYS_RAX before graph construction so the allocator never sees the alias.
  * ========================================================================= */
 
 /**
- * @brief Extract the primary register id from a MachOperand, or -1 if none.
+ * @brief Extract the primary register id from a MachOperand (regalloc view).
  *
- * For MO_VREG returns the virtual register id directly.
- * For MO_PHYS normalises %al to %rax (they share the architectural register).
- * For MO_MEM returns the base register id (index is extracted separately by
- * regalloc_operand_reg2).
- * All other kinds (immediate, label, func, stack, none) return -1.
+ * MO_VREG → vregId
+ * MO_PHYS → physReg  (PHYS_AL normalised to PHYS_RAX)
+ * MO_MEM  → baseVreg of the SIB addressing mode
+ * other   → -1
  */
 static inline int regalloc_operand_reg(const MachOperand *o) {
     switch (o->kind) {
     case MO_VREG: return o->vregId;
-    case MO_PHYS: return (o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg; // %al aliases %rax
+    case MO_PHYS: return (o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg;
     case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
     default:      return -1;
     }
 }
 
 /**
- * @brief Extract the index register of a MO_MEM operand, or -1 if none.
+ * @brief Extract the *index* register id from an MO_MEM operand.
  *
- * SIB addressing can use a separate index register that is also read by the
- * instruction and must appear in the use set for correct liveness.
+ * Returns `indexVreg` when the operand uses scaled-index addressing;
+ * returns -1 for all other kinds or when `indexVreg` is absent.
  */
 static inline int regalloc_operand_reg2(const MachOperand *o) {
     if (o->kind == MO_MEM && o->mem.indexVreg >= 0)
@@ -54,16 +55,15 @@ static inline int regalloc_operand_reg2(const MachOperand *o) {
 }
 
 /* =========================================================================
- * Operand extraction — explicit
+ * instr_def — single register defined by an instruction
  * ========================================================================= */
 
 int instr_def(const MachInstr *in, int nextVreg) {
-    (void)nextVreg; // physical registers are handled by regalloc_operand_reg directly
+    (void)nextVreg;
     switch (in->op) {
-    // instructions that do not write a destination register
-    case MACH_CMP:  case MACH_TEST:
-    case MACH_JMP:  case MACH_JE:   case MACH_JNE:
-    case MACH_JL:   case MACH_JLE:  case MACH_JG:  case MACH_JGE:
+    case MACH_CMP: case MACH_TEST:
+    case MACH_JMP: case MACH_JE: case MACH_JNE:
+    case MACH_JL:  case MACH_JLE: case MACH_JG: case MACH_JGE:
     case MACH_CALL: case MACH_RET:
     case MACH_PUSH: case MACH_STORE:
     case MACH_CQO:
@@ -74,22 +74,47 @@ int instr_def(const MachInstr *in, int nextVreg) {
     }
 }
 
+/* =========================================================================
+ * instr_uses — explicit register reads
+ * ========================================================================= */
+
+/**
+ * @brief Collect all registers explicitly read by @p in into @p out[].
+ *
+ * Fills @p out (caller provides space for at least LIVENESS_MAX_IDS ints)
+ * with the ids of every register the instruction reads.  Includes:
+ *   - Primary and index registers of src1, src2.
+ *   - For STORE: primary and index registers of dst.mem — STORE reads both
+ *     the base and the index to compute the memory address.
+ *     **[BUG FIX]** Previously only the base register was extracted for
+ *     STORE, causing the interference graph to miss edges between the index
+ *     vreg and other live vregs.  With a single physical register assigned
+ *     to both the index and a live variable, the store would silently
+ *     corrupt the variable's value.
+ *   - For PUSH, IDIV, CQO: primary register of dst (read before use).
+ */
 void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
     (void)nextVreg;
     *n = 0;
     int r;
-    // src1: primary register and index register (for SIB addressing)
     r = regalloc_operand_reg(&in->src1);  if (r >= 0) out[(*n)++] = r;
     r = regalloc_operand_reg2(&in->src1); if (r >= 0) out[(*n)++] = r;
-    // src2: same
     r = regalloc_operand_reg(&in->src2);  if (r >= 0) out[(*n)++] = r;
     r = regalloc_operand_reg2(&in->src2); if (r >= 0) out[(*n)++] = r;
-    // for RMW-like ops the dst field is also read before being written
     switch (in->op) {
-    case MACH_STORE: // base address in dst is read
-    case MACH_PUSH:  // value in dst is read
-    case MACH_IDIV:  // divisor in dst is read
-    case MACH_CQO:   // not really dst but treated uniformly
+    case MACH_STORE:
+        /* base register of the destination MO_MEM */
+        r = regalloc_operand_reg(&in->dst);  if (r >= 0) out[(*n)++] = r;
+        /* FIX: index register of the destination MO_MEM.
+         * STORE mem(base, idx, scale) reads idx to form the effective address.
+         * Without this the interference graph lacked edges between idx and
+         * other live vregs, allowing the allocator to assign them the same
+         * physical register and silently corrupt the index at runtime. */
+        r = regalloc_operand_reg2(&in->dst); if (r >= 0) out[(*n)++] = r;
+        break;
+    case MACH_PUSH:
+    case MACH_IDIV:
+    case MACH_CQO:
         r = regalloc_operand_reg(&in->dst); if (r >= 0) out[(*n)++] = r;
         break;
     default: break;
@@ -97,29 +122,33 @@ void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
 }
 
 /* =========================================================================
- * Operand extraction — implicit (architectural side effects)
+ * instr_implicit_uses / instr_implicit_defs
+ * =========================================================================
+ * ABI-mandated implicit reads and writes not visible in the explicit
+ * operands.  These are added to the interference graph as if they were
+ * explicit uses/defs so that the allocator reserves the correct physical
+ * registers at call sites and around IDIV/CQO.
  * ========================================================================= */
 
 void instr_implicit_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
     switch (in->op) {
     case MACH_IDIV:
-        // IDIV reads RDX:RAX as the 128-bit dividend
+        /* IDIV reads RDX:RAX as the dividend */
         out[(*n)++] = nextVreg + PHYS_RAX;
         out[(*n)++] = nextVreg + PHYS_RDX;
         break;
     case MACH_CQO:
-        // CQO sign-extends RAX into RDX; RAX is the input
+        /* CQO sign-extends RAX into RDX:RAX; reads RAX */
         out[(*n)++] = nextVreg + PHYS_RAX;
         break;
     case MACH_CALL:
-        // conservatively model all caller-saved registers as used by the call
-        // (the callee may read any of them as arguments)
+        /* All caller-saved registers are potentially clobbered */
         for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++)
             out[(*n)++] = nextVreg + p;
         break;
     case MACH_RET:
-        // return value is in RAX; model it as used so the allocator keeps it live
+        /* RET reads the return value from RAX */
         out[(*n)++] = nextVreg + PHYS_RAX;
         break;
     default: break;
@@ -130,22 +159,26 @@ void instr_implicit_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
     switch (in->op) {
     case MACH_IDIV:
-        // IDIV writes quotient to RAX and remainder to RDX
+        /* IDIV writes quotient → RAX, remainder → RDX */
         out[(*n)++] = nextVreg + PHYS_RAX;
         out[(*n)++] = nextVreg + PHYS_RDX;
         break;
     case MACH_CQO:
-        // CQO writes the sign extension into RDX
+        /* CQO writes the sign-extension into RDX */
         out[(*n)++] = nextVreg + PHYS_RDX;
         break;
     case MACH_CALL:
-        // all caller-saved registers are clobbered by the call
+        /* CALL clobbers all caller-saved registers */
         for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++)
             out[(*n)++] = nextVreg + p;
         break;
     default: break;
     }
 }
+
+/* =========================================================================
+ * instr_defs — explicit register writes (wrapper around instr_def)
+ * ========================================================================= */
 
 void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
@@ -154,9 +187,16 @@ void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
 }
 
 /* =========================================================================
- * Instruction predicates
+ * Instruction predicates for the register allocator
  * ========================================================================= */
 
+/**
+ * @brief Return non-zero if @p op is a read-modify-write operation.
+ *
+ * RMW instructions read their `dst` operand before writing it (e.g.
+ * `addq %rcx, %rax` reads and then writes RAX).  The spill inserter uses
+ * this to decide whether it must reload `dst` before emitting the instruction.
+ */
 int regalloc_is_rmw(MachOp op) {
     switch (op) {
     case MACH_ADD: case MACH_SUB: case MACH_IMUL:
@@ -166,20 +206,33 @@ int regalloc_is_rmw(MachOp op) {
     }
 }
 
+/**
+ * @brief Return non-zero if @p op is a SETcc instruction.
+ *
+ * SETcc writes into %al (PHYS_AL), which is an alias of RAX.  The
+ * interference-graph builder adds a constraint excluding RAX from any
+ * vreg live across a SETcc to avoid aliasing conflicts.
+ */
 int regalloc_is_setcc(MachOp op) {
     switch (op) {
-    case MACH_SETE:  case MACH_SETNE:
-    case MACH_SETL:  case MACH_SETLE:
-    case MACH_SETG:  case MACH_SETGE:
+    case MACH_SETE: case MACH_SETNE: case MACH_SETL:
+    case MACH_SETLE: case MACH_SETG: case MACH_SETGE:
         return 1;
     default: return 0;
     }
 }
 
+/**
+ * @brief Return non-zero if @p op is a control-transfer instruction.
+ *
+ * Used by the spill inserter to invalidate the reload cache at basic-block
+ * boundaries: after a jump or call, execution may have come from a different
+ * predecessor, so cached reload temporaries from the current block are stale.
+ */
 int regalloc_is_ctrl_transfer(MachOp op) {
     switch (op) {
-    case MACH_JMP: case MACH_JE:  case MACH_JNE:
-    case MACH_JL:  case MACH_JLE: case MACH_JG: case MACH_JGE:
+    case MACH_JMP: case MACH_JE: case MACH_JNE: case MACH_JL:
+    case MACH_JLE: case MACH_JG: case MACH_JGE:
     case MACH_CALL: case MACH_RET:
         return 1;
     default: return 0;
