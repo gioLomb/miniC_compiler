@@ -178,13 +178,15 @@ typedef struct {
  * Constants, labels, and function names are ignored — they have no id in
  * the VarMap.
  */
-static void irExtract(void *ctxP, int instrIdx,
+
+ static void irExtract(void *ctxP, int instrIdx,
                        int uses[LIVENESS_MAX_IDS], int *nUses,
                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
     IRLivenessCtx *ctx = ctxP;
     IRInstr *in = &ctx->f->instrs[instrIdx];
     *nUses = 0; *nDefs = 0;
 
+    /* src1 e src2 sono usi */
     if (ir_operand_is_storage(in->src1.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->src1);
         if (id >= 0) uses[(*nUses)++] = id;
@@ -193,11 +195,40 @@ static void irExtract(void *ctxP, int instrIdx,
         int id = varmap_operand_id(ctx->varMap, in->src2);
         if (id >= 0) uses[(*nUses)++] = id;
     }
+
+    /* ---- NUOVO: dst di STORE_ARR è un uso ---- */
+    if (!ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
+        int id = varmap_operand_id(ctx->varMap, in->dst);
+        if (id >= 0) uses[(*nUses)++] = id;
+    }
+
+    /* Definizione solo per istruzioni che scrivono in una locazione */
     if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
         int id = varmap_operand_id(ctx->varMap, in->dst);
         if (id >= 0) defs[(*nDefs)++] = id;
     }
 }
+
+// static void irExtract(void *ctxP, int instrIdx,
+//                        int uses[LIVENESS_MAX_IDS], int *nUses,
+//                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
+//     IRLivenessCtx *ctx = ctxP;
+//     IRInstr *in = &ctx->f->instrs[instrIdx];
+//     *nUses = 0; *nDefs = 0;
+
+//     if (ir_operand_is_storage(in->src1.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->src1);
+//         if (id >= 0) uses[(*nUses)++] = id;
+//     }
+//     if (ir_operand_is_storage(in->src2.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->src2);
+//         if (id >= 0) uses[(*nUses)++] = id;
+//     }
+//     if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->dst);
+//         if (id >= 0) defs[(*nDefs)++] = id;
+//     }
+// }
 
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
                                     Arena *arena) {

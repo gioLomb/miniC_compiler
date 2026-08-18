@@ -270,11 +270,6 @@ static inline void sched_uses(const MachInstr *in, int nextVreg,
     case MACH_STORE:
         /* base register of the destination MO_MEM */
         SCHED_TRY(sched_reg    (&in->dst, nextVreg));
-        /* FIX: index register of the destination MO_MEM.
-         * STORE mem(base, idx, scale) reads idx to compute the address.
-         * Without this entry the DAG missed RAW edges of the form:
-         *   t = compute_index   →   STORE arr[t]
-         * allowing the scheduler to hoist the STORE above the computation. */
         SCHED_TRY(sched_reg_idx(&in->dst));
         break;
     case MACH_PUSH:

@@ -151,6 +151,28 @@ static void mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) 
  * @param eliminate  Output byte array of length @c f->count (caller-zeroed);
  *                   entries set to 1 identify instructions to be discarded.
  */
+
+ /**
+ * @brief Populate @p eliminate[] by scanning each block backward.
+ *
+ * For every instruction @c i in every reachable block:
+ *   - Unreachable blocks: all instructions are flagged unconditionally.
+ *   - Reachable blocks: an instruction is flagged only when it is pure,
+ *     defines a storage operand, and that operand is not live at this point.
+ *     Otherwise the live set is updated: source operands are marked live,
+ *     the destination operand is killed.
+ *
+ * A per-block BitSet is allocated from @p arena (one allocation per block)
+ * and is reclaimed when the arena is destroyed by the caller.
+ *
+ * @param f          IR function to analyse.
+ * @param reachable  Per-block reachability flags (from mark_reachable_blocks).
+ * @param liv        Liveness result from liveness_computeIr(); provides
+ *                   LiveOut per block and the VarMap for operand id lookup.
+ * @param arena      Scratch arena for the per-block live set allocation.
+ * @param eliminate  Output byte array of length @c f->count (caller-zeroed);
+ *                   entries set to 1 identify instructions to be discarded.
+ */
 static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
                       Arena *arena, char *eliminate) {
     int nBlocks = f->blockCount;
@@ -189,11 +211,13 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
                 continue;
             }
 
-            // update live set: make sources live, kill the destination.
+            /* ---- update live set: make sources live, kill the destination. ---- */
             // order matters — sources are added BEFORE the destination is killed.
             // this correctly handles self-referential patterns like "x = x + 1":
             // if we killed dst first, src (same variable) would look dead and its
             // liveness would not propagate backwards past this instruction
+
+            // src1 and src2 are always uses if they are storage locations
             if (ir_operand_is_storage(in->src1.kind)) {
                 int id = varmap_operand_id(&liv->varMap, in->src1);
                 if (id >= 0) bitset_set(&live, id);
@@ -202,11 +226,78 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
                 int id = varmap_operand_id(&liv->varMap, in->src2);
                 if (id >= 0) bitset_set(&live, id);
             }
+
+            /* FIX: For IR_STORE_ARR, the dst operand is the base address of the
+             * array, which is READ to compute the effective address.  Therefore
+             * it must be treated as a use, not as a definition.
+             */
+            if (!ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
+                int id = varmap_operand_id(&liv->varMap, in->dst);
+                if (id >= 0) bitset_set(&live, id);
+            }
+
+            // if the instruction defines a storage location, kill it now
             if (def && dstId >= 0)
-                bitset_clr(&live, dstId); // dst is defined here, so not live above
+                bitset_clr(&live, dstId);
         }
     }
 }
+// static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
+//                       Arena *arena, char *eliminate) {
+//     int nBlocks = f->blockCount;
+//     int words   = liv->blockSets.words;
+//     int nInstrs = f->count;
+
+//     memset(eliminate, 0, (size_t)nInstrs);
+
+//     for (int b = 0; b < nBlocks; b++) {
+
+//         // unreachable block: all instructions are dead by definition
+//         if (!reachable[b]) {
+//             for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
+//                 eliminate[i] = 1;
+//             continue;
+//         }
+
+//         // seed the backward scan with the block's live-out set
+//         BitSet live = bitset_new(arena, words);
+//         bitset_copy(&live, &liv->blockSets.LiveOut[b]);
+
+//         for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
+//             IRInstr *in = &f->instrs[i];
+
+//             // two-part check: opcode must write a dst AND dst must be a trackable
+//             // storage location (OPND_VAR or OPND_TEMP); labels and function names
+//             // are not tracked by the VarMap and must not be treated as defs
+//             int def   = ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind);
+//             int dstId = def ? varmap_operand_id(&liv->varMap, in->dst) : -1; // avoid lookup when not a def
+
+//             // pure instruction whose destination is dead at this point: eliminate
+//             if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && dstId >= 0 && !bitset_test(&live, dstId)) {
+//                 eliminate[i] = 1;
+//                 // do NOT update the live set: sources of a dead instruction are
+//                 // themselves potentially dead and must not be kept alive artificially
+//                 continue;
+//             }
+
+//             // update live set: make sources live, kill the destination.
+//             // order matters — sources are added BEFORE the destination is killed.
+//             // this correctly handles self-referential patterns like "x = x + 1":
+//             // if we killed dst first, src (same variable) would look dead and its
+//             // liveness would not propagate backwards past this instruction
+//             if (ir_operand_is_storage(in->src1.kind)) {
+//                 int id = varmap_operand_id(&liv->varMap, in->src1);
+//                 if (id >= 0) bitset_set(&live, id);
+//             }
+//             if (ir_operand_is_storage(in->src2.kind)) {
+//                 int id = varmap_operand_id(&liv->varMap, in->src2);
+//                 if (id >= 0) bitset_set(&live, id);
+//             }
+//             if (def && dstId >= 0)
+//                 bitset_clr(&live, dstId); // dst is defined here, so not live above
+//         }
+//     }
+// }
 
 
 /* =========================================================================

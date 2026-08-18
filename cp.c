@@ -97,20 +97,22 @@ static inline int operand_equal(const Operand *a, const Operand *b) {
  * Non-defining opcodes (IR_PARAM, IR_GOTO, IR_IF_FALSE, IR_STORE_ARR,
  * IR_RETURN, IR_LABEL) have no effect on the map.
  */
-static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
-    int id = varmap_operand_id(vm, in->dst);
-    if (id < 0 || id >= map->size) return; // dst not a tracked storage location
 
-    LatVal result = lat_conflict(); // default: assume unknown/conflicting
+ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
+    /* Le istruzioni che non definiscono un risultato non alterano la mappa */
+    if (!ir_defines_dst(in->op))
+        return;
+
+    int id = varmap_operand_id(vm, in->dst);
+    if (id < 0 || id >= map->size) return;
+
+    LatVal result = lat_conflict(); // default
 
     if (in->op == IR_ASSIGN) {
-        // copy: propagate whatever lattice value src1 currently has
         result = lat_get_value_from_operand(map, in->src1, vm);
-
     } else if (is_binary_op(in->op)) {
         LatVal lhs = lat_get_value_from_operand(map, in->src1, vm);
         LatVal rhs = lat_get_value_from_operand(map, in->src2, vm);
-        // only fold when both operands are known constants
         if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
             if (!lhs.isFloat && !rhs.isFloat) {
                 int r;
@@ -120,18 +122,52 @@ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
                 float r;
                 if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
                     result = is_comparison_op(in->op)
-                             ? lat_set_const_int((int)r)   // comparison → int 0/1
+                             ? lat_set_const_int((int)r)
                              : lat_set_const_float(r);
             }
-            // mixed int/float: leave as LAT_CONFLICT (no implicit promotion here)
         }
-
     } else if (in->op == IR_NEG || in->op == IR_NOT) {
         result = fold_unary(in->op, lat_get_value_from_operand(map, in->src1, vm));
     }
 
     map->vals[id] = result;
 }
+
+// static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
+//     int id = varmap_operand_id(vm, in->dst);
+//     if (id < 0 || id >= map->size) return; // dst not a tracked storage location
+
+//     LatVal result = lat_conflict(); // default: assume unknown/conflicting
+
+//     if (in->op == IR_ASSIGN) {
+//         // copy: propagate whatever lattice value src1 currently has
+//         result = lat_get_value_from_operand(map, in->src1, vm);
+
+//     } else if (is_binary_op(in->op)) {
+//         LatVal lhs = lat_get_value_from_operand(map, in->src1, vm);
+//         LatVal rhs = lat_get_value_from_operand(map, in->src2, vm);
+//         // only fold when both operands are known constants
+//         if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
+//             if (!lhs.isFloat && !rhs.isFloat) {
+//                 int r;
+//                 if (fold_binary_int(in->op, lhs.val.ival, rhs.val.ival, &r))
+//                     result = lat_set_const_int(r);
+//             } else if (lhs.isFloat && rhs.isFloat) {
+//                 float r;
+//                 if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
+//                     result = is_comparison_op(in->op)
+//                              ? lat_set_const_int((int)r)   // comparison → int 0/1
+//                              : lat_set_const_float(r);
+//             }
+//             // mixed int/float: leave as LAT_CONFLICT (no implicit promotion here)
+//         }
+
+//     } else if (in->op == IR_NEG || in->op == IR_NOT) {
+//         result = fold_unary(in->op, lat_get_value_from_operand(map, in->src1, vm));
+//     }
+
+//     map->vals[id] = result;
+// }
 
 /* =========================================================================
  * Pass 1: build VarMap
