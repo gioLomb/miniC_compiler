@@ -92,15 +92,16 @@ int main(int argc, char **argv) {
     }
 
     MachProgram *mp = isel_select(ir);
-    if (debug) { fprintf(out, "# === PRE-SCHEDULING ===\n"); isel_emit_asm(mp, out); fprintf(out, "\n"); }
+    if (debug) { fprintf(out, "# === PRE-SCHEDULING ===\n"); isel_emit_asm(mp, ir, out); fprintf(out, "\n"); }
 
     sched_schedule(mp);
-    if (debug) { fprintf(out, "# === POST-SCHEDULING / PRE-REGALLOC ===\n"); isel_emit_asm(mp, out); fprintf(out, "\n"); }
+    if (debug) { fprintf(out, "# === POST-SCHEDULING / PRE-REGALLOC ===\n"); isel_emit_asm(mp, ir, out); fprintf(out, "\n"); }
 
     regalloc(mp);
     if (debug) fprintf(out, "# === POST-REGALLOC ===\n");
 
-    isel_emit_asm(mp, out);
+    /* Pass ir so isel_emit_asm can emit .bss/.data sections. */
+    isel_emit_asm(mp, ir, out);
 
     mach_free(mp);
     if (out_path) fclose(out);

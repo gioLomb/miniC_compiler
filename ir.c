@@ -1,41 +1,6 @@
 /**
  * @file ir.c
  * @brief IR generation from the AST and IR-level optimisation pipeline.
- *
- * Responsibilities of this module:
- *  1. Translate every ND_FUNC_DECL in the AST into a flat IRInstr array
- *     (ir_emitStmt / ir_emitExpr / ir_emitExprInto).
- *  2. Build the Control Flow Graph (CFG) incrementally during emission
- *     and resolve label→block mappings in a single post-pass (ir_resolveCFG).
- *  3. Run the IR-level optimisation pipeline on each function:
- *       SVN → DCE → (CP + DCE)* → LICM + SR → (CP + DCE)*
- *  4. Expose ir_print and ir_free for debugging and cleanup.
- *
- * Code-generation strategy
- * ------------------------
- * Two mutually recursive families of functions handle expressions:
- *
- *   ir_emitExpr(expr, f)           — evaluates expr, emits into a fresh temp,
- *                               returns the result Operand.
- *   ir_emitExprInto(expr, f, dest) — same but writes directly into dest
- *                               (a named variable or existing temp).
- *                               Avoids one IR_ASSIGN copy for the common
- *                               "var = expr" pattern.
- *
- * Short-circuit Boolean operators (&& / ||) are handled by
- * ir_emitJumpIfFalse / ir_emitJumpIfTrue, which ir_emitInstr conditional branches directly
- * without materialising a Boolean into a temporary first.  When a Boolean
- * value *must* be materialised (e.g. "r = a && b"), ir_emitShortCircuit[Into]
- * wraps the jump sequence with two IR_ASSIGN(0/1) arms.
- *
- * CFG construction
- * ----------------
- * ir_emitInstr() closes the current basic block and opens a new one whenever it
- * encounters an IR_LABEL (new block starts) or a terminator opcode (GOTO /
- * IF_FALSE / RETURN — the current block ends).  After all instructions of
- * a function have been emitted, ir_resolveCFG() walks the block list, reads
- * each block's terminator to determine successor block indices, and fills
- * IRBlock.bb.succ[].  The temporary labelToBlock array is freed there.
  */
 
 #include <stdio.h>
@@ -52,15 +17,11 @@
 
 /* =========================================================================
  * Operator key helpers
- * -------------------------------------------------------------------------
- * Pack two chars into a 16-bit key to avoid strcmp in hot paths.
- * op_key("==") → 0x3D3D, op_key("+") → 0x2B00, etc.
  * ========================================================================= */
 #define KEY_AND 0x2626  /* "&&" */
 #define KEY_OR  0x7C7C  /* "||" */
 #define KEY_NOT 0x2100  /* "!"  */
 
-/** Pack the first two chars of @p s into a 16-bit key. */
 static inline unsigned short op_key(const char *s) {
     if (!s || !s[0]) return 0;
     unsigned short k = (unsigned char)s[0] << 8;
@@ -70,37 +31,24 @@ static inline unsigned short op_key(const char *s) {
 
 /* =========================================================================
  * Module-level mutable state
- * -------------------------------------------------------------------------
- * These are reset at the start of each ir_generate() call and updated
- * throughout the generation of a single translation unit.
  * ========================================================================= */
 
-static int nextTemp;            /**< counter for fresh temporary ids             */
-static int nextLabel;           /**< counter for fresh label ids (global scope)  */
-static int currentLoopDepth;    /**< nesting depth of the innermost while loop   */
+static int nextTemp;
+static int nextLabel;
+static int currentLoopDepth;
 
 /* =========================================================================
  * Operand constructors
- * -------------------------------------------------------------------------
- * Each constructor zero-initialises the union via a compound literal,
- * ensuring no stale bits leak between uses.
  * ========================================================================= */
 
-/** Allocate a fresh, unique temporary operand. */
 static inline Operand mkTemp(void) {
     return (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
 }
 
-/** Allocate a fresh, unique label operand. */
 static inline Operand mkLabel(void) {
     return (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
 }
 
-/**
- * Build a variable operand from a resolved AST node.
- * scopeLevel and offset were stamped by semantic_check(); sourceName is
- * kept for debug dumps only.
- */
 static inline Operand mkVar(const ASTNode *node) {
     return (Operand){ .kind           = OPND_VAR,
                       .data.varLevel  = node->scopeLevel,
@@ -108,22 +56,18 @@ static inline Operand mkVar(const ASTNode *node) {
                       .data.sourceName = node->text };
 }
 
-/** Build an integer constant operand. */
 static inline Operand mkConstInt(int v) {
     return (Operand){ .kind = OPND_CONST_INT, .data.intVal = v };
 }
 
-/** Build a float constant operand. */
 static inline Operand mkConstFloat(float v) {
     return (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = v };
 }
 
-/** Build a function-name operand (for IR_CALL src1). */
 static inline Operand mkFunc(const char *name) {
     return (Operand){ .kind = OPND_FUNC, .data.funcName = name };
 }
 
-/** Return an inert "no operand" sentinel. */
 Operand noOperand(void) {
     return (Operand){ .kind = OPND_NONE };
 }
@@ -132,21 +76,13 @@ Operand noOperand(void) {
  * CFG helpers
  * ========================================================================= */
 
-/**
- * @brief Return non-zero if @p op is a basic-block terminator.
- *
- * Terminators (GOTO, IF_FALSE, RETURN) end the current basic block;
- * the next instruction opens a new one.  Uses a bitmask for O(1) test.
- */
 static inline int ir_isTerminator(IROp op) {
     const unsigned int mask =
         (1U << IR_GOTO) | (1U << IR_IF_FALSE) | (1U << IR_RETURN);
     return (mask & (1U << op)) != 0;
 }
 
-
 int ir_is_pure(IROp op) {
-    // bitmask: bit i set ↔ IROp i is pure (no memory/control-flow side effects)
     static const unsigned int mask =
         (1U << IR_ADD)  | (1U << IR_SUB) | (1U << IR_MUL) |
         (1U << IR_DIV)  | (1U << IR_MOD) | (1U << IR_NEG) |
@@ -155,7 +91,6 @@ int ir_is_pure(IROp op) {
         (1U << IR_NE)   | (1U << IR_ASSIGN);
     return (op < 32) && ((mask >> op) & 1U);
 }
-
 
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     int nInstrs    = f->count;
@@ -182,21 +117,11 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     f->capacity      = newCount;
     f->curBlockStart = 0;
 
-    return (newCount != nInstrs); // 1 if something was removed
+    return (newCount != nInstrs);
 }
 
-/**
- * @brief Append a new IRBlock covering instrs[start..end) to @p f.
- *
- * Grows f->blocks via realloc if necessary.  The new block is initialised
- * with succ[0]=succ[1]=-1 and predCount=0; ir_resolveCFG() fills succ[] later.
- *
- * @param f     Target function.
- * @param start First instruction index (inclusive).
- * @param end   One-past-last instruction index.
- */
 static inline void ir_closeBlock(IRFunction *f, int start, int end) {
-    if (end <= start) return;     // skip degenerate empty ranges
+    if (end <= start) return;
     if (f->blockCount == f->blockCap) {
         f->blockCap = f->blockCap ? f->blockCap * 2 : 16;
         f->blocks = realloc(f->blocks, (size_t)f->blockCap * sizeof(IRBlock));
@@ -207,20 +132,9 @@ static inline void ir_closeBlock(IRFunction *f, int start, int end) {
     };
 }
 
-/**
- * @brief Record that label @p labelId targets block index @p futureBlockIdx.
- *
- * The labelToBlock array is indexed by (labelId - f->labelBase) and is
- * grown on demand.  It is freed by ir_resolveCFG().
- *
- * @param f              Target function.
- * @param labelId        Globally unique label id.
- * @param futureBlockIdx Block index that the label will head.
- */
 static void ir_registerLabel(IRFunction *f, int labelId, int futureBlockIdx) {
     int idx = labelId - f->labelBase;
     if (idx >= f->labelToBlockCap) {
-        // Double capacity until it fits, initialise new slots to -1.
         int newCap = f->labelToBlockCap ? f->labelToBlockCap : 8;
         while (newCap <= idx) newCap <<= 1;
         int *newTable = realloc(f->labelToBlock, (size_t)newCap * sizeof(int));
@@ -233,32 +147,13 @@ static void ir_registerLabel(IRFunction *f, int labelId, int futureBlockIdx) {
     f->labelToBlock[idx] = futureBlockIdx;
 }
 
-/**
- * @brief Emit one IR instruction into @p f, maintaining CFG block boundaries.
- *
- * Rules:
- *  - An IR_LABEL at a non-empty position closes the current block first,
- *    then registers the label as the head of the next block.
- *  - Any terminator (GOTO / IF_FALSE / RETURN) closes the current block
- *    after appending the instruction.
- *
- * loopDepth is stamped from the module-level currentLoopDepth at ir_emitInstr time.
- *
- * @param f    Target function.
- * @param op   Opcode.
- * @param dst  Destination operand (noOperand() if unused).
- * @param src1 First source operand.
- * @param src2 Second source operand.
- */
 static void ir_emitInstr(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2) {
-    // Grow instruction array if full.
     if (f->count == f->capacity) {
         f->capacity = f->capacity ? f->capacity * 2 : 16;
         f->instrs = realloc(f->instrs, (size_t)f->capacity * sizeof(IRInstr));
     }
     int idx = f->count;
 
-    // A label in the middle of a block ends the current block.
     if (op == IR_LABEL && idx > f->curBlockStart) {
         ir_closeBlock(f, f->curBlockStart, idx);
         f->curBlockStart = idx;
@@ -276,14 +171,12 @@ static void ir_emitInstr(IRFunction *f, IROp op, Operand dst, Operand src1, Oper
     if (op == IR_LABEL)
         ir_registerLabel(f, dst.data.labelId, f->blockCount);
 
-    // Terminators end the current block; next instruction starts a new one.
     if (ir_isTerminator(op)) {
         ir_closeBlock(f, f->curBlockStart, f->count);
         f->curBlockStart = f->count;
     }
 }
 
-/* Convenience wrappers to keep call sites readable. */
 static inline void ir_emitGoto(IRFunction *f, Operand label) {
     ir_emitInstr(f, IR_GOTO, label, noOperand(), noOperand());
 }
@@ -298,20 +191,7 @@ static inline void ir_emitLabel(IRFunction *f, Operand label) {
  * CFG resolution
  * ========================================================================= */
 
-/**
- * @brief Finalise the CFG for @p f after all instructions have been emitted.
- *
- * Steps:
- *  1. Close any trailing open block.
- *  2. For each block, examine its last instruction to set succ[]:
- *       - IR_GOTO        → succ[0] = target block
- *       - IR_IF_FALSE    → succ[0] = fall-through, succ[1] = taken target
- *       - other / RETURN → succ[0] = next block (or -1)
- *  3. Increment predCount of each referenced successor.
- *  4. Free the temporary labelToBlock array.
- */
 static void ir_resolveCFG(IRFunction *f) {
-    // Close any block that was still open at the end of the function.
     if (f->curBlockStart < f->count) {
         ir_closeBlock(f, f->curBlockStart, f->count);
         f->curBlockStart = f->count;
@@ -327,26 +207,22 @@ static void ir_resolveCFG(IRFunction *f) {
                 (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
 
         } else if (op == IR_IF_FALSE) {
-            // succ[0] = fall-through (condition true), succ[1] = branch taken
             f->blocks[b].bb.succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
             int lbl = f->instrs[last].dst.data.labelId - f->labelBase;
             f->blocks[b].bb.succ[1] =
                 (lbl >= 0 && lbl < f->labelToBlockCap) ? f->labelToBlock[lbl] : -1;
 
         } else if (op != IR_RETURN) {
-            // Non-terminator last instruction: fall through to next block.
             f->blocks[b].bb.succ[0] = (b + 1 < f->blockCount) ? b + 1 : -1;
         }
     }
 
-    // Increment predCount for every successor.
     for (int b = 0; b < f->blockCount; b++)
         for (int k = 0; k < 2; k++) {
             int s = f->blocks[b].bb.succ[k];
             if (s >= 0) f->blocks[s].predCount++;
         }
 
-    // labelToBlock is only needed during construction; free it now.
     free(f->labelToBlock);
     f->labelToBlock    = NULL;
     f->labelToBlockCap = 0;
@@ -365,16 +241,6 @@ static void    ir_emitJumpIfTrue (ASTNode *cond, IRFunction *out, Operand trueLb
  * Binary operator → IROp mapping
  * ========================================================================= */
 
-/**
- * @brief Map a two-character operator string to the corresponding IROp.
- *
- * Uses a precomputed 16-bit key (high byte = first char, low byte = second
- * char or 0) to avoid strcmp.  Unmapped operators default to IR_ADD as a
- * safe fallback (should never happen after semantic analysis).
- *
- * @param op Operator string as produced by the parser (e.g. "+", "<=").
- * @return   Corresponding IROp value.
- */
 static inline IROp ir_binopToIROp(const char *op) {
     if (!op || op[0] == '\0') return IR_ADD;
     unsigned short key =
@@ -398,57 +264,31 @@ static inline IROp ir_binopToIROp(const char *op) {
 
 /* =========================================================================
  * Short-circuit Boolean code generation
- * -------------------------------------------------------------------------
- * ir_emitJumpIfFalse / ir_emitJumpIfTrue implement short-circuit evaluation without
- * materialising a Boolean temporary.  They recurse on the AST to ir_emitInstr a
- * minimal sequence of conditional branches.
- *
- *   &&:  ir_emitJumpIfFalse(a && b, L) ≡  if(!a) goto L; if(!b) goto L;
- *   ||:  ir_emitJumpIfFalse(a || b, L) ≡  if(a) goto skip; if(!b) goto L; skip:
- *   !:   ir_emitJumpIfFalse(!e, L)     ≡  ir_emitJumpIfTrue(e, L)
- *   other: evaluate e, ir_emitInstr IF_FALSE e goto L
  * ========================================================================= */
 
-/**
- * @brief Emit code that jumps to @p falseLbl if @p cond evaluates to false.
- *
- * Handles &&, ||, and ! specially to produce short-circuit code.
- * For all other expression kinds, falls back to ir_emitExpr + IF_FALSE.
- */
 static void ir_emitJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseLbl) {
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_AND) {
-        // a && b: both must be true — jump on first failure
         ir_emitJumpIfFalse(cond->children[0], out, falseLbl);
         ir_emitJumpIfFalse(cond->children[1], out, falseLbl);
         return;
     }
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_OR) {
-        // a || b: jump only if *both* fail
         Operand skipLbl = mkLabel();
-        ir_emitJumpIfTrue(cond->children[0], out, skipLbl);   // left true → skip
-        ir_emitJumpIfFalse(cond->children[1], out, falseLbl); // right false → jump
+        ir_emitJumpIfTrue(cond->children[0], out, skipLbl);
+        ir_emitJumpIfFalse(cond->children[1], out, falseLbl);
         ir_emitLabel(out, skipLbl);
         return;
     }
     if (cond->kind == ND_UNARY && op_key(cond->text) == KEY_NOT) {
-        // !e is false ↔ e is true
         ir_emitJumpIfTrue(cond->children[0], out, falseLbl);
         return;
     }
-    // General case: evaluate and branch.
     Operand v = ir_emitExpr(cond, out);
     ir_emitIfFalse(out, v, falseLbl);
 }
 
-/**
- * @brief Emit code that jumps to @p trueLbl if @p cond evaluates to true.
- *
- * Dual of ir_emitJumpIfFalse; used to implement || in ir_emitJumpIfFalse and
- * to build ir_emitShortCircuit.
- */
 static void ir_emitJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_AND) {
-        // a && b is true ↔ a is true *and* b is true
         Operand skipLbl = mkLabel();
         ir_emitJumpIfFalse(cond->children[0], out, skipLbl);
         ir_emitJumpIfTrue(cond->children[1], out, trueLbl);
@@ -456,7 +296,6 @@ static void ir_emitJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
         return;
     }
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_OR) {
-        // a || b is true if either operand is true
         ir_emitJumpIfTrue(cond->children[0], out, trueLbl);
         ir_emitJumpIfTrue(cond->children[1], out, trueLbl);
         return;
@@ -465,7 +304,6 @@ static void ir_emitJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
         ir_emitJumpIfFalse(cond->children[0], out, trueLbl);
         return;
     }
-    // General case: evaluate, jump over if false, unconditional jump if true.
     Operand v       = ir_emitExpr(cond, out);
     Operand skipLbl = mkLabel();
     ir_emitIfFalse(out, v, skipLbl);
@@ -473,20 +311,6 @@ static void ir_emitJumpIfTrue(ASTNode *cond, IRFunction *out, Operand trueLbl) {
     ir_emitLabel(out, skipLbl);
 }
 
-/**
- * @brief Materialise the short-circuit Boolean @p expr into @p dest.
- *
- * Emits the pattern:
- *   if (!expr) goto false_lbl
- *   dest = 1; goto end_lbl
- *   false_lbl: dest = 0
- *   end_lbl:
- *
- * @param expr Short-circuit expression (&& or ||) to evaluate.
- * @param out  Target function.
- * @param dest Destination operand to receive 0 or 1.
- * @return     @p dest.
- */
 static Operand ir_emitShortCircuitInto(ASTNode *expr, IRFunction *out, Operand dest) {
     Operand endLbl   = mkLabel();
     Operand falseLbl = mkLabel();
@@ -499,7 +323,6 @@ static Operand ir_emitShortCircuitInto(ASTNode *expr, IRFunction *out, Operand d
     return dest;
 }
 
-/** Variant of ir_emitShortCircuitInto that allocates a fresh temp as destination. */
 static Operand ir_emitShortCircuit(ASTNode *expr, IRFunction *out) {
     return ir_emitShortCircuitInto(expr, out, mkTemp());
 }
@@ -508,21 +331,11 @@ static Operand ir_emitShortCircuit(ASTNode *expr, IRFunction *out) {
  * Assignment and call helpers
  * ========================================================================= */
 
-/**
- * @brief Emit code for an assignment expression (ND_ASSIGN).
- *
- * Scalar:  lvalue = rvalue  →  ir_emitExprInto(rvalue, mkVar(lvalue))
- * Array:   lvalue[idx] = rvalue  →  IR_STORE_ARR dst, idx, rvalue
- *
- * @return Operand holding the assigned value.
- */
 static Operand ir_emitAssign(ASTNode *expr, IRFunction *out) {
     ASTNode *lvalue = expr->children[0];
     if (lvalue->kind == ND_ID)
-        // Scalar: write directly into the named variable, avoids a copy.
         return ir_emitExprInto(expr->children[1], out, mkVar(lvalue));
 
-    // Array element: evaluate index and RHS, ir_emitInstr a store.
     Operand idx  = ir_emitExpr(lvalue->children[0], out);
     Operand base = mkVar(lvalue);
     Operand rhs  = ir_emitExpr(expr->children[1], out);
@@ -530,18 +343,7 @@ static Operand ir_emitAssign(ASTNode *expr, IRFunction *out) {
     return rhs;
 }
 
-/**
- * @brief Emit code for a function call expression (ND_CALL).
- *
- * Pushes arguments via IR_PARAM in left-to-right order, then emits IR_CALL.
- * The number of arguments is encoded in IR_CALL.src2 as a CONST_INT so that
- * the instruction selector can determine stack cleanup without re-traversing
- * the IR.
- *
- * @return Fresh temporary holding the call result.
- */
 static Operand ir_emitCall(ASTNode *expr, IRFunction *out) {
-    // Emit one IR_PARAM per argument in declaration order.
     for (int i = 0; i < expr->nchildren; i++) {
         Operand arg = ir_emitExpr(expr->children[i], out);
         ir_emitInstr(out, IR_PARAM, noOperand(), arg, noOperand());
@@ -555,17 +357,6 @@ static Operand ir_emitCall(ASTNode *expr, IRFunction *out) {
  * ir_emitExpr — general expression → fresh temp
  * ========================================================================= */
 
-/**
- * @brief Emit code for @p expr, returning the Operand that holds the value.
- *
- * For simple operands (constants, variables) the Operand is returned
- * directly without emitting any instruction.  For compound expressions a
- * fresh temporary is allocated and the result is stored there.
- *
- * @param expr AST expression node.
- * @param out  Target function.
- * @return     Operand containing the expression result.
- */
 static Operand ir_emitExpr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {
     case ND_NUM_INT:   return mkConstInt(atoi(expr->text));
@@ -589,7 +380,6 @@ static Operand ir_emitExpr(ASTNode *expr, IRFunction *out) {
 
     case ND_BINOP: {
         unsigned short key = op_key(expr->text);
-        // && and || require short-circuit evaluation.
         if (key == KEY_AND || key == KEY_OR)
             return ir_emitShortCircuit(expr, out);
         Operand lhs = ir_emitExpr(expr->children[0], out);
@@ -605,17 +395,6 @@ static Operand ir_emitExpr(ASTNode *expr, IRFunction *out) {
     }
 }
 
-/**
- * @brief Emit code for @p expr, placing the result directly into @p dest.
- *
- * Falls back to ir_emitExpr + IR_ASSIGN for expression kinds where direct
- * emission into an arbitrary destination is not straightforward.
- *
- * @param expr AST expression node.
- * @param out  Target function.
- * @param dest Pre-allocated destination operand (VAR or TEMP).
- * @return     @p dest.
- */
 static Operand ir_emitExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
     switch (expr->kind) {
     case ND_NUM_INT:
@@ -661,7 +440,6 @@ static Operand ir_emitExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
     }
 
     case ND_ASSIGN: {
-        // Evaluate the nested assignment first, then copy its result to dest.
         Operand inner = ir_emitAssign(expr, out);
         ir_emitInstr(out, IR_ASSIGN, dest, inner, noOperand());
         return dest;
@@ -675,24 +453,6 @@ static Operand ir_emitExprInto(ASTNode *expr, IRFunction *out, Operand dest) {
  * Statement code generation
  * ========================================================================= */
 
-/**
- * @brief Recursively ir_emitInstr IR for statement @p stmt into function @p out.
- *
- * Statement kinds and their translation:
- *
- *  ND_BLOCK      — ir_emitInstr children in order.
- *  ND_VAR_DECL   — ir_emitInstr initialiser(s) if present; array initialisers
- *                  become a sequence of IR_STORE_ARR.
- *  ND_EXPR_STMT  — ir_emitInstr the child expression (result discarded).
- *  ND_IF         — ir_emitInstr condition with ir_emitJumpIfFalse; ir_emitInstr then-branch;
- *                  if else present, bracket with GOTO + LABEL.
- *  ND_WHILE      — ir_emitInstr start-label, condition test, body (with incremented
- *                  currentLoopDepth), back-edge GOTO, end-label.
- *  ND_RETURN     — evaluate return expression, ir_emitInstr IR_RETURN.
- *
- * @param stmt AST statement node.
- * @param out  Target function.
- */
 static void ir_emitStmt(ASTNode *stmt, IRFunction *out) {
     if (!stmt) return;
     switch (stmt->kind) {
@@ -702,12 +462,10 @@ static void ir_emitStmt(ASTNode *stmt, IRFunction *out) {
         break;
 
     case ND_VAR_DECL:
-        if (stmt->nchildren == 0) break;  // declaration without initialiser
+        if (stmt->nchildren == 0) break;
         if (stmt->nchildren == 1) {
-            // Scalar initialiser: write directly into the declared variable.
             ir_emitExprInto(stmt->children[0], out, mkVar(stmt));
         } else {
-            // Array initialiser: one IR_STORE_ARR per element.
             for (int i = 0; i < stmt->nchildren; i++) {
                 Operand v = ir_emitExpr(stmt->children[i], out);
                 ir_emitInstr(out, IR_STORE_ARR, mkVar(stmt), mkConstInt(i), v);
@@ -722,13 +480,12 @@ static void ir_emitStmt(ASTNode *stmt, IRFunction *out) {
     case ND_IF: {
         Operand elseLbl = mkLabel();
         ir_emitJumpIfFalse(stmt->children[0], out, elseLbl);
-        ir_emitStmt(stmt->children[1], out);                  // then-branch
+        ir_emitStmt(stmt->children[1], out);
         if (stmt->nchildren > 2) {
-            // Has else-branch: jump past it after then-branch.
             Operand endLbl = mkLabel();
             ir_emitGoto(out, endLbl);
             ir_emitLabel(out, elseLbl);
-            ir_emitStmt(stmt->children[2], out);              // else-branch
+            ir_emitStmt(stmt->children[2], out);
             ir_emitLabel(out, endLbl);
         } else {
             ir_emitLabel(out, elseLbl);
@@ -740,11 +497,11 @@ static void ir_emitStmt(ASTNode *stmt, IRFunction *out) {
         Operand startLbl = mkLabel();
         Operand endLbl   = mkLabel();
         ir_emitLabel(out, startLbl);
-        ir_emitJumpIfFalse(stmt->children[0], out, endLbl);  // loop exit test
-        currentLoopDepth++;                               // body is one level deeper
+        ir_emitJumpIfFalse(stmt->children[0], out, endLbl);
+        currentLoopDepth++;
         ir_emitStmt(stmt->children[1], out);
         currentLoopDepth--;
-        ir_emitGoto(out, startLbl);                          // back-edge
+        ir_emitGoto(out, startLbl);
         ir_emitLabel(out, endLbl);
         break;
     }
@@ -763,24 +520,7 @@ static void ir_emitStmt(ASTNode *stmt, IRFunction *out) {
  * Function compilation
  * ========================================================================= */
 
-/**
- * @brief Compile a single ND_FUNC_DECL node into an optimised IRFunction.
- *
- * Sequence:
- *  1. Emit IR for the function body (ir_emitStmt on the ND_BLOCK child).
- *  2. Resolve the CFG (ir_resolveCFG).
- *  3. Run the optimisation pipeline:
- *       SVN (value numbering)
- *     → DCE (dead-code elimination)
- *     → loop: CP (constant propagation + CFG pruning) + DCE until stable
- *     → LICM (loop-invariant code motion) + SR (strength reduction)
- *     → if anything changed: another CP + DCE loop
- *
- * @param decl ND_FUNC_DECL AST node.
- * @return     Heap-allocated, optimised IRFunction.
- */
 static IRFunction *ir_buildFunction(ASTNode *decl) {
-    // Extract function name from "returnType name" text field.
     const char *space = strrchr(decl->text, ' ');
     const char *name  = space ? space + 1 : decl->text;
 
@@ -790,34 +530,23 @@ static IRFunction *ir_buildFunction(ASTNode *decl) {
     f->curBlockStart = 0;
     currentLoopDepth = 0;
 
-    // Emit IR for the function body (last child = ND_BLOCK).
     ASTNode *body = decl->children[decl->nchildren - 1];
     ir_emitStmt(body, f);
 
-    // Build and resolve the CFG from the flat instruction array.
     ir_resolveCFG(f);
 
-    // --- Optimisation pipeline -----------------------------------------
-
-    // SVN: eliminate redundant re-computations along EBB paths.
     svn_optimize(f);
-
-    // Initial DCE: remove trivially dead code after SVN.
     dce_optimize(f);
 
-    // CP + DCE: iterate to a fixed point (constant propagation may expose
-    // new dead code, which in turn may expose new constants).
     int changed;
     do {
         changed  = cp_optimize(f);
         changed |= dce_optimize(f);
     } while (changed);
 
-    // LICM + SR: loop transformations (require the pre-header inserted by LICM).
     changed  = licm_optimize(f);
     changed |= sr_optimize(f);
 
-    // If loop passes modified the IR, clean up with another CP + DCE round.
     if (changed) {
         do {
             changed  = cp_optimize(f);
@@ -832,12 +561,6 @@ static IRFunction *ir_buildFunction(ASTNode *decl) {
  * IRProgram management
  * ========================================================================= */
 
-/**
- * @brief Append @p f to @p prog, growing the function array if necessary.
- *
- * @param prog Target program.
- * @param f    Function to append.
- */
 static void ir_programAppend(IRProgram *prog, IRFunction *f) {
     if (prog->count == prog->capacity) {
         prog->capacity = prog->capacity ? prog->capacity * 2 : 8;
@@ -848,20 +571,116 @@ static void ir_programAppend(IRProgram *prog, IRFunction *f) {
 }
 
 /* =========================================================================
+ * Global variable collection
+ * =========================================================================
+ * Called once per ND_VAR_DECL at global scope.  symOffset must match the
+ * offset that st_resolve_global_namespace assigned to this symbol — that is,
+ * the value of global->table->size *before* sym_bind inserted the symbol,
+ * which equals the sequential index of this global among all global symbols
+ * (both vars and funcs).
+ *
+ * We replicate that counter here (symOffset parameter) rather than re-querying
+ * the symtab, to keep ir.c independent of symbol_table internals.
+ * ========================================================================= */
+
+static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
+    if (!decl || decl->kind != ND_VAR_DECL) return;
+
+    /* Parse "type name" or "type name[size]" from decl->text. */
+    char *buf    = strdup(decl->text);
+    char *space  = strchr(buf, ' ');
+    if (!space) { free(buf); return; }
+    *space       = '\0';
+    char *tyName = buf;
+    char *rest   = space + 1;
+
+    int   isArray = 0, arraySize = 0;
+    char *name;
+    char *bracket = strchr(rest, '[');
+    if (bracket) {
+        *bracket  = '\0';
+        name      = rest;
+        isArray   = 1;
+        arraySize = atoi(bracket + 1);
+    } else {
+        name = rest;
+    }
+
+    DataType dt = T_VOID;
+    if      (tyName[0] == 'i') dt = T_INT;
+    else if (tyName[0] == 'f') dt = T_FLOAT;
+
+    /* Grow globals array. */
+    if (prog->globalCount == prog->globalCap) {
+        prog->globalCap = prog->globalCap ? prog->globalCap * 2 : 8;
+        prog->globals   = realloc(prog->globals,
+                                  (size_t)prog->globalCap * sizeof(IRGlobalVar));
+    }
+
+    IRGlobalVar *gv  = &prog->globals[prog->globalCount++];
+    gv->name         = strdup(name);
+    gv->dataType     = dt;
+    gv->isArray      = isArray;
+    gv->arraySize    = arraySize;
+    gv->symOffset    = symOffset;
+    gv->initVals     = NULL;
+    gv->initCount    = 0;
+
+    /* Collect compile-time constant initializers (after optimize_ast). */
+    if (decl->nchildren > 0) {
+        int cnt      = decl->nchildren;
+        gv->initVals = malloc((size_t)cnt * sizeof(long));
+        gv->initCount = cnt;
+        for (int j = 0; j < cnt; j++) {
+            ASTNode *ch = decl->children[j];
+            if (ch->kind == ND_NUM_INT) {
+                gv->initVals[j] = atol(ch->text);
+            } else if (ch->kind == ND_NUM_FLOAT) {
+                float fv = (float)atof(ch->text);
+                long  lv;
+                memcpy(&lv, &fv, sizeof fv); /* store IEEE-754 bit pattern */
+                gv->initVals[j] = lv;
+            } else {
+                gv->initVals[j] = 0;
+            }
+        }
+    }
+
+    free(buf);
+}
+
+/* =========================================================================
  * Public API — ir_generate
  * ========================================================================= */
 
 IRProgram *ir_generate(ASTNode *program) {
-    // Reset global counters; temps and labels are unique per translation unit.
     nextTemp  = 0;
     nextLabel = 0;
 
     IRProgram *prog = calloc(1, sizeof(IRProgram));
+
+    /* First pass: collect global variable declarations.
+     *
+     * symOffset increments for EVERY top-level symbol (var AND func) in the
+     * same order that st_resolve_global_namespace processes them, so that
+     * prog->globals[i].symOffset == the varOffset stored in OPND_VAR operands
+     * that reference that global. */
+    int symOffset = 0;
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
-        if (decl->kind != ND_FUNC_DECL) continue;   // skip global var decls
-        ir_programAppend(prog, ir_buildFunction(decl));
+        if (decl->kind == ND_VAR_DECL)
+            ir_add_global(prog, decl, symOffset);
+        if (decl->kind == ND_VAR_DECL || decl->kind == ND_FUNC_DECL)
+            symOffset++;
     }
+
+    /* Second pass: generate IR for each function. */
+    for (int i = 0; i < program->nchildren; i++) {
+        ASTNode *decl = program->children[i];
+        if (decl->kind == ND_FUNC_DECL)
+            ir_programAppend(prog, ir_buildFunction(decl));
+    }
+
     return prog;
 }
 
@@ -869,19 +688,6 @@ IRProgram *ir_generate(ASTNode *program) {
  * Debug printing
  * ========================================================================= */
 
-/**
- * @brief Print a single operand to stdout (human-readable form).
- *
- * Format:
- *   OPND_TEMP        → tN
- *   OPND_VAR         → vLEVEL.OFFSET[/name]
- *   OPND_CONST_INT   → decimal integer
- *   OPND_CONST_FLOAT → %g float
- *   OPND_LABEL       → LN
- *   OPND_FUNC        → function name string
- *
- * @param o Operand to print.
- */
 static void ir_printOperand(const Operand *o) {
     switch (o->kind) {
     case OPND_NONE:        break;
@@ -897,15 +703,6 @@ static void ir_printOperand(const Operand *o) {
     }
 }
 
-/**
- * @brief Return the infix mnemonic string for a binary/comparison IROp.
- *
- * Only opcodes that appear between two operands need a mnemonic here;
- * unary and control-flow opcodes are handled inline in ir_printInstr.
- *
- * @param op Binary or comparison opcode.
- * @return   C-string mnemonic (e.g. "+", "<=").
- */
 static const char *ir_opMnemonic(IROp op) {
     switch (op) {
     case IR_ADD: return "+";  case IR_SUB: return "-";
@@ -917,17 +714,8 @@ static const char *ir_opMnemonic(IROp op) {
     }
 }
 
-/**
- * @brief Print a single IR instruction to stdout, followed by a newline.
- *
- * The output format mirrors the original source semantics to make dumps
- * easy to read during debugging.
- *
- * @param in Instruction to print.
- */
 static void ir_printInstr(const IRInstr *in) {
     switch (in->op) {
-    // Binary and relational: dst = src1 op src2
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:
     case IR_EQ:  case IR_NE:
@@ -978,18 +766,36 @@ static void ir_printInstr(const IRInstr *in) {
         printf(" goto ");        ir_printOperand(&in->dst);
         break;
     case IR_LABEL:
-        // Labels are printed without indentation to stand out.
         ir_printOperand(&in->dst); printf(":");
         break;
     }
     printf("\n");
 }
 
-/* =========================================================================
- * Public API — ir_print, ir_free
- * ========================================================================= */
-
 void ir_print(const IRProgram *prog) {
+    /* Print globals summary */
+    if (prog->globalCount > 0) {
+        printf("=== GLOBALI ===\n");
+        for (int i = 0; i < prog->globalCount; i++) {
+            const IRGlobalVar *g = &prog->globals[i];
+            printf("  [offset=%d] %s %s%s",
+                   g->symOffset,
+                   g->dataType == T_INT ? "int" : "float",
+                   g->name,
+                   g->isArray ? "[]" : "");
+            if (g->initCount > 0) {
+                printf(" = {");
+                for (int j = 0; j < g->initCount; j++) {
+                    if (j) printf(", ");
+                    printf("%ld", g->initVals[j]);
+                }
+                printf("}");
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+
     for (int i = 0; i < prog->count; i++) {
         IRFunction *f = prog->functions[i];
         printf("funzione %s:\n", f->name);
@@ -998,16 +804,27 @@ void ir_print(const IRProgram *prog) {
     }
 }
 
+/* =========================================================================
+ * Public API — ir_free
+ * ========================================================================= */
+
 void ir_free(IRProgram *prog) {
     if (!prog) return;
     for (int i = 0; i < prog->count; i++) {
         free(prog->functions[i]->name);
         free(prog->functions[i]->instrs);
         free(prog->functions[i]->blocks);
-        free(prog->functions[i]->labelToBlock);  // NULL-safe: free(NULL) is a no-op
+        free(prog->functions[i]->labelToBlock);
         free(prog->functions[i]);
     }
     free(prog->functions);
+
+    for (int i = 0; i < prog->globalCount; i++) {
+        free(prog->globals[i].name);
+        free(prog->globals[i].initVals);
+    }
+    free(prog->globals);
+
     free(prog);
 }
 
@@ -1016,9 +833,6 @@ void ir_free(IRProgram *prog) {
  * ========================================================================= */
 
 int ir_defines_dst(IROp op) {
-    // Bitmask: bit i set ↔ IROp i writes a destination operand.
-    // Opcodes that do NOT define dst: IR_STORE_ARR, IR_PARAM, IR_RETURN,
-    // IR_GOTO, IR_IF_FALSE, IR_LABEL.
     static const uint32_t DEFINES_DST_MASK =
         (1u << IR_ADD)      | (1u << IR_SUB)  | (1u << IR_MUL)  |
         (1u << IR_DIV)      | (1u << IR_MOD)  | (1u << IR_NEG)  |

@@ -17,6 +17,8 @@
  *    single post-pass (resolveCFG).
  *  - Every IRInstr carries a loopDepth field that survives all optimization
  *    passes and is consumed by the register allocator to weight spill costs.
+ *  - Global variables are collected into IRProgram.globals so the instruction
+ *    selector can emit .data/.bss sections and RIP-relative address loads.
  */
 
 #ifndef IR_H
@@ -25,6 +27,7 @@
 #include "parser/ast.h"
 #include "block.h"
 #include <stdlib.h>
+#include "symbol_table.h"
 /** Initial capacity for the instruction array of a new IRFunction. */
 #define IR_INITIAL_CAPACITY 64
 
@@ -99,6 +102,10 @@ typedef enum {
  * that shadowed variables with the same name remain unambiguous.  The
  * optional sourceName pointer is kept for human-readable IR dumps only and
  * is never consulted by any analysis or transformation pass.
+ *
+ * Global variables have varLevel == 0 (global scope level). Their varOffset
+ * matches the symOffset field of the corresponding IRGlobalVar descriptor,
+ * which is used by the instruction selector to find the right global symbol.
  */
 typedef struct {
     OperandKind kind;
@@ -122,24 +129,6 @@ typedef struct {
 
 /**
  * @brief A single three-address IR instruction.
- *
- * Most instructions use the canonical form  dst = src1 op src2.
- * Exceptions:
- *   - IR_NEG / IR_NOT:  dst = op src1  (src2 unused)
- *   - IR_ASSIGN:        dst = src1     (src2 unused)
- *   - IR_STORE_ARR:     dst[src1] = src2
- *   - IR_PARAM:         src1 is the argument; dst/src2 unused
- *   - IR_CALL:          dst = call src1 (funcName); src2 = nArgs (CONST_INT)
- *   - IR_RETURN:        src1 is the return value
- *   - IR_GOTO:          dst is the target label
- *   - IR_IF_FALSE:      src1 is condition; dst is the target label
- *   - IR_LABEL:         dst carries the label id; src1/src2 unused
- *
- * loopDepth is stamped by ir_emitStmt when entering/leaving ND_WHILE nodes and
- * propagated intact through SVN/DCE/CP.  LICM and SR update it explicitly
- * for instructions they hoist or insert.  The register allocator uses it
- * to compute spill costs as 10^loopDepth, favouring keeping hot variables
- * in registers.
  */
 typedef struct {
     IROp    op;
@@ -153,10 +142,6 @@ typedef struct {
 
 /**
  * @brief IR-level basic block, extending the generic BasicBlock.
- *
- * BasicBlock (block.h) provides start, end, and succ[2].  IRBlock adds
- * predCount so that SVN can identify join points (blocks with more than
- * one predecessor) where value-numbering scope must be reset.
  */
 typedef struct {
     BasicBlock bb;          /**< start/end indices into IRFunction.instrs; succ[2] */
@@ -164,42 +149,67 @@ typedef struct {
 } IRBlock;
 
 /* =========================================================================
- * Function and program
+ * Function
  * ========================================================================= */
 
 /**
  * @brief IR for a single function.
- *
- * instrs  — flat array of all instructions in textual (emission) order.
- * blocks  — array of IRBlock, each a [start,end) slice of instrs.
- *
- * labelBase / labelToBlock are temporary structures used during CFG
- * construction (emit → resolveCFG) and freed immediately after resolution.
- * curBlockStart tracks the start of the block currently being assembled.
  */
 typedef struct {
-    char    *name;          /**< function name (heap-allocated copy)         */
-    IRInstr *instrs;        /**< instruction array (heap, grown via realloc) */
-    int      count;         /**< number of valid instructions                */
-    int      capacity;      /**< allocated capacity of instrs[]              */
+    char    *name;
+    IRInstr *instrs;
+    int      count;
+    int      capacity;
 
-    IRBlock *blocks;        /**< basic-block array (heap, grown via realloc) */
-    int      blockCount;    /**< number of valid basic blocks                */
-    int      blockCap;      /**< allocated capacity of blocks[]              */
-    int      curBlockStart; /**< instruction index where the current block begins */
+    IRBlock *blocks;
+    int      blockCount;
+    int      blockCap;
+    int      curBlockStart;
 
-    int  labelBase;         /**< first label id allocated for this function  */
-    int *labelToBlock;      /**< labelToBlock[id - labelBase] = block index  */
-    int  labelToBlockCap;   /**< allocated capacity of labelToBlock[]        */
+    int  labelBase;
+    int *labelToBlock;
+    int  labelToBlockCap;
 } IRFunction;
 
+/* =========================================================================
+ * Global variable descriptor
+ * =========================================================================
+ * Populated by ir_generate() from global ND_VAR_DECL nodes.
+ * Used by isel_emit_asm() to generate .data/.bss sections and by
+ * select_function() to emit RIP-relative LEA/LOAD/STORE sequences.
+ *
+ * symOffset matches the `varOffset` field of OPND_VAR operands that
+ * reference this global (both assigned sequentially by
+ * st_resolve_global_namespace, which now sets sym.offset = table->size
+ * before inserting each symbol).
+ * ========================================================================= */
+
+typedef struct {
+    char    *name;       /**< Symbol name (heap-allocated copy).              */
+    DataType dataType;   /**< T_INT or T_FLOAT.                               */
+    int      isArray;    /**< 1 for arrays, 0 for scalars.                    */
+    int      arraySize;  /**< Number of elements (arrays only; else 0).       */
+    int      symOffset;  /**< Offset in the global symtab (== OPND_VAR.varOffset). */
+    long    *initVals;   /**< Initializer values as long (IEEE-754 bits for floats);
+                          *   NULL → goes to .bss (zero-init).               */
+    int      initCount;  /**< Number of entries in initVals (0 → .bss).      */
+} IRGlobalVar;
+
+/* =========================================================================
+ * Program
+ * ========================================================================= */
+
 /**
- * @brief IR for an entire translation unit (list of IRFunction).
+ * @brief IR for an entire translation unit (list of IRFunction + globals).
  */
 typedef struct {
     IRFunction **functions; /**< heap array of function pointers             */
     int          count;     /**< number of valid functions                   */
     int          capacity;  /**< allocated capacity of functions[]           */
+
+    IRGlobalVar *globals;      /**< global variable descriptors              */
+    int          globalCount;  /**< number of valid global descriptors       */
+    int          globalCap;    /**< allocated capacity of globals[]          */
 } IRProgram;
 
 /* =========================================================================
@@ -208,39 +218,16 @@ typedef struct {
 
 /**
  * @brief Generate IR for an entire program and run all IR-level optimisations.
- *
- * Traverses every ND_FUNC_DECL in @p program, emits three-address
- * instructions, builds and resolves the CFG, then applies the optimisation
- * pipeline in order: SVN → DCE → CP/DCE loop → LICM+SR → CP/DCE loop.
- *
- * @param program Root AST node (ND_PROGRAM), fully semantic-checked.
- * @return        Heap-allocated IRProgram; caller must call ir_free().
  */
 IRProgram *ir_generate(ASTNode *program);
 
 /**
  * @brief Return non-zero if @p op is a pure, side-effect-free computation.
- *
- * Uses a bitmask for O(1) test.  Only pure instructions are candidates
- * for hoisting; impure instructions must remain in the loop body.
- *
- * @param op  IR opcode to test.
- * @return    1 if @p op is pure, 0 otherwise.
  */
 int ir_is_pure(IROp op);
 
-/* =========================================================================
- * Pass 5: sweep
- * ========================================================================= */
-
 /**
  * @brief Compact the instruction array, removing eliminated instructions.
- *
- * Rebuilds f->instrs as a new flat array that omits every index marked
- * in @p eliminate[].  Block [start, end) ranges are updated to reflect
- * the new positions of the surviving instructions.
- *
- * @return 1 if any instruction was removed (i.e. the array shrank), 0 otherwise.
  */
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks);
 
@@ -251,18 +238,11 @@ Operand noOperand(void);
 
 /**
  * @brief Print a human-readable dump of @p prog to stdout.
- *
- * Variables are shown as  vLEVEL.OFFSET[/name],  temporaries as  tN.
- * Intended for debugging; not used by the production pipeline.
- *
- * @param prog IR program to print.
  */
 void ir_print(const IRProgram *prog);
 
 /**
- * @brief Free all memory owned by @p prog, including all IRFunction objects.
- *
- * @param prog Program to destroy; may be NULL (no-op).
+ * @brief Free all memory owned by @p prog.
  */
 void ir_free(IRProgram *prog);
 
@@ -270,22 +250,8 @@ void ir_free(IRProgram *prog);
  * IR-front-end predicates
  * ========================================================================= */
 
-/**
- * @brief Return non-zero if opcode @p op defines its destination operand.
- *
- * Uses a bitmask for O(1) lookup; opcodes that do not write a dst
- * (IR_STORE_ARR, IR_PARAM, IR_RETURN, IR_GOTO, IR_IF_FALSE, IR_LABEL)
- * are absent from the mask.
- */
 int ir_defines_dst(IROp op);
-
-/**
- * @brief Return non-zero if operand kind @p kind is a tracked variable or temp.
- *
- * Only OPND_VAR and OPND_TEMP contribute to the liveness sets; constants,
- * labels, and function names are transparent to the dataflow.
- */
 int ir_operand_is_storage(OperandKind kind);
-
 int ir_isCommutative(IROp op);
+
 #endif /* IR_H */

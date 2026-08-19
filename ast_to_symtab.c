@@ -6,10 +6,9 @@
 DataType st_resolve_type(const char *typeName) {
     if (!typeName) return T_VOID;
 
-    // Check first character to determine data type
     switch (typeName[0]) {
-    case 'i': return T_INT;    // Matches "int"
-    case 'f': return T_FLOAT;  // Matches "float"
+    case 'i': return T_INT;
+    case 'f': return T_FLOAT;
     default:  return T_VOID;
     }
 }
@@ -17,35 +16,30 @@ DataType st_resolve_type(const char *typeName) {
 void st_elaborate_decl(Arena *arena, const char *text,
                              char **outTypeName, char **outName,
                              int *isArray, int *arraySize) {
-    // Reset output flags and parameters
     *isArray = 0;
     *arraySize = 0;
     *outTypeName = NULL;
     *outName = NULL;
     if (!text) return;
 
-    // Duplicate string into arena to allow in-place modification without length bounds
     char *buf = arena_strdup(arena, text);
 
-    // Locate whitespace separator between type and identifier name
     char *space = strchr(buf, ' ');
     if (!space) {
         *outTypeName = buf;
         return;
     }
-    *space = '\0'; // Null-terminate type string in-place
+    *space = '\0';
     *outTypeName = buf;
 
     char *rest = space + 1;
     char *bracket = strchr(rest, '[');
     if (bracket) {
-        // Handle array declaration format "name[size]"
         *bracket = '\0';
         *outName = rest;
         *isArray = 1;
-        *arraySize = atoi(bracket + 1); // Parse integer size following bracket
+        *arraySize = atoi(bracket + 1);
     } else {
-        // Standard variable or function identifier name
         *outName = rest;
     }
 }
@@ -54,10 +48,8 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
     char *typeName, *name;
     int isArray, arraySize;
 
-    // Parse declaration details from node text string
     st_elaborate_decl(arena, node->text, &typeName, &name, &isArray, &arraySize);
 
-    // Build symbol table entry instance
     Symbol sym = {
         .kind       = SYM_VAR,
         .dataType   = st_resolve_type(typeName),
@@ -67,13 +59,11 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
         .offset     = (int)scope->table->size
     };
 
-    // Register symbol into target scope and check for redeclaration conflicts
     if (!sym_bind(scope, name, &sym)) {
         fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
         return 0;
     }
 
-    // Attach lexical scope level and symbol offset coordinates to the AST node
     node->scopeLevel = sym.scopeLevel;
     node->offset     = sym.offset;
     return 1;
@@ -82,10 +72,8 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
 int st_resolve_global_namespace(ASTNode *program, Scope *global) {
     int errors = 0;
 
-    // Allocate internal scratch arena for parsing top-level global declarations
     Arena *arena = arena_create(0);
 
-    // Iterate over top-level statements/declarations of the program
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
 
@@ -96,11 +84,9 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
         Symbol sym = {0};
         sym.dataType = st_resolve_type(typeName);
 
-        // Process function declaration nodes
         if (decl->kind == ND_FUNC_DECL) {
             sym.kind = SYM_FUNC;
 
-            // Determine parameter count (all children except the trailing function body block)
             int paramCount = decl->nchildren - 1;
             if (paramCount > SYM_MAX_PARAMS) {
                 fprintf(stderr,
@@ -111,7 +97,6 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
             }
             sym.paramCount = paramCount;
 
-            // Extract type signature for each parameter node
             for (int p = 0; p < paramCount; p++) {
                 char *ptypeName, *pname;
                 int pIsArray, pArraySize;
@@ -122,25 +107,35 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
                 symtab_pack_param_type(&sym.paramTypes, p, pType);
             }
 
-        // Process global variable declaration nodes
         } else if (decl->kind == ND_VAR_DECL) {
-            sym.kind = SYM_VAR;
-            sym.isArray = isArray;
+            sym.kind      = SYM_VAR;
+            sym.isArray   = isArray;
             sym.arraySize = arraySize;
 
-        // Skip unexpected non-declaration nodes at global scope level
         } else {
             continue;
         }
 
-        // Register global symbol and report redeclaration errors
+        /* FIX: ogni simbolo globale (var o func) riceve offset sequenziale unico
+         * basato su quante entry sono già nella tabella hash globale.
+         * Senza questo fix tutti i globali collassavano a offset 0 perché
+         * sym.offset non veniva mai impostato prima del sym_bind. */
+        sym.scopeLevel = global->level;            /* sempre 0 */
+        sym.offset     = (int)global->table->size; /* prossimo slot libero */
+
         if (!sym_bind(global, name, &sym)) {
             fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
             errors++;
+        } else {
+            /* Stampa offset su AST node per ND_VAR_DECL globale
+             * (usato da ir_add_global per abbinare symOffset) */
+            if (decl->kind == ND_VAR_DECL) {
+                decl->scopeLevel = sym.scopeLevel;
+                decl->offset     = sym.offset;
+            }
         }
     }
 
-    // Free scratch arena memory before returning
     arena_destroy(arena);
     return errors;
 }
