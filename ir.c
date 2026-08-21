@@ -1,12 +1,20 @@
 /**
  * @file ir.c
  * @brief IR generation from the AST and IR-level optimisation pipeline.
+ *
+ * Cambiamenti rispetto alla versione precedente:
+ *   - mkVar: scopeLevel==0 -> OPND_GLOBAL (espanso da ir_lower_globals)
+ *   - ir_is_pure / ir_defines_dst: include IR_GLOBAL_ADDR
+ *   - ir_buildFunction: chiama ir_lower_globals() dopo ir_resolveCFG()
+ *     e prima di SVN/DCE/CP/LICM/SR
+ *   - stampa debug: OPND_GLOBAL e IR_GLOBAL_ADDR
  */
 
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include "ir.h"
+#include "global_lower.h"
 #include "svn.h"
 #include "dce.h"
 #include "cp.h"
@@ -18,9 +26,9 @@
 /* =========================================================================
  * Operator key helpers
  * ========================================================================= */
-#define KEY_AND 0x2626  /* "&&" */
-#define KEY_OR  0x7C7C  /* "||" */
-#define KEY_NOT 0x2100  /* "!"  */
+#define KEY_AND 0x2626
+#define KEY_OR  0x7C7C
+#define KEY_NOT 0x2100
 
 static inline unsigned short op_key(const char *s) {
     if (!s || !s[0]) return 0;
@@ -49,10 +57,19 @@ static inline Operand mkLabel(void) {
     return (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
 }
 
+/**
+ * mkVar: distingue variabile locale (scopeLevel > 0) da globale (scopeLevel == 0).
+ * Le globali vengono emesse come OPND_GLOBAL e saranno espanse da ir_lower_globals()
+ * in IR_GLOBAL_ADDR + LOAD_ARR/STORE_ARR prima di ogni ottimizzazione.
+ */
 static inline Operand mkVar(const ASTNode *node) {
-    return (Operand){ .kind           = OPND_VAR,
-                      .data.varLevel  = node->scopeLevel,
-                      .data.varOffset = node->offset,
+    if (node->scopeLevel == 0) {
+        return (Operand){ .kind              = OPND_GLOBAL,
+                          .data.globalOffset = node->offset };
+    }
+    return (Operand){ .kind            = OPND_VAR,
+                      .data.varLevel   = node->scopeLevel,
+                      .data.varOffset  = node->offset,
                       .data.sourceName = node->text };
 }
 
@@ -82,13 +99,17 @@ static inline int ir_isTerminator(IROp op) {
     return (mask & (1U << op)) != 0;
 }
 
+/**
+ * IR_GLOBAL_ADDR e' pura: produce un indirizzo, nessun side-effect.
+ * LICM puo' issarla, DCE puo' eliminarla se il risultato e' morto.
+ */
 int ir_is_pure(IROp op) {
     static const unsigned int mask =
         (1U << IR_ADD)  | (1U << IR_SUB) | (1U << IR_MUL) |
         (1U << IR_DIV)  | (1U << IR_MOD) | (1U << IR_NEG) |
         (1U << IR_NOT)  | (1U << IR_LT)  | (1U << IR_LE)  |
         (1U << IR_GT)   | (1U << IR_GE)  | (1U << IR_EQ)  |
-        (1U << IR_NE)   | (1U << IR_ASSIGN);
+        (1U << IR_NE)   | (1U << IR_ASSIGN) | (1U << IR_GLOBAL_ADDR);
     return (op < 32) && ((mask >> op) & 1U);
 }
 
@@ -238,7 +259,7 @@ static void    ir_emitJumpIfFalse(ASTNode *cond, IRFunction *out, Operand falseL
 static void    ir_emitJumpIfTrue (ASTNode *cond, IRFunction *out, Operand trueLbl);
 
 /* =========================================================================
- * Binary operator → IROp mapping
+ * Binary operator -> IROp mapping
  * ========================================================================= */
 
 static inline IROp ir_binopToIROp(const char *op) {
@@ -354,7 +375,7 @@ static Operand ir_emitCall(ASTNode *expr, IRFunction *out) {
 }
 
 /* =========================================================================
- * ir_emitExpr — general expression → fresh temp
+ * ir_emitExpr
  * ========================================================================= */
 
 static Operand ir_emitExpr(ASTNode *expr, IRFunction *out) {
@@ -535,6 +556,11 @@ static IRFunction *ir_buildFunction(ASTNode *decl) {
 
     ir_resolveCFG(f);
 
+    /* Lowering: OPND_GLOBAL -> IR_GLOBAL_ADDR + LOAD/STORE_ARR uniformi.
+     * Deve avvenire PRIMA di SVN/DCE/CP per permettere a tutti gli ottimizzatori
+     * di vedere IR omogeneo e ragionare su globali come su qualsiasi altra var. */
+    ir_lower_globals(f);
+
     svn_optimize(f);
     dce_optimize(f);
 
@@ -570,23 +596,9 @@ static void ir_programAppend(IRProgram *prog, IRFunction *f) {
     prog->functions[prog->count++] = f;
 }
 
-/* =========================================================================
- * Global variable collection
- * =========================================================================
- * Called once per ND_VAR_DECL at global scope.  symOffset must match the
- * offset that st_resolve_global_namespace assigned to this symbol — that is,
- * the value of global->table->size *before* sym_bind inserted the symbol,
- * which equals the sequential index of this global among all global symbols
- * (both vars and funcs).
- *
- * We replicate that counter here (symOffset parameter) rather than re-querying
- * the symtab, to keep ir.c independent of symbol_table internals.
- * ========================================================================= */
-
 static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
     if (!decl || decl->kind != ND_VAR_DECL) return;
 
-    /* Parse "type name" or "type name[size]" from decl->text. */
     char *buf    = strdup(decl->text);
     char *space  = strchr(buf, ' ');
     if (!space) { free(buf); return; }
@@ -610,7 +622,6 @@ static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
     if      (tyName[0] == 'i') dt = T_INT;
     else if (tyName[0] == 'f') dt = T_FLOAT;
 
-    /* Grow globals array. */
     if (prog->globalCount == prog->globalCap) {
         prog->globalCap = prog->globalCap ? prog->globalCap * 2 : 8;
         prog->globals   = realloc(prog->globals,
@@ -626,7 +637,6 @@ static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
     gv->initVals     = NULL;
     gv->initCount    = 0;
 
-    /* Collect compile-time constant initializers (after optimize_ast). */
     if (decl->nchildren > 0) {
         int cnt      = decl->nchildren;
         gv->initVals = malloc((size_t)cnt * sizeof(long));
@@ -638,7 +648,7 @@ static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
             } else if (ch->kind == ND_NUM_FLOAT) {
                 float fv = (float)atof(ch->text);
                 long  lv;
-                memcpy(&lv, &fv, sizeof fv); /* store IEEE-754 bit pattern */
+                memcpy(&lv, &fv, sizeof fv);
                 gv->initVals[j] = lv;
             } else {
                 gv->initVals[j] = 0;
@@ -659,12 +669,6 @@ IRProgram *ir_generate(ASTNode *program) {
 
     IRProgram *prog = calloc(1, sizeof(IRProgram));
 
-    /* First pass: collect global variable declarations.
-     *
-     * symOffset increments for EVERY top-level symbol (var AND func) in the
-     * same order that st_resolve_global_namespace processes them, so that
-     * prog->globals[i].symOffset == the varOffset stored in OPND_VAR operands
-     * that reference that global. */
     int symOffset = 0;
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
@@ -674,7 +678,6 @@ IRProgram *ir_generate(ASTNode *program) {
             symOffset++;
     }
 
-    /* Second pass: generate IR for each function. */
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         if (decl->kind == ND_FUNC_DECL)
@@ -696,6 +699,7 @@ static void ir_printOperand(const Operand *o) {
         printf("v%d.%d", o->data.varLevel, o->data.varOffset);
         if (o->data.sourceName) printf("/*%s*/", o->data.sourceName);
         break;
+    case OPND_GLOBAL:      printf("g%d", o->data.globalOffset); break;
     case OPND_CONST_INT:   printf("%d",  o->data.intVal);            break;
     case OPND_CONST_FLOAT: printf("%g",  (double)o->data.floatVal);  break;
     case OPND_LABEL:       printf("L%d", o->data.labelId);           break;
@@ -736,6 +740,10 @@ static void ir_printInstr(const IRInstr *in) {
         printf("    "); ir_printOperand(&in->dst);
         printf(" = ");  ir_printOperand(&in->src1);
         break;
+    case IR_GLOBAL_ADDR:
+        printf("    "); ir_printOperand(&in->dst);
+        printf(" = &g%d", in->src1.data.globalOffset);
+        break;
     case IR_LOAD_ARR:
         printf("    "); ir_printOperand(&in->dst);
         printf(" = ");  ir_printOperand(&in->src1);
@@ -773,7 +781,6 @@ static void ir_printInstr(const IRInstr *in) {
 }
 
 void ir_print(const IRProgram *prog) {
-    /* Print globals summary */
     if (prog->globalCount > 0) {
         printf("=== GLOBALI ===\n");
         for (int i = 0; i < prog->globalCount; i++) {
@@ -834,12 +841,12 @@ void ir_free(IRProgram *prog) {
 
 int ir_defines_dst(IROp op) {
     static const uint32_t DEFINES_DST_MASK =
-        (1u << IR_ADD)      | (1u << IR_SUB)  | (1u << IR_MUL)  |
-        (1u << IR_DIV)      | (1u << IR_MOD)  | (1u << IR_NEG)  |
-        (1u << IR_NOT)      | (1u << IR_LT)   | (1u << IR_LE)   |
-        (1u << IR_GT)       | (1u << IR_GE)   | (1u << IR_EQ)   |
-        (1u << IR_NE)       | (1u << IR_ASSIGN)                  |
-        (1u << IR_LOAD_ARR) | (1u << IR_CALL);
+        (1u << IR_ADD)         | (1u << IR_SUB)  | (1u << IR_MUL)  |
+        (1u << IR_DIV)         | (1u << IR_MOD)  | (1u << IR_NEG)  |
+        (1u << IR_NOT)         | (1u << IR_LT)   | (1u << IR_LE)   |
+        (1u << IR_GT)          | (1u << IR_GE)   | (1u << IR_EQ)   |
+        (1u << IR_NE)          | (1u << IR_ASSIGN)                  |
+        (1u << IR_GLOBAL_ADDR) | (1u << IR_LOAD_ARR) | (1u << IR_CALL);
 
     return (op < 32) && ((DEFINES_DST_MASK >> op) & 1u);
 }
@@ -851,5 +858,8 @@ int ir_isCommutative(IROp op) {
 }
 
 int ir_operand_is_storage(OperandKind kind) {
+    /* OPND_GLOBAL NON e' storage: non viene tracciato da VarMap/liveness.
+     * Sopravvive solo come src1 di IR_GLOBAL_ADDR, dove e' non-storage
+     * esattamente come OPND_FUNC in IR_CALL. */
     return kind == OPND_VAR || kind == OPND_TEMP;
 }

@@ -1,3 +1,35 @@
+/**
+ * @file ast_to_symtab.h
+ * @brief AST → Symbol Table translation interface.
+ *
+ * Bridges the parser output (ASTNode tree) and the symbol-table layer
+ * (Scope / Symbol).  Three distinct responsibilities are exposed:
+ *
+ *  1. **Declaration text parsing** (st_elaborate_decl)
+ *     ASTNode.text for declarations is a compact string produced by the
+ *     parser (e.g. "int x", "float arr[5]").  st_elaborate_decl splits it
+ *     into its constituent parts — type name, symbol name, array flag and
+ *     size — allocating the substrings from the caller's Arena.
+ *
+ *  2. **Single-symbol binding** (st_bind_symbol)
+ *     Parses a single ND_VAR_DECL or ND_PARAM node's text and inserts the
+ *     resulting Symbol into the given Scope.  On success it also stamps the
+ *     AST node with the resolved (scopeLevel, offset) coordinates so that
+ *     ir_generate() can identify the variable without a second lookup.
+ *
+ *  3. **Pass 1 — global namespace population** (st_resolve_global_namespace)
+ *     Walks the top-level children of ND_PROGRAM and registers every global
+ *     variable and function signature in the global Scope.  This single pass
+ *     ensures that forward references between functions (function A calls
+ *     function B declared later in the file) resolve correctly: all
+ *     signatures are visible before any function body is type-checked or
+ *     translated to IR.
+ *
+ * Dependency: caller must create the global Scope (sym_scopeCreate(NULL))
+ * before calling st_resolve_global_namespace, and must call sym_finalize()
+ * when done to release all scope memory.
+ */
+
 #ifndef AST_TO_SYMTAB_H
 #define AST_TO_SYMTAB_H
 
@@ -6,62 +38,104 @@
 #include "parser/ast.h"
 #include "symbol_table.h"
 
-/**
- * @file ast_to_symtab.h
- * @brief AST to Symbol Table translation interface.
- *
- * Provides utilities to parse AST declaration text nodes and populate symbol tables.
- */
+/* =========================================================================
+ * Type resolution
+ * ========================================================================= */
 
 /**
- * @brief Converts a textual type representation from the AST (e.g., "int", "float") to its DataType enum.
+ * @brief Map a textual type name from the AST to its DataType enum value.
  *
- * Unrecognized type strings default to fallback value `T_VOID`.
+ * Recognised strings: "int" → T_INT, "float" → T_FLOAT.
+ * Any other string (including NULL) falls back to T_VOID.
  *
- * @param typeName Name string of the data type.
- * @return Corresponding DataType enum value.
+ * Only the first character is examined for speed — the parser guarantees
+ * that only valid type keywords reach here.
+ *
+ * @param typeName  Null-terminated type keyword string (e.g. "int", "float").
+ * @return          Corresponding DataType value; T_VOID on unrecognised input.
  */
 DataType st_resolve_type(const char *typeName);
 
-/**
- * @brief Parses a combined declaration string from an AST node's text field into individual components.
- *
- * Splits formatted strings (e.g., "int x", "int arr[5]", "int functionName") into type, identifier name,
- * and array metadata using memory allocated inside `arena`.
- *
- * @param arena       Pointer to the Arena allocator used for string memory.
- * @param text        The raw declaration string from `node->text`.
- * @param outTypeName Output pointer receiving the extracted type name string.
- * @param outName     Output pointer receiving the extracted symbol identifier.
- * @param isArray     Output flag set to 1 if declaration is an array, 0 otherwise.
- * @param arraySize   Output integer receiving array capacity if applicable.
- */
-void st_elaborate_decl(Arena *arena, const char *text,
-                             char **outTypeName, char **outName,
-                             int *isArray, int *arraySize);
+/* =========================================================================
+ * Declaration text parsing
+ * ========================================================================= */
 
 /**
- * @brief Declares a variable or parameter symbol in a target scope from a node's declaration text.
+ * @brief Decompose a parser-generated declaration string into its parts.
  *
- * Parses `node->text` and registers the symbol in `scope`. Stamps resolution coordinates
- * (`node->scopeLevel` and `node->offset`) directly onto the node for intermediate representation generation.
+ * The parser encodes declarations as a single compact string in ASTNode.text:
  *
- * @param arena Pointer to the memory arena used for temporary string parsing allocations.
- * @param scope Pointer to the target Scope structure.
- * @param node  Pointer to the AST node (`ND_VAR_DECL` or `ND_PARAM`).
- * @return 1 on successful declaration, 0 if a redeclaration error occurs in the current scope.
+ *   Scalar variable: "int x"           → type="int",   name="x",   isArray=0
+ *   Array variable:  "float arr[10]"   → type="float", name="arr", isArray=1, arraySize=10
+ *   Function/param:  "int main"        → type="int",   name="main",isArray=0
+ *
+ * All output strings are duplicated into @p arena so they share the AST's
+ * lifetime and need no individual free.
+ *
+ * @param arena       Arena used to allocate the output substrings.
+ * @param text        Raw declaration string from ASTNode.text.
+ * @param outTypeName Receives a pointer to the type name substring.
+ * @param outName     Receives a pointer to the identifier name substring.
+ * @param isArray     Set to 1 if the declaration contains "[size]", else 0.
+ * @param arraySize   Set to the parsed element count when isArray is 1.
+ */
+void st_elaborate_decl(Arena *arena, const char *text,
+                       char **outTypeName, char **outName,
+                       int *isArray, int *arraySize);
+
+/* =========================================================================
+ * Single-symbol binding
+ * ========================================================================= */
+
+/**
+ * @brief Parse a declaration node's text and insert the symbol into @p scope.
+ *
+ * Calls st_elaborate_decl() to split the node's text, builds a Symbol
+ * descriptor, and delegates to sym_bind().  On success the AST node is
+ * annotated with the resolved coordinates:
+ *   - node->scopeLevel = scope->level
+ *   - node->offset     = the slot index assigned within @p scope
+ *
+ * These coordinates are consumed later by ir_generate() to identify each
+ * variable unambiguously even under shadowing, without re-querying the
+ * symbol table.
+ *
+ * @param arena  Scratch arena for temporary substring allocations.
+ * @param scope  Target scope that receives the new symbol.
+ * @param node   ND_VAR_DECL or ND_PARAM AST node whose text is parsed.
+ * @return       1 on success; 0 if the name is already declared in @p scope
+ *               (redeclaration error — caller should increment its error counter).
  */
 int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
 
+/* =========================================================================
+ * Pass 1 — global namespace population
+ * ========================================================================= */
+
 /**
- * @brief Populates the global scope with top-level AST declarations (Pass 1).
+ * @brief Populate @p global with every top-level declaration in @p program.
  *
- * Traverses top-level children of `ND_PROGRAM` and populates the `global` symbol table with
- * function signatures and global variables to resolve forward references.
+ * Iterates over the direct children of the ND_PROGRAM root and registers:
+ *   - ND_FUNC_DECL nodes → SYM_FUNC symbols with packed parameter types.
+ *   - ND_VAR_DECL nodes  → SYM_VAR symbols (scalars and arrays).
  *
- * @param program Pointer to the root `ND_PROGRAM` AST node.
- * @param global  Pointer to the target global Scope structure.
- * @return Number of redeclaration errors encountered (0 indicates success).
+ * Each symbol receives a unique sequential offset (global->table->size
+ * before the sym_bind call) so that OPND_VAR operands emitted by
+ * ir_generate() can identify globals by (varLevel=0, varOffset=offset).
+ * The offset counter advances for both vars and funcs to stay in sync with
+ * the order in which st_resolve_global_namespace processes the declarations.
+ *
+ * Global ND_VAR_DECL nodes are stamped with (scopeLevel, offset) so that
+ * ir_add_global() in ir.c can match them to the correct IRGlobalVar entry
+ * without a second symbol-table lookup.
+ *
+ * Forward-reference correctness: because all signatures are recorded before
+ * any function body is walked by semantic_check(), a call to a function
+ * declared later in the file resolves without error.
+ *
+ * @param program  Root ND_PROGRAM node produced by ParseProgram().
+ * @param global   Empty global Scope created by the caller.
+ * @return         Number of redeclaration errors encountered (0 = success).
  */
 int st_resolve_global_namespace(ASTNode *program, Scope *global);
 

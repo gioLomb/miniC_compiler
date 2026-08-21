@@ -386,7 +386,19 @@ static void svn_processInstr(IRInstr *in, SVNScope *scope, int *vnCounter) {
         svn_defineValue(&in->dst, fresh, scope);
         break;
     }
-
+        case IR_GLOBAL_ADDR: {
+        /* Indirizzo di un globale e' determinato dal solo symOffset (src1.data.globalOffset),
+         * non da un VN di operando storage. Usare globalOffset direttamente come vn1
+         * nella ExprKey garantisce che due IR_GLOBAL_ADDR sullo stesso globale abbiano
+         * la stessa chiave -> SVN le dedup entro lo stesso EBB. */
+        ExprKey ek;
+        memset(&ek, 0, sizeof ek);
+        ek.op  = (int)in->op;
+        ek.vn1 = in->src1.data.globalOffset;
+        ek.vn2 = -1;
+        svn_lookupOrInsertExpr(in, &ek, scope, vnCounter);
+        break;
+    }
     // Control-flow and side-effecting ops carry no value to track.
     case IR_STORE_ARR:
     case IR_PARAM:

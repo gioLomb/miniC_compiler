@@ -194,11 +194,9 @@ static int single_loop_def_invariant(IRFunction *f, Loop *L, Operand op,
  */
 static int src_is_invariant(IRFunction *f, Loop *L, Operand src,
                            const int *defCount, VarMap *vm, const char *invariant) {
-    // constants and absent operands are trivially invariant
-    if (src.kind == OPND_CONST_INT || src.kind == OPND_CONST_FLOAT ||
-        src.kind == OPND_NONE) return 1;
-
-    // non-storage operands (labels, funcs) are not live values — skip
+   if (src.kind == OPND_CONST_INT || src.kind == OPND_CONST_FLOAT ||
+        src.kind == OPND_NONE      || src.kind == OPND_GLOBAL) return 1;
+ 
     if (!ir_operand_is_storage(src.kind)) return 0;
 
     int id = varmap_operand_id(vm, src);

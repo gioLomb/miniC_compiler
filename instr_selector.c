@@ -1,14 +1,17 @@
 /**
  * @file instr_selector.c
- * @brief Instruction selection implementation: IR → x86-64 MachInstr.
+ * @brief Instruction selection: IR -> x86-64 MachInstr.
  *
- * Changes vs. original:
- *  - select_function() now accepts (globals, globalCount) to handle global vars.
- *  - Global scalar reads  → LEA addr + LOAD val.
- *  - Global scalar writes → LEA addr + STORE val.
- *  - Global array accesses → LEA addr (used as base in SIB).
- *  - MACH_LEA emitted as "leaq name(%rip), dst".
- *  - isel_emit_asm() accepts const IRProgram* to emit .bss/.data sections.
+ * Rispetto alla versione precedente:
+ *   - Rimossi: is_global_var, get_global_addr, load_global_scalar,
+ *     src_op, src_reg, array_base, cmp_has_global_scalar_src, gaddrs[].
+ *   - Aggiunto: case IR_GLOBAL_ADDR -> MACH_LEA (3 righe).
+ *   - IR_ASSIGN, comparazioni: nessun branch speciale per globali.
+ *   - find_global_idx rimane: serve in IR_GLOBAL_ADDR per symOffset->nome.
+ *
+ * Dopo ir_lower_globals() tutti gli accessi globali sono gia' espressi come
+ * IR_GLOBAL_ADDR + IR_LOAD_ARR/IR_STORE_ARR con base=temp; questo file
+ * tratta globali e locali in modo identico.
  */
 
 #include <stdio.h>
@@ -102,7 +105,7 @@ static inline void mfunc_emit(MachFunction *f, MachOp op,
 static inline int mfunc_new_vreg(MachFunction *f) { return f->nextVreg++; }
 
 /* =========================================================================
- * VarMap bridge (local variables only)
+ * VarMap bridge
  * ========================================================================= */
 
 static inline int operand_to_vreg(const Operand *op, VarMap *vm) {
@@ -145,112 +148,15 @@ static inline MachOperand operand_to_mach(const Operand *op, VarMap *vm,
 }
 
 /* =========================================================================
- * Global variable helpers
- * =========================================================================
- * Globals: varLevel == 0 (global scope).
- * gaddrs[i] caches the address vreg for globals[i]; -1 = not yet emitted.
- * Address cache always valid (address of a global never changes).
- * Value cache NOT used for scalars — re-load at each use to handle writes.
+ * Global name lookup — unica funzione rimasta per globali.
+ * Serve solo nel case IR_GLOBAL_ADDR per risolvere symOffset -> nome simbolo.
  * ========================================================================= */
 
-static inline int is_global_var(const Operand *op) {
-    return op->kind == OPND_VAR && op->data.varLevel == 0;
-}
-
-/** Linear scan by symOffset → index into globals[]; returns -1 if not found. */
 static int find_global_idx(int symOff,
                             const IRGlobalVar *globals, int globalCount) {
     for (int i = 0; i < globalCount; i++)
         if (globals[i].symOffset == symOff) return i;
     return -1;
-}
-
-/** Get-or-create the vreg holding the RIP-relative address of globals[idx]. */
-static int get_global_addr(int idx,
-                            const IRGlobalVar *globals,
-                            int *gaddrs, MachFunction *f) {
-    if (gaddrs[idx] >= 0) return gaddrs[idx];
-    int vreg = mfunc_new_vreg(f);
-    mfunc_emit(f, MACH_LEA, mo_vreg(vreg), mo_global(globals[idx].name), mo_none());
-    gaddrs[idx] = vreg;
-    return vreg;
-}
-
-/** Load a global scalar value into a fresh vreg. Always re-emits LOAD. */
-static int load_global_scalar(int idx,
-                               const IRGlobalVar *globals,
-                               int *gaddrs, MachFunction *f) {
-    int addr = get_global_addr(idx, globals, gaddrs, f);
-    int val  = mfunc_new_vreg(f);
-    mfunc_emit(f, MACH_LOAD, mo_vreg(val), mo_mem(addr, -1, 1, 0), mo_none());
-    return val;
-}
-
-/**
- * Global-aware src_op: returns MO_VREG for globals (emitting LEA/LOAD as needed),
- * delegates to operand_to_mach for everything else.
- */
-static MachOperand src_op(const Operand *op,
-                           VarMap *vm, MachFunction *f,
-                           const IRGlobalVar *globals, int globalCount, int *gaddrs) {
-    if (is_global_var(op)) {
-        int idx = find_global_idx(op->data.varOffset, globals, globalCount);
-        if (idx >= 0) {
-            int vreg = globals[idx].isArray
-                       ? get_global_addr(idx, globals, gaddrs, f)
-                       : load_global_scalar(idx, globals, gaddrs, f);
-            return mo_vreg(vreg);
-        }
-    }
-    return operand_to_mach(op, vm, f);
-}
-
-/**
- * Global-aware src_reg: always returns a vreg (emitting MOV for constants,
- * LEA/LOAD for globals, VarMap lookup for locals).
- */
-static int src_reg(const Operand *op,
-                   VarMap *vm, MachFunction *f,
-                   const IRGlobalVar *globals, int globalCount, int *gaddrs) {
-    if (is_global_var(op)) {
-        int idx = find_global_idx(op->data.varOffset, globals, globalCount);
-        if (idx >= 0)
-            return globals[idx].isArray
-                   ? get_global_addr(idx, globals, gaddrs, f)
-                   : load_global_scalar(idx, globals, gaddrs, f);
-    }
-    return load_operand(op, vm, f);
-}
-
-/**
- * Return the base-address vreg for an array operand (local or global).
- * For globals: emits LEA.
- * For locals:  returns VarMap vreg (the vreg holds the frame slot for the array base).
- */
-static int array_base(const Operand *op,
-                      VarMap *vm, MachFunction *f,
-                      const IRGlobalVar *globals, int globalCount, int *gaddrs) {
-    if (is_global_var(op)) {
-        int idx = find_global_idx(op->data.varOffset, globals, globalCount);
-        if (idx >= 0) return get_global_addr(idx, globals, gaddrs, f);
-    }
-    return operand_to_vreg(op, vm);
-}
-
-/**
- * Return 1 if any source operand of a comparison instruction is a global scalar.
- * Used to decide whether to skip the deferred-CMP optimisation (flush_pending_cmp
- * re-reads raw IR operands and is not global-aware).
- */
-static int cmp_has_global_scalar_src(const IRInstr *in,
-                                      const IRGlobalVar *globals, int globalCount) {
-    const Operand *srcs[2] = { &in->src1, &in->src2 };
-    for (int s = 0; s < 2; s++) {
-        if (!is_global_var(srcs[s])) continue;
-        int idx = find_global_idx(srcs[s]->data.varOffset, globals, globalCount);
-        if (idx >= 0 && !globals[idx].isArray) return 1;
-    }
-    return 0;
 }
 
 /* =========================================================================
@@ -321,14 +227,7 @@ static MachFunction *select_function(const IRFunction *irf,
                                       int globalCount) {
     MachFunction *f = mfunc_create(irf->name);
 
-    /* Per-global address vreg cache (-1 = LEA not yet emitted). */
-    int *gaddrs = NULL;
-    if (globalCount > 0) {
-        gaddrs = malloc((size_t)globalCount * sizeof(int));
-        for (int i = 0; i < globalCount; i++) gaddrs[i] = -1;
-    }
-
-    /* Phase 1: pre-scan — assign vreg ids to all IR operands. */
+    /* Phase 1: pre-scan — assegna vreg id a tutti gli operandi IR. */
     VarMap vm;
     varmap_init(&vm);
     for (int i = 0; i < irf->count; i++) {
@@ -338,10 +237,10 @@ static MachFunction *select_function(const IRFunction *irf,
         varmap_operand_id(&vm, in->src2);
     }
 
-    /* Phase 2: sync nextVreg so isel-internal temps don't collide. */
+    /* Phase 2: sincronizza nextVreg per evitare collisioni con temp isel-interni. */
     f->nextVreg = vm.nextId;
 
-    /* Phase 3: single-pass instruction selection. */
+    /* Phase 3: selezione istruzioni, passata singola. */
     mfunc_emit(f, MACH_FUNC_BEGIN, mo_none(), mo_none(), mo_none());
 
     int param_vregs[MAX_PARAMS], param_count = 0;
@@ -351,7 +250,7 @@ static MachFunction *select_function(const IRFunction *irf,
         const IRInstr *in = &irf->instrs[i];
         g_curLoopDepth = in->loopDepth;
 
-        /* Flush deferred comparison if the next instruction can't fuse. */
+        /* Flush comparazione differita se l'istruzione corrente non puo' fondersi. */
         if (pcmp.active) {
             int must_materialize = 1;
             if (in->op == IR_IF_FALSE)
@@ -378,7 +277,7 @@ static MachFunction *select_function(const IRFunction *irf,
             int lbl       = in->dst.data.labelId;
 
             if (pcmp.active && cond_vreg == pcmp.dstVreg) {
-                /* Fusion: pending CMP + this IF_FALSE → CMP + Jcc. */
+                /* Fusione CMP + Jcc. */
                 const IRInstr *ci = pcmp.instr;
                 MachOperand lhs   = operand_to_mach(&ci->src1, &vm, f);
                 MachOperand rhs   = operand_to_mach(&ci->src2, &vm, f);
@@ -413,28 +312,18 @@ static MachFunction *select_function(const IRFunction *irf,
 
         /* ---- Assignment ---- */
         case IR_ASSIGN: {
-            /* Write to global scalar → STORE via RIP-relative address. */
-            if (is_global_var(&in->dst)) {
-                int idx = find_global_idx(in->dst.data.varOffset, globals, globalCount);
-                if (idx >= 0 && !globals[idx].isArray) {
-                    MachOperand sv = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
-                    int val_vreg;
-                    if (sv.kind == MO_VREG) {
-                        val_vreg = sv.vregId;
-                    } else {
-                        val_vreg = mfunc_new_vreg(f);
-                        mfunc_emit(f, MACH_MOV, mo_vreg(val_vreg), sv, mo_none());
-                    }
-                    int addr = get_global_addr(idx, globals, gaddrs, f);
-                    mfunc_emit(f, MACH_STORE,
-                               mo_mem(addr, -1, 1, 0), mo_vreg(val_vreg), mo_none());
-                    break;
-                }
-            }
-            /* Normal (local) assignment. */
             int         dst = operand_to_vreg(&in->dst, &vm);
-            MachOperand src = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
+            MachOperand src = operand_to_mach(&in->src1, &vm, f);
             mfunc_emit(f, MACH_MOV, mo_vreg(dst), src, mo_none());
+            break;
+        }
+
+        /* ---- Global address: lowering gia' fatto in IR, qui solo LEA ---- */
+        case IR_GLOBAL_ADDR: {
+            int dst = operand_to_vreg(&in->dst, &vm);
+            int idx = find_global_idx(in->src1.data.globalOffset, globals, globalCount);
+            /* idx >= 0 garantito: il lowering emette IR_GLOBAL_ADDR solo per globali validi. */
+            mfunc_emit(f, MACH_LEA, mo_vreg(dst), mo_global(globals[idx].name), mo_none());
             break;
         }
 
@@ -442,8 +331,8 @@ static MachFunction *select_function(const IRFunction *irf,
         case IR_ADD:
         case IR_SUB: {
             int         dst = operand_to_vreg(&in->dst,  &vm);
-            MachOperand lhs = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
-            MachOperand rhs = src_op(&in->src2, &vm, f, globals, globalCount, gaddrs);
+            MachOperand lhs = operand_to_mach(&in->src1, &vm, f);
+            MachOperand rhs = operand_to_mach(&in->src2, &vm, f);
             MachOp      mop = (in->op == IR_ADD) ? MACH_ADD : MACH_SUB;
             int lhs_id = (lhs.kind == MO_VREG) ? lhs.vregId : -1;
             int rhs_id = (rhs.kind == MO_VREG) ? rhs.vregId : -1;
@@ -465,8 +354,8 @@ static MachFunction *select_function(const IRFunction *irf,
         /* ---- Arithmetic: MUL ---- */
         case IR_MUL: {
             int         dst  = operand_to_vreg(&in->dst,  &vm);
-            MachOperand src1 = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
-            MachOperand src2 = src_op(&in->src2, &vm, f, globals, globalCount, gaddrs);
+            MachOperand src1 = operand_to_mach(&in->src1, &vm, f);
+            MachOperand src2 = operand_to_mach(&in->src2, &vm, f);
 
             MachOperand reg_side = src1, imm_side = src2;
             if (src1.kind == MO_IMM && src2.kind != MO_IMM) {
@@ -475,7 +364,7 @@ static MachFunction *select_function(const IRFunction *irf,
 
             if (imm_side.kind == MO_IMM && imm_side.imm > 0 &&
                 (imm_side.imm & (imm_side.imm - 1)) == 0) {
-                /* Power-of-two → left shift. */
+                /* Potenza di 2 -> shift sinistro. */
                 int shift = 0; long v = imm_side.imm;
                 while (v > 1) { shift++; v >>= 1; }
                 int reg_id = (reg_side.kind == MO_VREG) ? reg_side.vregId : -1;
@@ -501,8 +390,8 @@ static MachFunction *select_function(const IRFunction *irf,
         case IR_DIV:
         case IR_MOD: {
             int dst = operand_to_vreg(&in->dst, &vm);
-            int lhs = src_reg(&in->src1, &vm, f, globals, globalCount, gaddrs);
-            int rhs = src_reg(&in->src2, &vm, f, globals, globalCount, gaddrs);
+            int lhs = load_operand(&in->src1, &vm, f);
+            int rhs = load_operand(&in->src2, &vm, f);
             mfunc_emit(f, MACH_MOV,  mo_phys(PHYS_RAX), mo_vreg(lhs), mo_none());
             mfunc_emit(f, MACH_CQO,  mo_none(), mo_none(), mo_none());
             mfunc_emit(f, MACH_IDIV, mo_vreg(rhs), mo_none(), mo_none());
@@ -514,7 +403,7 @@ static MachFunction *select_function(const IRFunction *irf,
         /* ---- Unary: NEG ---- */
         case IR_NEG: {
             int         dst = operand_to_vreg(&in->dst,  &vm);
-            MachOperand src = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
+            MachOperand src = operand_to_mach(&in->src1, &vm, f);
             if ((src.kind == MO_VREG ? src.vregId : -1) != dst)
                 mfunc_emit(f, MACH_MOV, mo_vreg(dst), src, mo_none());
             mfunc_emit(f, MACH_NEG, mo_vreg(dst), mo_none(), mo_none());
@@ -524,48 +413,31 @@ static MachFunction *select_function(const IRFunction *irf,
         /* ---- Unary: NOT ---- */
         case IR_NOT: {
             int dst = operand_to_vreg(&in->dst, &vm);
-            int sv  = src_reg(&in->src1, &vm, f, globals, globalCount, gaddrs);
+            int sv  = load_operand(&in->src1, &vm, f);
             mfunc_emit(f, MACH_TEST,  mo_vreg(sv),  mo_vreg(sv),  mo_none());
             mfunc_emit(f, MACH_SETE,  mo_phys(PHYS_AL), mo_none(), mo_none());
             mfunc_emit(f, MACH_MOVSX, mo_vreg(dst), mo_phys(PHYS_AL), mo_none());
             break;
         }
 
-        /* ---- Comparisons ---- */
+        /* ---- Comparisons: deferred per CMP+Jcc fusion ---- */
         case IR_LT: case IR_LE: case IR_GT: case IR_GE:
         case IR_EQ: case IR_NE: {
+            /* Dopo il lowering, src1/src2 sono gia' temp normali (mai OPND_GLOBAL).
+             * Nessun branch speciale necessario: flush_pending_cmp usa
+             * operand_to_mach che gestisce temp e costanti correttamente. */
             int dst = operand_to_vreg(&in->dst, &vm);
-
-            /* If any source is a global scalar, flush_pending_cmp would
-             * re-read raw IR operands (not global-aware) — emit immediately. */
-            if (cmp_has_global_scalar_src(in, globals, globalCount)) {
-                MachOperand lhs = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
-                MachOperand rhs = src_op(&in->src2, &vm, f, globals, globalCount, gaddrs);
-                IROp cmpOp = in->op;
-                if (lhs.kind == MO_IMM && rhs.kind != MO_IMM) {
-                    MachOperand t = lhs; lhs = rhs; rhs = t; cmpOp = flip_cmp(cmpOp);
-                }
-                if (lhs.kind == MO_IMM) {
-                    int tmp = mfunc_new_vreg(f);
-                    mfunc_emit(f, MACH_MOV, mo_vreg(tmp), lhs, mo_none());
-                    lhs = mo_vreg(tmp);
-                }
-                mfunc_emit(f, MACH_CMP, lhs, rhs, mo_none());
-                mfunc_emit(f, comparison_to_setcc(cmpOp), mo_phys(PHYS_AL), mo_none(), mo_none());
-                mfunc_emit(f, MACH_MOVSX, mo_vreg(dst), mo_phys(PHYS_AL), mo_none());
-            } else {
-                pcmp.active  = 1;
-                pcmp.instr   = in;
-                pcmp.dstVreg = dst;
-            }
+            pcmp.active  = 1;
+            pcmp.instr   = in;
+            pcmp.dstVreg = dst;
             break;
         }
 
         /* ---- Array load ---- */
         case IR_LOAD_ARR: {
             int dst  = operand_to_vreg(&in->dst,  &vm);
-            int base = array_base(&in->src1, &vm, f, globals, globalCount, gaddrs);
-            int idx  = src_reg(&in->src2, &vm, f, globals, globalCount, gaddrs);
+            int base = operand_to_vreg(&in->src1, &vm);
+            int idx  = load_operand(&in->src2, &vm, f);
             mfunc_emit(f, MACH_LOAD, mo_vreg(dst),
                        mo_mem(base, idx, 8, 0), mo_none());
             break;
@@ -573,9 +445,9 @@ static MachFunction *select_function(const IRFunction *irf,
 
         /* ---- Array store ---- */
         case IR_STORE_ARR: {
-            int base = array_base(&in->dst,  &vm, f, globals, globalCount, gaddrs);
-            int idx  = src_reg(&in->src1, &vm, f, globals, globalCount, gaddrs);
-            int src  = src_reg(&in->src2, &vm, f, globals, globalCount, gaddrs);
+            int base = operand_to_vreg(&in->dst,  &vm);
+            int idx  = load_operand(&in->src1, &vm, f);
+            int src  = load_operand(&in->src2, &vm, f);
             mfunc_emit(f, MACH_STORE,
                        mo_mem(base, idx, 8, 0), mo_vreg(src), mo_none());
             break;
@@ -583,7 +455,7 @@ static MachFunction *select_function(const IRFunction *irf,
 
         /* ---- Function call arguments ---- */
         case IR_PARAM: {
-            MachOperand sv = src_op(&in->src1, &vm, f, globals, globalCount, gaddrs);
+            MachOperand sv = operand_to_mach(&in->src1, &vm, f);
             int sv_vreg;
             if (sv.kind == MO_IMM) {
                 sv_vreg = mfunc_new_vreg(f);
@@ -623,7 +495,7 @@ static MachFunction *select_function(const IRFunction *irf,
 
         /* ---- Return ---- */
         case IR_RETURN: {
-            int sv = src_reg(&in->src1, &vm, f, globals, globalCount, gaddrs);
+            int sv = load_operand(&in->src1, &vm, f);
             mfunc_emit(f, MACH_MOV, mo_phys(PHYS_RAX), mo_vreg(sv), mo_none());
             mfunc_emit(f, MACH_RET, mo_none(), mo_none(), mo_none());
             break;
@@ -637,7 +509,6 @@ static MachFunction *select_function(const IRFunction *irf,
     int raw      = f->nextVreg * 8;
     f->frameSize = (raw + 15) & ~15;
 
-    free(gaddrs);
     varmap_destroy(&vm);
     return f;
 }
@@ -694,7 +565,6 @@ void isel_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out) {
 
     /* --- Global variable declarations --- */
     if (ir && ir->globalCount > 0) {
-        /* .bss: zero-initialised (no explicit init or all-zero). */
         int has_bss = 0;
         for (int i = 0; i < ir->globalCount; i++)
             if (ir->globals[i].initCount == 0) { has_bss = 1; break; }
@@ -710,7 +580,6 @@ void isel_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out) {
             }
         }
 
-        /* .data: explicitly initialised globals. */
         int has_data = 0;
         for (int i = 0; i < ir->globalCount; i++)
             if (ir->globals[i].initCount > 0) { has_data = 1; break; }
@@ -771,7 +640,6 @@ void isel_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out) {
                 fprintf(out, "\tcall\t"); emit_operand(&in->dst, out);
                 fprintf(out, "\n"); continue;
             case MACH_LEA:
-                /* leaq globalname(%rip), %dst */
                 fprintf(out, "\tleaq\t");
                 emit_operand(&in->src1, out);
                 fprintf(out, ", ");
