@@ -434,24 +434,41 @@ static MachFunction *select_function(const IRFunction *irf,
         }
 
         /* ---- Array load ---- */
-        case IR_LOAD_ARR: {
-            int dst  = operand_to_vreg(&in->dst,  &vm);
-            int base = operand_to_vreg(&in->src1, &vm);
-            int idx  = load_operand(&in->src2, &vm, f);
-            mfunc_emit(f, MACH_LOAD, mo_vreg(dst),
-                       mo_mem(base, idx, 8, 0), mo_none());
-            break;
-        }
+/* ---- Array load ---- */
+case IR_LOAD_ARR: {
+    int dst  = operand_to_vreg(&in->dst,  &vm);
+    int base = operand_to_vreg(&in->src1, &vm);
+    if (in->src2.kind == OPND_CONST_INT) {
+        /* indice costante → displacement, niente registro indice
+         * scalare globale: (%base) invece di mov $0,%r; (%base,%r,8) */
+        int disp = in->src2.data.intVal * 8;
+        mfunc_emit(f, MACH_LOAD, mo_vreg(dst),
+                   mo_mem(base, -1, 0, disp), mo_none());
+    } else {
+        int idx = load_operand(&in->src2, &vm, f);
+        mfunc_emit(f, MACH_LOAD, mo_vreg(dst),
+                   mo_mem(base, idx, 8, 0), mo_none());
+    }
+    break;
+}
 
-        /* ---- Array store ---- */
-        case IR_STORE_ARR: {
-            int base = operand_to_vreg(&in->dst,  &vm);
-            int idx  = load_operand(&in->src1, &vm, f);
-            int src  = load_operand(&in->src2, &vm, f);
-            mfunc_emit(f, MACH_STORE,
-                       mo_mem(base, idx, 8, 0), mo_vreg(src), mo_none());
-            break;
-        }
+/* ---- Array store ---- */
+case IR_STORE_ARR: {
+    int base = operand_to_vreg(&in->dst, &vm);
+    if (in->src1.kind == OPND_CONST_INT) {
+        /* indice costante → displacement, niente registro indice */
+        int disp = in->src1.data.intVal * 8;
+        int src  = load_operand(&in->src2, &vm, f);
+        mfunc_emit(f, MACH_STORE,
+                   mo_mem(base, -1, 0, disp), mo_vreg(src), mo_none());
+    } else {
+        int idx = load_operand(&in->src1, &vm, f);
+        int src = load_operand(&in->src2, &vm, f);
+        mfunc_emit(f, MACH_STORE,
+                   mo_mem(base, idx, 8, 0), mo_vreg(src), mo_none());
+    }
+    break;
+}
 
         /* ---- Function call arguments ---- */
         case IR_PARAM: {
