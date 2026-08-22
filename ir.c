@@ -8,6 +8,10 @@
  *   - ir_buildFunction: chiama ir_lower_globals() dopo ir_resolveCFG()
  *     e prima di SVN/DCE/CP/LICM/SR
  *   - stampa debug: OPND_GLOBAL e IR_GLOBAL_ADDR
+ *   - ir_buildFunction: popola f->params/f->paramCount con gli operandi
+ *     (OPND_VAR) dei parametri formali, cosi' che instr_selector.c possa
+ *     generare i MOV di binding registro-ABI -> vreg all'ingresso funzione
+ *     (prima mancavano del tutto: i parametri non venivano mai caricati)
  */
 
 #include <stdio.h>
@@ -551,6 +555,16 @@ static IRFunction *ir_buildFunction(ASTNode *decl) {
     f->curBlockStart = 0;
     currentLoopDepth = 0;
 
+    /* Tutti i figli tranne l'ultimo sono ND_PARAM; l'ultimo e' il corpo.
+     * st_bind_symbol (chiamato durante semantic_check) ha gia' stampato
+     * scopeLevel/offset su ogni ND_PARAM, quindi mkVar() qui produce
+     * l'OPND_VAR corretto (scopeLevel>0: mai OPND_GLOBAL per un parametro). */
+    int paramCount = decl->nchildren - 1;
+    f->paramCount  = paramCount;
+    f->params      = paramCount > 0 ? malloc((size_t)paramCount * sizeof(Operand)) : NULL;
+    for (int p = 0; p < paramCount; p++)
+        f->params[p] = mkVar(decl->children[p]);
+
     ASTNode *body = decl->children[decl->nchildren - 1];
     ir_emitStmt(body, f);
 
@@ -822,6 +836,7 @@ void ir_free(IRProgram *prog) {
         free(prog->functions[i]->instrs);
         free(prog->functions[i]->blocks);
         free(prog->functions[i]->labelToBlock);
+        free(prog->functions[i]->params);
         free(prog->functions[i]);
     }
     free(prog->functions);

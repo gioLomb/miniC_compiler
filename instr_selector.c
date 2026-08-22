@@ -8,6 +8,10 @@
  *   - Aggiunto: case IR_GLOBAL_ADDR -> MACH_LEA (3 righe).
  *   - IR_ASSIGN, comparazioni: nessun branch speciale per globali.
  *   - find_global_idx rimane: serve in IR_GLOBAL_ADDR per symOffset->nome.
+ *   - select_function: emette, subito dopo MACH_FUNC_BEGIN, i MOV che legano
+ *     i registri ABI (rdi/rsi/...) ai vreg dei parametri formali. Prima
+ *     mancavano del tutto: una funzione con parametri li leggeva mai
+ *     inizializzati (bug di correttezza, non di scheduling).
  *
  * Dopo ir_lower_globals() tutti gli accessi globali sono gia' espressi come
  * IR_GLOBAL_ADDR + IR_LOAD_ARR/IR_STORE_ARR con base=temp; questo file
@@ -226,8 +230,14 @@ static MachFunction *select_function(const IRFunction *irf,
                                       const IRGlobalVar *globals,
                                       int globalCount) {
     MachFunction *f = mfunc_create(irf->name);
+    g_curLoopDepth = 0; /* reset: non deve trapelare dall'ultima istruzione
+                           della funzione precedentemente selezionata */
 
-    /* Phase 1: pre-scan — assegna vreg id a tutti gli operandi IR. */
+    /* Phase 1: pre-scan — assegna vreg id a tutti gli operandi IR.
+     * Include anche i parametri formali (irf->params), anche quelli MAI
+     * usati nel corpo: se non li registrassimo qui, un eventuale primo
+     * uso post-sync (fase 2) creerebbe un id fuori sincronia con
+     * f->nextVreg, facendolo collidere con un temporaneo isel-interno. */
     VarMap vm;
     varmap_init(&vm);
     for (int i = 0; i < irf->count; i++) {
@@ -236,12 +246,34 @@ static MachFunction *select_function(const IRFunction *irf,
         varmap_operand_id(&vm, in->src1);
         varmap_operand_id(&vm, in->src2);
     }
+    for (int p = 0; p < irf->paramCount; p++)
+        varmap_operand_id(&vm, irf->params[p]);
 
     /* Phase 2: sincronizza nextVreg per evitare collisioni con temp isel-interni. */
     f->nextVreg = vm.nextId;
 
     /* Phase 3: selezione istruzioni, passata singola. */
     mfunc_emit(f, MACH_FUNC_BEGIN, mo_none(), mo_none(), mo_none());
+
+    /* Phase 3-bis: binding parametri formali <- registri ABI (System V:
+     * rdi,rsi,rdx,rcx,r8,r9). Senza questo MOV il vreg del parametro non
+     * riceve mai il valore passato dal chiamante. Parametri oltre il 6°
+     * (passati su stack dal chiamante) non sono ancora supportati: non
+     * esiste nel modello attuale un modo pulito per esprimere un indirizzo
+     * MO_MEM a offset positivo da %rbp (MO_STACK e' cablato per offset
+     * negativi negli spill, vedi emit_operand); segnalato e basta finche'
+     * non serve davvero. */
+    for (int p = 0; p < irf->paramCount; p++) {
+        int vreg = operand_to_vreg(&irf->params[p], &vm);
+        if (p < NUM_ARG_REGS) {
+            mfunc_emit(f, MACH_MOV, mo_vreg(vreg), mo_phys(ARG_REGS[p]), mo_none());
+        } else {
+            fprintf(stderr,
+                    "instr_selector: parametro #%d di '%s' passato su stack "
+                    "(>%d parametri) non ancora supportato\n",
+                    p + 1, irf->name, NUM_ARG_REGS);
+        }
+    }
 
     int param_vregs[MAX_PARAMS], param_count = 0;
     PendingCmp pcmp = { .active = 0 };

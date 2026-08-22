@@ -115,6 +115,14 @@ typedef struct {
     int  labelBase;
     int *labelToBlock;
     int  labelToBlockCap;
+
+    /* Operandi (OPND_VAR) dei parametri formali, in ordine di dichiarazione.
+     * Popolati da ir_buildFunction() cosi' che instr_selector.c possa
+     * emettere, subito dopo il prologo, i MOV che legano i registri ABI
+     * (rdi/rsi/...) ai vreg corrispondenti — altrimenti i parametri non
+     * riceverebbero mai il loro valore all'ingresso della funzione. */
+    Operand *params;
+    int      paramCount;
 } IRFunction;
 
 /* =========================================================================
