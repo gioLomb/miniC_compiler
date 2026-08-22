@@ -5,18 +5,19 @@
 #include "regalloc_utils.h"   /* regalloc_is_rmw, regalloc_is_ctrl_transfer */
 
 /* =========================================================================
- * SpillSet — bitset O(1) per "è questo vreg spillato?"
+ * SpillSet — O(1) bitset for "is this vreg spilled?"
  *
- * Rimpiazza la vecchia ricerca lineare O(nSpilled).
+ * Replaces the old O(nSpilled) linear search.
  * ========================================================================= */
 
 typedef struct {
     uint64_t *bits;
-    int       cap;   /* parole da 64 bit allocate */
+    int       cap;   /* number of allocated 64-bit words */
 } SpillSet;
 
 static inline void spillset_init(SpillSet *s, int n)
 {
+    // one bit per vreg id, rounded up to a whole number of 64-bit words
     s->cap  = (n + 63) / 64;
     s->bits = calloc((size_t)s->cap, sizeof(uint64_t));
 }
@@ -25,6 +26,7 @@ static inline void spillset_free(SpillSet *s) { free(s->bits); }
 
 static inline void spillset_set(SpillSet *s, int v)
 {
+    // v >> 6 selects the word, v & 63 the bit within it
     s->bits[v >> 6] |= 1ULL << (v & 63);
 }
 
@@ -34,27 +36,33 @@ static inline int spillset_test(const SpillSet *s, int v)
 }
 
 /* =========================================================================
- * Cache reload — evita load ripetuti dello stesso slot dentro un BB.
- * Invalidata a ogni label/salto/call (potenziali cambi di flusso).
+ * Reload cache — avoids repeated loads of the same slot within a BB.
+ * Invalidated on every label/jump/call (possible control-flow change).
  * ========================================================================= */
 
 static inline void invalidate_cache(int *cache, int n)
 {
-    /* memset con 0xFF: -1 in complemento a due per ogni int */
+    // memset with 0xFF gives -1 in two's complement for every int slot,
+    // i.e. "no cached reload temporary" for every original vreg
     memset(cache, 0xFF, (size_t)n * sizeof(int));
 }
 
-/* Carica il vreg spillato 'origVreg' dallo slot 'off' in un temporaneo,
-   riusando quello in cache se disponibile. Aggiorna *o al temporaneo. */
+/**
+ * Load spilled vreg 'origVreg' from stack slot 'off' into a temporary,
+ * reusing the cached temp if already loaded earlier in this block.
+ * Updates *o to reference the (cached or freshly loaded) temporary.
+ */
 static void load_spilled(MachOperand *o, int origVreg, MachFunction *f,
                          int off, MachInstr *newInstrs, int *newCount,
                          int *cache)
 {
+    // cache hit: this slot was already reloaded earlier in the block
     if (cache[origVreg] >= 0) {
         o->kind   = MO_VREG;
         o->vregId = cache[origVreg];
         return;
     }
+    // cache miss: allocate a fresh temp and emit a load from the stack slot
     int tmp = f->nextVreg++;
     MachInstr ld      = {0};
     ld.op             = MACH_MOV;
@@ -64,22 +72,22 @@ static void load_spilled(MachOperand *o, int origVreg, MachFunction *f,
     newInstrs[(*newCount)++] = ld;
     o->kind   = MO_VREG;
     o->vregId = tmp;
-    cache[origVreg] = tmp;
+    cache[origVreg] = tmp; // remember for subsequent reads of the same slot
 }
 
 /* =========================================================================
- * ra_spill_insert — riscrive f->instrs con load/store attorno agli spill.
+ * ra_spill_insert — rewrites f->instrs with load/store around spills.
  * ========================================================================= */
 void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
                      int *frameOff)
 {
     int origNextVreg = f->nextVreg;
 
-    /* slot[v] = offset stack positivo per il vreg v spillato; -1 se non spillato */
+    // slot[v] = positive stack offset for spilled vreg v; -1 if not spilled
     int *slot = malloc((size_t)origNextVreg * sizeof(int));
     memset(slot, -1, (size_t)origNextVreg * sizeof(int));
     for (int i = 0; i < nSpilled; i++) {
-        *frameOff      += 8;
+        *frameOff      += 8; // each slot is one 8-byte quadword
         slot[spilled[i]] = *frameOff;
     }
 
@@ -90,8 +98,8 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
     int *cache = malloc((size_t)origNextVreg * sizeof(int));
     invalidate_cache(cache, origNextVreg);
 
-    /* Sovrastima: al massimo 3 istruzioni per istruzione originale + margine */
-    int maxNew        = f->count * 3 + 16;
+    // worst-case overestimate: at most 3 new instructions per original one, plus margin
+    int maxNew = f->count * SPILL_MAX_EXPANSION_PER_INSTR + SPILL_EXTRA_MARGIN;
     MachInstr *newInstrs = malloc((size_t)maxNew * sizeof(MachInstr));
     int newCount      = 0;
 
@@ -99,10 +107,10 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
         MachInstr in    = f->instrs[i];
         int isStore     = (in.op == MACH_STORE);
 
-        /* label: invalida cache (inizio nuovo BB, flusso sconosciuto) */
+        // label: start of a new basic block, prior cache state no longer applies
         if (in.op == MACH_LABEL) invalidate_cache(cache, origNextVreg);
 
-        /* ---- Ricarica sorgenti spillate ---- */
+        /* ---- Reload spilled sources ---- */
         MachOperand *srcs[2] = { &in.src1, &in.src2 };
         for (int s = 0; s < 2; s++) {
             if (srcs[s]->kind == MO_VREG
@@ -114,7 +122,8 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
             }
         }
 
-        /* ---- Ricarica base/index di MO_MEM ---- */
+        /* ---- Reload base/index of MO_MEM operand ---- */
+        // STORE reads its address from dst; every other op reads it from src1
         MachOperand *memHolder = isStore ? &in.dst : &in.src1;
         if (memHolder->kind == MO_MEM) {
             if (memHolder->mem.baseVreg >= 0
@@ -137,7 +146,7 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
             }
         }
 
-        /* ---- Destinazione spillata ---- */
+        /* ---- Spilled destination ---- */
         int dstSpilled  = (in.dst.kind == MO_VREG) && !isStore
                           && in.dst.vregId < origNextVreg
                           && spillset_test(&ss, in.dst.vregId);
@@ -149,12 +158,14 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
             dstStoreOff = slot[origDstVreg];
             int dstTmp;
             if (regalloc_is_rmw(in.op)) {
-                /* read-modify-write: serve caricare il valore corrente prima */
+                // read-modify-write: the current value must be loaded first,
+                // since the instruction reads dst before writing it
                 MachOperand tmp = { .kind = MO_VREG, .vregId = origDstVreg };
                 load_spilled(&tmp, origDstVreg, f, dstStoreOff,
                              newInstrs, &newCount, cache);
                 dstTmp = tmp.vregId;
             } else {
+                // pure write: no need to reload the old value, just a fresh temp
                 dstTmp = f->nextVreg++;
             }
             in.dst.vregId = dstTmp;
@@ -162,7 +173,7 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
 
         newInstrs[newCount++] = in;
 
-        /* store del risultato nel suo slot */
+        // store the result back into its slot
         if (dstSpilled) {
             MachInstr st   = {0};
             st.op          = MACH_MOV;
@@ -170,11 +181,12 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
             st.src1.kind   = MO_VREG;  st.src1.vregId   = in.dst.vregId;
             st.src2.kind   = MO_NONE;
             newInstrs[newCount++] = st;
+            // the value just stored is now also the freshest reload for this slot
             cache[origDstVreg]   = in.dst.vregId;
         }
 
-        /* salti/call: invalida cache (prossima istruzione può essere raggiunta
-           da altri BB con stato cache diverso) */
+        // jumps/calls: invalidate cache (the next instruction may be reached
+        // from a different predecessor with a different cache state)
         if (regalloc_is_ctrl_transfer(in.op))
             invalidate_cache(cache, origNextVreg);
     }

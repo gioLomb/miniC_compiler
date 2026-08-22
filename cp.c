@@ -439,7 +439,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
             continue;
         }
 
-        /* ---- 2. IF_FALSE constant folding → CFG pruning ---- */
+        /* ---- 2. IF_FALSE constant folding and CFG pruning ---- */
         if (in->op == IR_IF_FALSE) {
             Operand cond = const_map_try_fold(in->src1, &live, vm);
             if (cond.kind == OPND_CONST_INT || cond.kind == OPND_CONST_FLOAT) {
