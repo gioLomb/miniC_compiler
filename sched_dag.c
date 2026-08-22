@@ -15,10 +15,14 @@
  *  Pass 1 — Node initialisation: instrIdx, latency, initial height.
  *  Pass 2 — Macro-fusion scan: pin CMP/TEST nodes that precede a Jcc.
  *  Pass 3 — Forward edge-building with register renaming:
- *              RAW edges via currentName[] + SparseMap lookup per source reg.
+ *              RAW edges via currentName[] + SparseMap lookup per source reg,
+ *              for both EXPLICIT operand uses (sched_uses) and IMPLICIT ABI
+ *              uses (instr_implicit_uses — e.g. CALL reading argument regs).
  *              Side-effect serialisation via lastSideEffect chain.
  *              Memory ordering serialisation via lastMemoryOp chain.
- *              WAW edge from previous writer + fresh rename id per definition.
+ *              WAW edge from previous writer + fresh rename id per definition,
+ *              for both the EXPLICIT dst and any IMPLICIT def
+ *              (instr_implicit_defs — e.g. CALL writing %rax on return).
  *  Pass 4 — Backward height propagation: height = latency + max(succ heights).
  *
  * Register renaming (pass 3 detail)
@@ -38,6 +42,24 @@
  * This scheme eliminates WAR edges between virtual registers and reduces WAW
  * edges to those that are truly unavoidable.
  *
+ * Implicit ABI uses/defs (CALL, IDIV, CQO)
+ * -----------------------------------------
+ * MACH_CALL does not carry the argument registers (%rdi, %rsi, ...) or the
+ * return register (%rax) as explicit src1/src2/dst operands — the calling
+ * convention places them there implicitly.  sched_uses()/sched_def() only
+ * see explicit operands, so without extra handling the scheduler has no edge
+ * between the MOVs that load the argument registers and the CALL, nor
+ * between the CALL and the MOV that reads %rax afterwards.  This lets the
+ * greedy list scheduler hoist CALL before its arguments are ready (or the
+ * result-copy before the call has even run), corrupting the calling
+ * convention while still producing a structurally valid schedule.
+ *
+ * Fixed here by additionally consulting instr_implicit_uses()/
+ * instr_implicit_defs() (regalloc_utils.h) — the same functions the register
+ * allocator already uses to model CALL/IDIV/CQO's implicit register
+ * traffic for liveness/interference — and feeding their results through the
+ * identical RAW/WAW + renaming machinery used for explicit operands.
+ *
  * Memory ordering (pass 3 detail)
  * --------------------------------
  * Without alias analysis we cannot determine whether two memory operations
@@ -50,6 +72,11 @@
 #include <string.h>
 #include "sched_dag.h"
 #include "sched_utils.h"
+#include "regalloc_utils.h"  /* instr_implicit_uses/defs: usi/def impliciti (es. CALL
+                               * legge i registri argomento e scrive %rax) non visibili
+                               * in src1/src2/dst, quindi invisibili a sched_uses()/
+                               * sched_def(). Riusati qui invece di duplicare la logica
+                               * (gia' corretta) usata dal register allocator. */
 
 /* =========================================================================
  * SparseMap
@@ -169,11 +196,16 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
     /* ------------------------------------------------------------------
      * Pass 3 — Forward edge-building with register renaming
      * For each instruction j (in program order):
-     *   a) Emit RAW edges from the last writer of each source register.
+     *   a) Emit RAW edges from the last writer of each EXPLICIT source
+     *      register (sched_uses).
+     *   a-bis) Emit RAW edges from the last writer of each IMPLICIT source
+     *      register (instr_implicit_uses — e.g. CALL reading argument regs).
      *   b) Chain after lastSideEffect if j has side effects.
      *   c) Chain after lastMemoryOp if j is a memory operation.
      *   d) Emit a WAW edge from the previous writer of the defined register,
-     *      then allocate a fresh rename id and update currentName / SparseMap.
+     *      then allocate a fresh rename id and update currentName / SparseMap
+     *      — for both the EXPLICIT dst (sched_def) and any IMPLICIT def
+     *      (instr_implicit_defs — e.g. CALL writing %rax on return).
      * ------------------------------------------------------------------ */
     int lastSideEffect = -1;  // index of the most recent side-effecting node
     int lastMemoryOp   = -1;  // index of the most recent LOAD or STORE node
@@ -181,12 +213,25 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
     for (int j = 0; j < n; j++) {
         const MachInstr *inj = &f->instrs[start + j];
 
-        /* a) RAW edges: resolve each source to its renamed id and look up
-         *    the last writer in the SparseMap. */
+        /* a) RAW edges: resolve each EXPLICIT source to its renamed id and
+         *    look up the last writer in the SparseMap. */
         int uses[5], nuses;
         sched_uses(inj, f->nextVreg, uses, &nuses);
         for (int u = 0; u < nuses; u++) {
             int r   = uses[u];
+            int ren = (r >= 0 && r < universe) ? currentName[r] : r;
+            int dep = smap_get(&smap, ren);
+            if (dep >= 0) dag_add_edge(nodes, dep, j, arena);
+        }
+
+        /* a-bis) RAW edges for IMPLICIT ABI reads (e.g. CALL reading the
+         * argument registers %rdi/%rsi/... loaded by preceding MOVs).
+         * Without this a CALL can be scheduled before those MOVs run,
+         * since it has no other dependency forcing it to wait for them. */
+        int iuses[16], niuses;
+        instr_implicit_uses(inj, f->nextVreg, iuses, &niuses);
+        for (int u = 0; u < niuses; u++) {
+            int r   = iuses[u];
             int ren = (r >= 0 && r < universe) ? currentName[r] : r;
             int dep = smap_get(&smap, ren);
             if (dep >= 0) dag_add_edge(nodes, dep, j, arena);
@@ -214,9 +259,24 @@ void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
         /* d) WAW edge + rename: if the same architectural register was written
          *    earlier in this block, emit a WAW edge from that writer.  Then
          *    retire the old rename id and publish a fresh one so future uses
-         *    of this register pick up the new writer via RAW edges. */
-        int d = sched_def(inj, f->nextVreg);
-        if (d >= 0 && d < universe) {
+         *    of this register pick up the new writer via RAW edges.
+         *    Applied to the EXPLICIT dst and to any IMPLICIT def (e.g. CALL
+         *    writing %rax with the return value) — without the latter, the
+         *    MOV that copies %rax right after the CALL has no edge forcing
+         *    it to run after the CALL, and could be hoisted before it. */
+        int defs[16], ndefs = 0;
+
+        int explicitDef = sched_def(inj, f->nextVreg);
+        if (explicitDef >= 0) defs[ndefs++] = explicitDef;
+
+        int idefs[16], nidefs;
+        instr_implicit_defs(inj, f->nextVreg, idefs, &nidefs);
+        for (int k = 0; k < nidefs; k++) defs[ndefs++] = idefs[k];
+
+        for (int k = 0; k < ndefs; k++) {
+            int d = defs[k];
+            if (d < 0 || d >= universe) continue;
+
             int oldRenamed = currentName[d];
             int prevDef    = smap_get(&smap, oldRenamed);
             // WAW: this definition must follow the previous one for the same reg
