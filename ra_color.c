@@ -73,31 +73,32 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
 }
 
 /* =========================================================================
- * hint_color — look up a preferred color from move-related pairs.
+ * hint_color — look up a preferred color from the partner list.
  *
- * Scans all pairs: if v's partner already has a valid color, return it
- * as the hint. Returns -1 if no applicable hint exists.
+ * Scans all pairs in @p pl: if the current node @p v has a partner that
+ * already holds a valid color and that color is still within @p available,
+ * return it as the biased-coloring hint.  Returns -1 if no applicable hint.
  * ========================================================================= */
 static int hint_color(int v, uint32_t available,
                       const IGraph *g, int nextVreg,
-                      const MoveList *ml)
+                      const PartnerList *pl)
 {
-    if (!ml || ml->count == 0) return -1;
+    if (!pl || pl->count == 0) return -1;
 
-    for (int i = 0; i < ml->count; i++) {
-        int u = ml->pairs[i].u;
-        int w = ml->pairs[i].v;
-        // determine v's partner in this pair (skip if v is neither side)
+    for (int i = 0; i < pl->count; i++) {
+        int u = pl->pairs[i].u;
+        int w = pl->pairs[i].v;
+        // determine v's partner in this pair; skip if v is neither side
         int partner = (u == v) ? w : (w == v) ? u : -1;
         if (partner < 0) continue;
 
-        // fetch the partner's assigned color
+        // fetch the partner's already-assigned color
         int pc = g->color[partner];
-        if (pc < 0) continue;                          // not colored yet
-        if ((unsigned)pc >= PHYS_ALLOCATABLE) continue; // not a valid color
+        if (pc < 0) continue;                           // not colored yet
+        if ((unsigned)pc >= PHYS_ALLOCATABLE) continue; // out of valid range
 
-        // the hint is only usable if it's still within the available set
-        // (i.e. it already satisfies interference + excl + crossesCall)
+        // the hint is only usable when the partner's color is still available
+        // (already satisfies interference + excl + crossesCall for this node)
         if ((available >> pc) & 1u) return pc;
     }
     return -1;
@@ -106,19 +107,20 @@ static int hint_color(int v, uint32_t available,
 /* =========================================================================
  * ra_select_colors — assign colors in reverse simplification order.
  *
- * Biased coloring: if a move-related partner already has an available
- * color, prefer it — eliminates the redundant MOV without touching the
- * graph. Fallback logic is identical to the non-coalescing baseline.
+ * Biased coloring: if a partner already has an available color, prefer it
+ * to eliminate the redundant MOV without touching the graph.  Fallback
+ * logic (callee-saved preference, lowest-color) is identical to the
+ * non-coalescing baseline.
  * ========================================================================= */
 int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
-                     int *spilled, const MoveList *ml)
+                     int *spilled, const PartnerList *pl)
 {
     (void)nextVreg;
     int nSpilled = 0;
 
     // reinsert nodes in reverse removal order: by the time a node is
-    // reinserted, all its neighbours removed *after* it (i.e. processed
-    // earlier in this loop) are already colored
+    // reinserted, all its neighbours removed *after* it (processed earlier
+    // in this loop) are already colored
     for (int si = stackLen - 1; si >= 0; si--) {
         int v = stack[si];
         g->active[v] = 1;
@@ -137,20 +139,20 @@ int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
 
         int chosen = -1;
 
-        /* --- Biased hint: prefer the move-related partner's color --- */
-        int hint = hint_color(v, available, g, nextVreg, ml);
+        /* Priority 1: biased hint from a move-related partner */
+        int hint = hint_color(v, available, g, nextVreg, pl);
         if (hint >= 0) {
             chosen = hint;
         } else if (g->crossesCall[v]) {
-            // vreg live across a CALL: prefer callee-saved colors first to
-            // avoid caller-saved clobbering and reduce push/pop overhead
+            /* Priority 2: vreg live across a CALL — prefer callee-saved colors
+             * to avoid caller-saved clobbering and reduce push/pop overhead */
             uint32_t callee = available >> PHYS_CALLER_SAVED_COUNT;
             if (callee)
                 chosen = PHYS_CALLER_SAVED_COUNT + __builtin_ctz(callee);
             else if (available)
                 chosen = __builtin_ctz(available);
         } else {
-            // no special preference: pick the lowest available color
+            /* Priority 3: no special preference — lowest available color */
             if (available)
                 chosen = __builtin_ctz(available);
         }

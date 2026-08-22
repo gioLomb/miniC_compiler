@@ -182,8 +182,14 @@ static void save_restore_callee(MachFunction *f)
 /* =========================================================================
  * Loop principale di allocazione per singola funzione.
  *
- * Pipeline: build_cfg → liveness → IGraph → collect_moves → simplify →
+ * Pipeline: build_cfg → liveness → IGraph → collect_partners → simplify →
  *           select_colors (con hint) → [spill → repeat] → finalize.
+ *
+ * BUG FIX: the PartnerList must be released in BOTH the success branch (no
+ * spills) and the spill branch.  The previous code leaked `ml` on every
+ * spill iteration because partnerlist_free() was only called in the break
+ * path.  Corrected below: partnerlist_free() is now called unconditionally
+ * before either branching out (break) or looping (spill + continue).
  * ========================================================================= */
 
 static void regalloc_function(MachFunction *f)
@@ -199,29 +205,34 @@ static void regalloc_function(MachFunction *f)
 
         IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter, livArena);
 
-        /* Raccolta coppie move-related: deve avvenire DOPO ig_build
-         * (serve g.matrix per verificare non-interferenza) e PRIMA di
-         * ra_simplify (che rende il grafo non più consultabile per questo). */
-        MoveList ml = ra_collect_moves(f, &g, f->nextVreg);
+        /* Partner-list collection must happen AFTER ig_build (needs g.matrix
+         * for the non-interference check) and BEFORE ra_simplify (which
+         * deactivates nodes making the graph no longer fully queryable). */
+        PartnerList pl = ra_collect_partners(f, &g, f->nextVreg);
 
         int *stack    = NULL;
         int  stackLen = ra_simplify(&g, f->nextVreg, &stack);
 
         int *spilled  = malloc((size_t)(f->nextVreg > 0 ? f->nextVreg : 1) * sizeof(int));
-        int  nSpilled = ra_select_colors(&g, f->nextVreg, stack, stackLen, spilled, &ml);
+        int  nSpilled = ra_select_colors(&g, f->nextVreg, stack, stackLen, spilled, &pl);
 
-        movelist_free(&ml);
+        // release the partner list unconditionally — it is no longer needed
+        // after select_colors regardless of whether spilling occurred
+        partnerlist_free(&pl);
 
         if (nSpilled == 0) {
+            // coloring succeeded: commit physical registers and exit the loop
             finalize(f, g.color);
             free(stack); free(spilled); ig_free(&g);
             arena_destroy(livArena); free(blocks);
             break;
         }
 
+        // coloring failed for nSpilled vregs: insert spill code and retry
         ra_spill_insert(f, spilled, nSpilled, &frameOff);
         free(stack); free(spilled); ig_free(&g);
         arena_destroy(livArena); free(blocks);
+        // loop continues with the rewritten instruction stream
     }
 
     save_restore_callee(f);

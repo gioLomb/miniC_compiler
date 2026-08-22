@@ -6,61 +6,70 @@
 
 /**
  * @file ra_coalesce.h
- * @brief Biased coloring support (lightweight coalescing, no graph mutation).
+ * @brief Biased-coloring support: partner list collection (lightweight coalescing).
  *
- * Unlike classic coalescing (which merges nodes in the interference graph
- * before coloring), this module only collects MOV-related vreg pairs.
- * ra_select_colors() (ra_color.c) uses these pairs as coloring *hints*:
- * when a vreg's move-partner already has a valid color, that color is
- * preferred, eliminating the redundant MOV without ever touching IGraph.
+ * Unlike classic Chaitin coalescing — which merges interference-graph nodes before
+ * coloring — this module only collects move-related vreg pairs, called *partners*
+ * in the biased-coloring literature.  ra_select_colors() (ra_color.c) uses these
+ * pairs as coloring *hints*: when a partner already holds a valid color that is
+ * still available for the current node, that color is preferred, eliminating the
+ * redundant MOV without ever mutating the IGraph structure.
  *
- * Correctness: a hint is only followed if the partner's color already
- * belongs to the `available` mask computed by ra_select_colors (i.e. it
- * already satisfies interference edges, excl[], and crossesCall
- * constraints) — so no additional safety check is needed at hint time.
+ * Correctness guarantee: a hint is only followed when the partner's color already
+ * belongs to the `available` mask computed inside ra_select_colors() — meaning it
+ * already satisfies all interference edges, excl[] masks, and crossesCall
+ * constraints — so no additional safety check is needed at hint time.
  */
 
 /**
- * @brief One MOV-related pair of nodes considered for coalescing.
+ * @brief An ordered pair of nodes considered for biased coloring.
  *
- * Physical registers are represented in the same id space as
- * interference-graph nodes: node id = nextVreg + physReg.
+ * Physical registers share the same id space as interference-graph nodes:
+ * physical register @c p has node id @c nextVreg + p.
+ * @c u is always a virtual register (@c u < nextVreg); @c v may be either a
+ * virtual register or a pre-coloured physical-register node.
  */
 typedef struct {
-    int u;   /**< First node id (vreg, always < nextVreg). */
-    int v;   /**< Second node id: vreg id, or nextVreg+physReg for a physical register. */
-} MovePair;
+    int u;  /**< Source node id — always a virtual register (u < nextVreg). */
+    int v;  /**< Partner node id — vreg id or nextVreg+physReg for a physical reg. */
+} PartnerPair;
 
 /**
- * @brief Growable list of MovePair entries, heap-allocated.
+ * @brief Growable list of PartnerPair entries, heap-allocated.
+ *
+ * Managed with a standard doubling-growth strategy.  All memory is released
+ * by partnerlist_free(); the struct itself is stack-allocated by the caller.
  */
 typedef struct {
-    MovePair *pairs; /**< Heap-allocated array of collected pairs. */
-    int       count;  /**< Number of pairs currently stored. */
-    int       cap;    /**< Allocated capacity of @c pairs. */
-} MoveList;
+    PartnerPair *pairs;  /**< Heap-allocated array of partner pairs.      */
+    int          count;  /**< Number of valid entries currently stored.   */
+    int          cap;    /**< Allocated capacity of @c pairs (in entries). */
+} PartnerList;
 
 /**
  * @brief Scan @p f for MOV instructions and collect non-interfering vreg pairs.
  *
- * Only MACH_MOV instructions between vreg<->vreg or vreg<->physical register
- * are considered. A pair is recorded only if the two nodes do NOT interfere
- * in @p g (checked via the interference bit matrix) — interfering nodes can
- * never receive the same color regardless of hinting.
+ * Considers MACH_MOV instructions between vreg↔vreg or vreg↔physical-register
+ * operands.  A pair is recorded only when the two nodes do NOT already interfere
+ * in @p g — interfering nodes can never share a color regardless of any hint,
+ * so recording them would waste memory and hint-lookup time.
  *
  * @param f        Machine function to scan.
- * @param g        Interference graph already built for @p f (used only for
- *                 the interference query; not modified).
+ * @param g        Interference graph already built for @p f (read-only; used
+ *                 only for edge-existence queries via the bit matrix).
  * @param nextVreg Number of virtual registers in @p f (id offset for physicals).
- * @return         Heap-allocated MoveList; caller must release with movelist_free().
+ * @return         Heap-allocated PartnerList; caller must release with
+ *                 partnerlist_free().
  */
-MoveList ra_collect_moves(const MachFunction *f, const IGraph *g, int nextVreg);
+PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g, int nextVreg);
 
 /**
- * @brief Free the backing array of @p ml and reset it to an empty state.
+ * @brief Release the backing array of @p pl and reset it to an empty state.
  *
- * @param ml MoveList to release (safe on an already-empty list).
+ * Safe to call on a PartnerList that was never populated (no-op on empty list).
+ *
+ * @param pl  PartnerList to release.
  */
-void movelist_free(MoveList *ml);
+void partnerlist_free(PartnerList *pl);
 
 #endif /* RA_COALESCE_H */

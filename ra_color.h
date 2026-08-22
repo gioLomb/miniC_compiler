@@ -21,7 +21,7 @@
  *
  *  2. ra_select_colors() — pops the stack in reverse order and assigns a
  *     physical-register color to each node. Applies biased coloring: if
- *     a move-related partner (from MoveList) already has an available
+ *     a move-related partner (from PartnerList) already has an available
  *     color, that color is preferred, eliminating the redundant MOV.
  *     Nodes with no available color are recorded in @c spilled[].
  *     Vregs live across a CALL prefer callee-saved registers to reduce
@@ -50,12 +50,16 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack);
 /**
  * @brief Select phase: assign physical-register colors in reverse removal order.
  *
- * For each node popped from @p stack (starting from the last removed —
- * i.e. LIFO reinsertion), computes the set of colors still available given
- * already-colored neighbours and the node's exclusion mask, then:
- *   1. tries a biased hint from a move-related partner (@p ml);
- *   2. otherwise, for vregs crossing a CALL, prefers a callee-saved color;
- *   3. otherwise picks the lowest available color.
+ * For each node popped from @p stack (LIFO reinsertion), computes the set of
+ * colors still available given already-colored neighbours and the node's
+ * exclusion mask, then applies the following priority:
+ *
+ *  1. Biased hint from a move-related partner in @p pl (if available and
+ *     still valid within the @c available mask).
+ *  2. For vregs crossing a CALL, prefer a callee-saved color to minimise
+ *     push/pop overhead in the function prologue/epilogue.
+ *  3. Lowest available color (no special preference).
+ *
  * If no color is available the node is marked as spilled (@c color = -2)
  * and appended to @p spilled.
  *
@@ -65,12 +69,12 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack);
  * @param stackLen Number of entries in @p stack.
  * @param spilled  Output array (caller-allocated, capacity >= nextVreg)
  *                 receiving the ids of nodes that could not be colored.
- * @param ml       Move-related pairs for biased coloring hints; may be
- *                 NULL, in which case coloring proceeds without hints
- *                 (identical to the non-coalescing version).
+ * @param pl       Partner list for biased coloring hints produced by
+ *                 ra_collect_partners(); may be NULL, in which case
+ *                 coloring proceeds without any hints.
  * @return         Number of entries written into @p spilled.
  */
 int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
-                     int *spilled, const MoveList *ml);
+                     int *spilled, const PartnerList *pl);
 
 #endif /* RA_COLOR_H */

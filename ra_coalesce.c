@@ -2,73 +2,86 @@
 #include <stdint.h>
 #include "ra_coalesce.h"
 
-/* ---- inline edge query (same trick as interference.c) ---- */
+/* =========================================================================
+ * Triangular-matrix edge query — mirrors interference.c
+ * ========================================================================= */
+
+/**
+ * Map the unordered pair (i, j) to its flat lower-triangular index.
+ * Canonical form enforced: larger id becomes the row (i > j after swap).
+ */
 static inline long tri_idx(int i, int j) {
-    // canonical ordering: larger id is always the row index
     if (i < j) { int t = i; i = j; j = t; }
+    // standard lower-triangular formula: row i starts at i*(i-1)/2
     return (long)i * (i - 1) / 2 + j;
 }
+
+/** Return non-zero if an interference edge exists between nodes @p i and @p j. */
 static inline int edge_exists(const IGraph *g, int i, int j) {
-    // guard against degenerate/self pairs before touching the bit matrix
+    // reject degenerate or self-pairs before touching the bit matrix
     if (i < 0 || j < 0 || i == j) return 0;
     long idx = tri_idx(i, j);
     // word index (idx >> 6) selects the uint64_t, (idx & 63) the bit within it
     return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
 }
 
-/* ---- list helpers ---- */
-static void ml_push(MoveList *ml, int u, int v) {
-    // classic doubling growth strategy
-    if (ml->count == ml->cap) {
-        ml->cap = ml->cap ? ml->cap * 2 : 16;
-        ml->pairs = realloc(ml->pairs, (size_t)ml->cap * sizeof(MovePair));
+/* =========================================================================
+ * PartnerList helpers
+ * ========================================================================= */
+
+/** Append the pair (u, v) to @p pl, doubling capacity when needed. */
+static void pl_push(PartnerList *pl, int u, int v) {
+    // start at 16 to amortise early reallocations on small functions
+    if (pl->count == pl->cap) {
+        pl->cap   = pl->cap ? pl->cap * 2 : 16;
+        pl->pairs = realloc(pl->pairs, (size_t)pl->cap * sizeof(PartnerPair));
     }
-    ml->pairs[ml->count++] = (MovePair){ u, v };
+    pl->pairs[pl->count++] = (PartnerPair){ u, v };
 }
 
-/* ---------------------------------------------------------------
- * ra_collect_moves
- *
- * Scans every MACH_MOV vreg<->vreg and vreg<->phys instruction.
- * A pair (u,v) is recorded only if u and v do NOT interfere
- * (otherwise they could never share a color anyway).
- * Physical registers use id = nextVreg + physReg, consistent
- * with IGraph's node layout (physicals in [nextVreg, nextVreg+PHYS_ALLOCATABLE)).
- * --------------------------------------------------------------- */
-MoveList ra_collect_moves(const MachFunction *f, const IGraph *g, int nextVreg) {
-    MoveList ml = { NULL, 0, 0 };
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
+
+PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g, int nextVreg)
+{
+    PartnerList pl = { NULL, 0, 0 };
 
     for (int i = 0; i < f->count; i++) {
         const MachInstr *in = &f->instrs[i];
         if (in->op != MACH_MOV) continue;
 
-        // resolve numeric ids of dst and src1
+        // resolve numeric node ids for the destination and source operands
         int u = -1, v = -1;
 
-        if (in->dst.kind == MO_VREG)       u = in->dst.vregId;
-        else if (in->dst.kind == MO_PHYS)  u = nextVreg + in->dst.physReg;
+        if      (in->dst.kind  == MO_VREG) u = in->dst.vregId;
+        else if (in->dst.kind  == MO_PHYS) u = nextVreg + in->dst.physReg;
 
-        if (in->src1.kind == MO_VREG)      v = in->src1.vregId;
+        if      (in->src1.kind == MO_VREG) v = in->src1.vregId;
         else if (in->src1.kind == MO_PHYS) v = nextVreg + in->src1.physReg;
 
-        // both operands must be identifiable, and at least one must be a
-        // vreg (a phys<->phys MOV is never touched by the register allocator)
+        // both operands must resolve to valid node ids
         if (u < 0 || v < 0) continue;
-        if (u >= nextVreg + PHYS_ALLOCATABLE || v >= nextVreg + PHYS_ALLOCATABLE) continue;
-        int both_phys = (u >= nextVreg && v >= nextVreg);
-        if (both_phys) continue;
 
-        // skip if they interfere: they can never get the same color
+        // guard against out-of-range ids (e.g. PHYS_AL which is beyond PHYS_ALLOCATABLE)
+        if (u >= nextVreg + PHYS_ALLOCATABLE || v >= nextVreg + PHYS_ALLOCATABLE) continue;
+
+        // phys↔phys MOVs are never touched by the register allocator
+        if (u >= nextVreg && v >= nextVreg) continue;
+
+        // only record pairs that do NOT already interfere: interfering nodes can
+        // never share a color, so a hint for them would be silently ignored anyway
         if (edge_exists(g, u, v)) continue;
 
-        ml_push(&ml, u, v);
+        pl_push(&pl, u, v);
     }
 
-    return ml;
+    return pl;
 }
 
-void movelist_free(MoveList *ml) {
-    free(ml->pairs);
-    ml->pairs = NULL;
-    ml->count = ml->cap = 0;
+void partnerlist_free(PartnerList *pl) {
+    free(pl->pairs);
+    // reset all fields so a double-free attempt produces a clean no-op
+    pl->pairs = NULL;
+    pl->count = pl->cap = 0;
 }
