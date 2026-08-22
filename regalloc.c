@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "regalloc.h"
 #include "ra_color.h"
+#include "ra_coalesce.h"
 #include "ra_spill.h"
 #include "liveness.h"
 #include "interference.h"
@@ -10,11 +11,7 @@
 #include "arena.h"
 
 /* =========================================================================
- * CFG costruzione per codice macchina.
- *
- * Separa le istruzioni in blocchi base (spezzati alle LABEL) e risolve
- * i successori tramite jump target. Locale a questo file: usata solo
- * dal loop di allocazione.
+ * CFG costruzione per codice macchina (invariato).
  * ========================================================================= */
 
 static int find_label_block(const int *labelIds, const int *blockIdx,
@@ -43,7 +40,6 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
         blocks[count++] = (BasicBlock){ start, f->count, {-1, -1} };
     }
 
-    /* raccoglie mapping label-id → indice blocco */
     int *labelIds = malloc((size_t)(count > 0 ? count : 1) * sizeof(int));
     int *blockIdx = malloc((size_t)(count > 0 ? count : 1) * sizeof(int));
     int nLabels = 0;
@@ -55,7 +51,6 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
         }
     }
 
-    /* risolve successori */
     for (int b = 0; b < count; b++) {
         int last = blocks[b].end - 1;
         switch (f->instrs[last].op) {
@@ -83,10 +78,7 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
 }
 
 /* =========================================================================
- * Finalizzazione: colora vreg → phys, rimuove MOV identità.
- *
- * Un unico passaggio fa entrambe le cose: evita un secondo giro completo
- * sulla lista istruzioni rispetto alla versione originale a due passate.
+ * Finalizzazione: colora vreg → phys, rimuove MOV identità (invariato).
  * ========================================================================= */
 
 static inline void rewrite_phys(MachOperand *o, const int *color)
@@ -128,7 +120,7 @@ static void finalize(MachFunction *f, const int *color)
 }
 
 /* =========================================================================
- * Prologo/epilogo: salva/ripristina callee-saved usati.
+ * Prologo/epilogo: salva/ripristina callee-saved usati (invariato).
  * ========================================================================= */
 
 static inline int is_callee_saved(int physReg)
@@ -141,7 +133,6 @@ static void save_restore_callee(MachFunction *f)
     uint32_t usedMask = 0;
     int retCount      = 0;
 
-    /* unico passaggio: raccoglie usedMask e conta RET */
     for (int i = 0; i < f->count; i++) {
         MachInstr *in = &f->instrs[i];
         if (in->dst.kind == MO_PHYS && is_callee_saved(in->dst.physReg))
@@ -191,8 +182,8 @@ static void save_restore_callee(MachFunction *f)
 /* =========================================================================
  * Loop principale di allocazione per singola funzione.
  *
- * Itera finché nessuno spill: costruisce CFG → liveness → IGraph →
- * colorazione; se ci sono spill inserisce load/store e ricomincia.
+ * Pipeline: build_cfg → liveness → IGraph → collect_moves → simplify →
+ *           select_colors (con hint) → [spill → repeat] → finalize.
  * ========================================================================= */
 
 static void regalloc_function(MachFunction *f)
@@ -208,11 +199,18 @@ static void regalloc_function(MachFunction *f)
 
         IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter, livArena);
 
+        /* Raccolta coppie move-related: deve avvenire DOPO ig_build
+         * (serve g.matrix per verificare non-interferenza) e PRIMA di
+         * ra_simplify (che rende il grafo non più consultabile per questo). */
+        MoveList ml = ra_collect_moves(f, &g, f->nextVreg);
+
         int *stack    = NULL;
         int  stackLen = ra_simplify(&g, f->nextVreg, &stack);
 
         int *spilled  = malloc((size_t)(f->nextVreg > 0 ? f->nextVreg : 1) * sizeof(int));
-        int  nSpilled = ra_select_colors(&g, f->nextVreg, stack, stackLen, spilled);
+        int  nSpilled = ra_select_colors(&g, f->nextVreg, stack, stackLen, spilled, &ml);
+
+        movelist_free(&ml);
 
         if (nSpilled == 0) {
             finalize(f, g.color);

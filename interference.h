@@ -55,8 +55,10 @@
 #include "arena.h"
 #include "dynamic_array.h"
 
-/** Maximum number of explicit def operands extracted per instruction. */
+/** Maximum number of explicit def/use operands extracted per instruction. */
 #define MAX_INSTR_OPERANDS 16
+
+/** Maximum number of explicit destination operands per instruction. */
 #define MAX_EXPLICIT_DEFS   8
 
 /** Historical alias: adjacency lists are IntVectors. */
@@ -69,39 +71,69 @@ typedef IntVector AdjList;
  * @c adj[i].data is heap-allocated by IntVector; release with @c ig_free().
  */
 typedef struct {
-    int       n;        /**< Total number of nodes (nextVreg + PHYS_ALLOCATABLE). */
-    uint64_t *matrix;   /**< Triangular bit matrix encoding edge existence.       */
-    AdjList  *adj;      /**< Per-node adjacency list (arena-allocated headers).   */
-    int      *degree;   /**< Current interference degree of each node.            */
-    int      *color;    /**< Assigned colour (-1 = uncoloured, -2 = spilled).     */
-    bool     *active;   /**< 1 if the node is still in the graph (not removed).   */
-    uint32_t *excl;     /**< Bitmask of forbidden physical-register colours.      */
-    int      *spillCost;    /**< Estimated cost of spilling this virtual register. */
-    char     *crossesCall;  /**< 1 if the vreg is live across at least one CALL.  */
+    int       n;        /**< Total node count: nextVreg + PHYS_ALLOCATABLE.
+                         *   Nodes [0, nextVreg) are virtual; nodes
+                         *   [nextVreg, n) are pre-coloured physical regs.   */
+    uint64_t *matrix;   /**< Compact lower-triangular bit matrix.
+                         *   Bit for pair (i,j) with i>j lives at position
+                         *   i*(i-1)/2 + j inside the flat uint64_t array.  */
+    AdjList  *adj;      /**< Per-node adjacency list (arena headers, heap data). */
+    int      *degree;   /**< Current interference degree of each node.
+                         *   Decremented as nodes are removed during Simplify. */
+    int      *color;    /**< Assigned physical-register colour.
+                         *   -1 = uncoloured (pre-allocation),
+                         *   -2 = spilled (no colour available),
+                         *   >=0 = index in [0, PHYS_ALLOCATABLE).           */
+    bool     *active;   /**< 1 while the node is still in the graph (not
+                         *   removed by Simplify or pre-assigned as physical). */
+    uint32_t *excl;     /**< Bitmask of forbidden physical-register colours
+                         *   beyond what interference edges already encode.
+                         *   Set for partial clobbers (SETcc writes %al).    */
+    int      *spillCost;    /**< Estimated cost of spilling this virtual register.
+                             *   Accumulated as loop-depth-weighted def/use count. */
+    char     *crossesCall;  /**< 1 if the vreg is live across at least one CALL.
+                             *   Used by colour selector to prefer callee-saved regs,
+                             *   reducing push/pop overhead in the function frame.  */
 } IGraph;
 
 /**
  * @brief Build the interference graph from the machine-code liveness result.
  *
- * For every instruction @c i and every register @c d that @c i defines:
- * an interference edge (d, v) is added for every register @c v live in
- * @c liveAfter[i].  Implicit defs (IDIV, CQO, CALL) are processed the same
- * way.  CALL instructions additionally set @c excl and @c crossesCall for
- * every live virtual register, to guide colour selection.
+ * Allocates all IGraph fields from @p arena, then populates edges and metadata
+ * in a single forward scan over every instruction in every basic block:
  *
- * Spill costs are accumulated during the same scan: each instruction
- * contributes @c regalloc_spill_weight(loopDepth) to the cost of every
- * vreg it explicitly uses or defines.
+ *   - For each instruction @c i and each register @c d that @c i defines
+ *     (explicitly via @c instr_defs, or implicitly via @c instr_implicit_defs),
+ *     an interference edge (d, v) is added for every register @c v that is
+ *     live in @c liveAfter[i].  This is the standard def-interferes-with-live
+ *     rule: d and every live-at-definition v must reside in different registers.
+ *
+ *   - Spill costs are accumulated: each instruction contributes
+ *     @c regalloc_spill_weight(loopDepth) to every vreg it explicitly
+ *     uses or defines, so variables inside hot loops become expensive to spill.
+ *
+ *   - CALL instructions additionally set @c excl (forbid all caller-saved colours)
+ *     and @c crossesCall for every vreg live after the call.
+ *
+ *   - IDIV and CQO add RAX/RDX to the @c excl mask of any live vreg, since those
+ *     physical registers are implicitly clobbered by the instruction sequence.
+ *
+ *   - SETcc instructions add RAX to @c excl for live vregs, because SETcc writes
+ *     %al (low byte of RAX) and a vreg in RAX would alias the result.
+ *
+ * Physical registers are pre-coloured: color[nextVreg + p] = p for
+ * p in [0, PHYS_ALLOCATABLE).  They are always active and participate in
+ * interference edges so the allocator never assigns a conflicting colour.
  *
  * @pre  @p liveAfter must be the per-instruction liveness array produced by
- *       @c liveness_computeMach() for the same function.
+ *       @c liveness_computeMach() for the same function and block layout.
  * @pre  The caller-supplied @p arena must remain live as long as the IGraph
- *       is in use.
+ *       is in use (it owns all fixed-size arrays).
  *
  * @param f          Machine function to analyse.
  * @param blocks     Basic-block array for @p f (from @c build_cfg()).
  * @param nBlocks    Number of entries in @p blocks.
- * @param nextVreg   Number of virtual registers in @p f.
+ * @param nextVreg   Number of virtual registers in @p f (first physical reg id).
  * @param liveAfter  Per-instruction live sets from liveness analysis.
  * @param arena      Arena for all IGraph fixed-size arrays.
  * @return           Fully initialised IGraph; call @c ig_free() when done.
@@ -112,9 +144,12 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
 /**
  * @brief Free the heap-allocated adjacency-list data of every node.
  *
- * Releases only @c adj[i].data (owned by IntVector / malloc).  The fixed-
- * size arrays are arena-allocated and are freed when the caller destroys
- * its arena.
+ * Only @c adj[i].data (owned by IntVector / malloc) is released here.
+ * The fixed-size arrays (matrix, degree, color, etc.) are arena-allocated
+ * and reclaimed when the caller destroys its arena — do not free them here.
+ *
+ * Always call this before @c arena_destroy() to avoid leaking the adjacency
+ * list backing arrays, which live outside the arena.
  *
  * @param g  IGraph whose adjacency lists are to be released.
  */

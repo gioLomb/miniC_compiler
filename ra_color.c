@@ -2,17 +2,13 @@
 #include <string.h>
 #include <stdint.h>
 #include "ra_color.h"
+#include "ra_coalesce.h"
 #include "instr_selector.h"   /* PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, PHYS_RBX..R15 */
 
 
 /* =========================================================================
  * ra_simplify — Briggs-optimistic simplification.
- *
- * Nodi con grado < k: rimossi subito (colorabili con certezza).
- * Nodi con grado ≥ k: potenziali spill; si sceglie quello con rapporto
- *   spillCost/degree minimo (Chaitin heuristic).
- *
- * Restituisce lunghezza dello stack; *outStack è malloc del chiamante.
+ * (invariato rispetto alla versione originale)
  * ========================================================================= */
 int ra_simplify(IGraph *g, int nextVreg, int **outStack)
 {
@@ -49,7 +45,6 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
         remaining--;
         (*outStack)[stackLen++] = chosen;
 
-        /* aggiorna gradi dei vicini ancora attivi */
         for (int idx = 0; idx < g->adj[chosen].len; idx++) {
             int w = g->adj[chosen].data[idx];
             if (w >= nextVreg || !g->active[w]) continue;
@@ -59,7 +54,6 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
                 bucket_remove(&buckets, w, oldDeg);
                 bucket_insert(&buckets, w, oldDeg - 1);
             } else if (oldDeg == k) {
-                /* scende sotto la soglia: ora colorabile con certezza */
                 bucket_insert(&buckets, w, k - 1);
             }
         }
@@ -70,14 +64,45 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
 }
 
 /* =========================================================================
+ * hint_color — cerca colore preferito da coppie move-related.
+ *
+ * Scansiona le coppie: se il partner di `v` ha già un colore valido
+ * (dentro `available`), lo restituisce come hint.
+ * Ritorna -1 se nessun hint applicabile.
+ * ========================================================================= */
+static int hint_color(int v, uint32_t available,
+                      const IGraph *g, int nextVreg,
+                      const MoveList *ml)
+{
+    if (!ml || ml->count == 0) return -1;
+
+    for (int i = 0; i < ml->count; i++) {
+        int u = ml->pairs[i].u;
+        int w = ml->pairs[i].v;
+        /* partner di v è u o w */
+        int partner = (u == v) ? w : (w == v) ? u : -1;
+        if (partner < 0) continue;
+
+        /* Ottieni colore del partner */
+        int pc = g->color[partner];
+        if (pc < 0) continue;                          /* non ancora colorato */
+        if ((unsigned)pc >= PHYS_ALLOCATABLE) continue; /* colore non valido  */
+
+        /* Controlla che il colore del partner sia in `available` */
+        if ((available >> pc) & 1u) return pc;
+    }
+    return -1;
+}
+
+/* =========================================================================
  * ra_select_colors — assegna colori in ordine inverso allo stack.
  *
- * Strategia: usa __builtin_ctz su bitmask available per O(1).
- * Preferisce callee-saved per live-across-call (meno push/pop al prologo).
- * Nodi senza colore → spilled[]; restituisce nSpilled.
+ * Biased coloring: se un partner move-related ha già un colore disponibile,
+ * lo si preferisce → elimina il MOV ridondante senza toccare il grafo.
+ * Fallback identico alla versione originale.
  * ========================================================================= */
 int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
-                     int *spilled)
+                     int *spilled, const MoveList *ml)
 {
     (void)nextVreg;
     int nSpilled = 0;
@@ -98,8 +123,13 @@ int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
         uint32_t available = (~forbidden) & valid_mask;
 
         int chosen = -1;
-        if (g->crossesCall[v]) {
-            /* preferisci callee-saved */
+
+        /* --- Biased hint: preferisci colore del partner move-related --- */
+        int hint = hint_color(v, available, g, nextVreg, ml);
+        if (hint >= 0) {
+            chosen = hint;
+        } else if (g->crossesCall[v]) {
+            /* preferisci callee-saved per vreg live-across-call */
             uint32_t callee = available >> PHYS_CALLER_SAVED_COUNT;
             if (callee)
                 chosen = PHYS_CALLER_SAVED_COUNT + __builtin_ctz(callee);
