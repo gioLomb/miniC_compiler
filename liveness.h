@@ -1,67 +1,190 @@
 /**
  * @file liveness.h
- * @brief Liveness analysis engine shared by DCE/LICM/SR (IR front-end)
+ * @brief Liveness analysis engine shared by DCE, LICM, SR (IR front-end)
  *        and register allocation / interference-graph construction
  *        (machine-code front-end).
  *
- * Architecture
- * ------------
- * A single backward dataflow engine (liveness_computeCore) drives both
- * front-ends.  The only front-end-specific part is how uses and defs are
- * extracted from a single instruction, expressed as a callback of type
+ * ### Architecture — single engine, two front-ends
+ * A single backward dataflow engine (liveness_computeCore) drives both use
+ * cases.  The only front-end-specific logic is *how uses and defs are
+ * extracted from a single instruction*, expressed as a callback of type
  * LivenessExtractFn.  Two thin wrappers provide the public API:
  *
- *   liveness_computeIr()    — IR front-end (DCE, LICM, SR).
- *   liveness_computeMach()  — Machine-code front-end (regalloc).
+ *   - liveness_computeIr()   — IR front-end (DCE, LICM, SR).
+ *   - liveness_computeMach() — machine-code front-end (regalloc).
  *
- * Bit-set representation
- * ----------------------
- * LiveSet è un typedef di BitSet (bitset.h): tipo primitivo generico.
- * I bit rappresentano indici di variabili/temporanei assegnati da VarMap.
- * loop.h usa BitSet direttamente con bit = indici di blocchi (dominatori).
- * Stesso layout, semantica distinta — il nome del tipo chiarisce il dominio.
+ * ### Dataflow equations
+ * Standard backward liveness (Appel / EaC §10.1):
+ * ```
+ *   Use[b]    = variables read in b before being defined in b
+ *   Def[b]    = variables defined in b
+ *
+ *   LiveOut[b] = ∪ { LiveIn[s] | s ∈ succ(b) }
+ *   LiveIn[b]  = Use[b] ∪ (LiveOut[b] − Def[b])
+ * ```
+ * The fixed-point loop terminates because LiveIn sets can only grow
+ * (monotone join), and the universe of variables is finite.
+ *
+ * ### Bit-set representation
+ * LiveSet is a typedef of BitSet (bitset.h): a flat array of uint64_t words.
+ * One bit per variable id as assigned by VarMap.  All bitwise operations
+ * (union, intersection, difference, equal) are O(words) = O(⌈numVars/64⌉).
+ *
+ * Note: loop.h reuses BitSet with a different semantic (bit = block index for
+ * dominator sets).  The same layout, different interpretation — the type alias
+ * makes the intended domain clear at each call site.
+ *
+ * ### Memory
+ * All liveness data (Use, Def, LiveIn, LiveOut arrays and their bit words,
+ * liveAfter[]) is allocated from the caller-supplied Arena.  The caller
+ * destroys the arena when the analysis result is no longer needed.
+ * The VarMap embedded in LivenessResult owns a separate hash table allocated
+ * with malloc; it must be destroyed explicitly with varmap_destroy() before
+ * the arena is freed.
  */
 
 #ifndef LIVENESS_H
 #define LIVENESS_H
 
 #include <stdint.h>
-#include "bitset.h"          /* tipo primitivo BitSet                  */
+#include "bitset.h"
 #include "ir.h"
 #include "block.h"
 #include "arena.h"
 #include "varmap.h"
 #include "regalloc_utils.h"
 
+/** Number of bits per uint64_t word in a bit-set. */
 #define BITS_PER_WORD 64
 
+/**
+ * @brief A per-block or per-instruction liveness bit-set.
+ *
+ * Aliased to BitSet for domain clarity: when used in liveness.h/liveness.c
+ * each bit represents a *variable or temporary id* (as assigned by VarMap).
+ * The same underlying BitSet type is used in loop.h for dominator sets, where
+ * each bit represents a *block index* — same layout, different semantics.
+ */
 typedef BitSet LiveSet;
 
+/** Iterator type alias for traversing a LiveSet's set bits. */
 typedef BitSetIter LiveSetIter;
 
+/**
+ * @brief Initialise a LiveSet iterator over @p s.
+ *
+ * Usage:
+ * @code
+ *   int id;
+ *   for (LiveSetIter it = LIVESET_ITER(&live); LIVESET_NEXT(&it, &id); )
+ *       // id is the next live variable id
+ * @endcode
+ */
 #define LIVESET_ITER(s)          BITSET_ITER(s)
+
+/**
+ * @brief Advance a LiveSetIter and store the next live variable id in @p out_id.
+ *
+ * @return Non-zero while there are more live variable ids; 0 when exhausted.
+ */
 #define LIVESET_NEXT(it, out_id) BITSET_NEXT((it), (out_id))
 
 /* =========================================================================
  * Generic backward dataflow engine
  * ========================================================================= */
 
+/**
+ * @brief Maximum number of use or def ids extractable from a single instruction.
+ *
+ * Conservative upper bound used to size the stack arrays inside
+ * LivenessExtractFn callbacks.  For IR instructions the maximum is 2 (src1,
+ * src2); for machine instructions implicit ABI reads (e.g. all 9 caller-saved
+ * regs for CALL) can reach PHYS_CALLER_SAVED_COUNT = 9.
+ */
 #define LIVENESS_MAX_IDS 16
 
+/**
+ * @brief Callback type that extracts use and def ids from a single instruction.
+ *
+ * The engine calls this once per instruction per block during the Use/Def
+ * construction pass.  The callback must fill:
+ *   - uses[0..nUses-1] with ids of operands *read* by instruction instrIdx.
+ *   - defs[0..nDefs-1] with ids of operands *written* by instruction instrIdx.
+ * All ids must be non-negative integers compatible with the bit-set width.
+ *
+ * @param ctx       Opaque context pointer (front-end-specific data).
+ * @param instrIdx  Index of the instruction to analyse.
+ * @param uses      Output array for use ids; capacity LIVENESS_MAX_IDS.
+ * @param nUses     Set to the number of ids written into uses[].
+ * @param defs      Output array for def ids; capacity LIVENESS_MAX_IDS.
+ * @param nDefs     Set to the number of ids written into defs[].
+ */
 typedef void (*LivenessExtractFn)(void *ctx, int instrIdx,
                                    int uses[LIVENESS_MAX_IDS], int *nUses,
                                    int defs[LIVENESS_MAX_IDS], int *nDefs);
 
+/**
+ * @brief Per-block liveness sets returned by the dataflow engine.
+ *
+ * All four arrays have length nBlocks; each entry is a LiveSet of numVars bits.
+ * All bit words are allocated in a single contiguous slab from the caller's
+ * arena for cache-friendly iteration during the fixed-point loop.
+ */
 typedef struct {
-    LiveSet *Use, *Def, *LiveIn, *LiveOut;
-    int numVars, words;
+    LiveSet *Use;     /**< Use[b]: variables read in b before being defined.  */
+    LiveSet *Def;     /**< Def[b]: variables defined in b.                    */
+    LiveSet *LiveIn;  /**< LiveIn[b]: live at the entry of b.                 */
+    LiveSet *LiveOut; /**< LiveOut[b]: live at the exit of b.                 */
+    int numVars;      /**< Total number of tracked variable ids.              */
+    int words;        /**< Number of uint64_t words per LiveSet (= ⌈numVars/64⌉). */
 } LivenessBlockSets;
 
+/**
+ * @brief Run the backward liveness dataflow to a fixed point.
+ *
+ * Computes Use[], Def[], LiveIn[], and LiveOut[] for every block via the
+ * standard iterative algorithm.  Blocks marked unreachable in @p reachable
+ * are skipped entirely (neither Use/Def built nor updated in the fixed-point
+ * loop).
+ *
+ * All output sets are allocated from @p arena; they remain valid until the
+ * arena is destroyed.
+ *
+ * @param nBlocks  Number of basic blocks.
+ * @param blocks   Array of BasicBlock descriptors (start, end, succ[]).
+ * @param numVars  Number of distinct variable ids (bit-set width).
+ * @param reachable Per-block reachability flags; NULL = all blocks reachable.
+ * @param extract  Callback to extract use/def ids from one instruction.
+ * @param ctx      Opaque context forwarded to @p extract.
+ * @param arena    Arena for all output allocations.
+ * @return         Fully populated LivenessBlockSets.
+ */
 LivenessBlockSets liveness_computeCore(int nBlocks, const BasicBlock *blocks,
                                          int numVars, const char *reachable,
                                          LivenessExtractFn extract, void *ctx,
                                          Arena *arena);
 
+/**
+ * @brief Compute per-instruction liveAfter[] sets via a single backward sweep.
+ *
+ * Requires that block-level liveOut[] is already at the fixed point
+ * (call liveness_computeCore first).  For each instruction i,
+ * liveAfter[i] holds the set of variable ids live *immediately after* i
+ * has executed — i.e., the set a definition at i must not alias.
+ *
+ * Used exclusively by the machine-code front-end (interference graph
+ * construction requires per-instruction granularity).
+ *
+ * @param nBlocks      Number of basic blocks.
+ * @param blocks       BasicBlock array.
+ * @param instrCount   Total number of instructions across all blocks.
+ * @param numVars      Number of variable ids (bit-set width).
+ * @param blockLiveOut LiveOut[] from liveness_computeCore().
+ * @param extract      Use/def extraction callback.
+ * @param ctx          Opaque context forwarded to @p extract.
+ * @param arena        Arena for all output allocations.
+ * @return             Array liveAfter[instrCount], arena-allocated.
+ */
 LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
                                      int instrCount, int numVars,
                                      const LiveSet *blockLiveOut,
@@ -71,18 +194,63 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
 /* =========================================================================
  * Unified result type
  * ========================================================================= */
+
+/**
+ * @brief Combined result of a complete liveness analysis pass.
+ *
+ * - blockSets  : per-block Use/Def/LiveIn/LiveOut (always populated).
+ * - liveAfter  : per-instruction live sets (only populated by the machine
+ *                front-end; NULL for the IR front-end which does not need it).
+ * - varMap     : operand → compact-id mapping used to build the bit-sets.
+ *                Owns heap-allocated hash table memory; must be explicitly
+ *                destroyed with varmap_destroy() before the arena is freed.
+ */
 typedef struct {
-    LivenessBlockSets blockSets;
-    LiveSet          *liveAfter;
-    VarMap            varMap;
+    LivenessBlockSets blockSets;  /**< Per-block liveness sets.              */
+    LiveSet          *liveAfter;  /**< Per-instruction live sets, or NULL.   */
+    VarMap            varMap;     /**< Operand-to-id mapping (heap memory).  */
 } LivenessResult;
 
 /* =========================================================================
  * Public front-end wrappers
  * ========================================================================= */
+
+/**
+ * @brief Run liveness analysis on an IR function.
+ *
+ * Assigns a compact integer id to every distinct OPND_VAR and OPND_TEMP
+ * operand that appears in @p f, then runs the backward dataflow engine.
+ * Blocks not in @p reachable are skipped (useful for DCE, which already
+ * knows which blocks are dead).
+ *
+ * @note liveAfter is set to NULL — IR passes (DCE, LICM, SR) work at
+ *       block granularity and do not need per-instruction sets.
+ *
+ * @param f          IR function to analyse.
+ * @param reachable  Per-block reachability flags (NULL = all reachable).
+ * @param arena      Arena for all output allocations except varMap.
+ * @return           LivenessResult; varMap must be destroyed by the caller.
+ */
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
                                     Arena *arena);
 
+/**
+ * @brief Run liveness analysis on a machine-code function.
+ *
+ * Variable universe: vregs in [0, nextVreg) plus physical registers in
+ * [nextVreg, nextVreg + PHYS_ALLOCATABLE).  Both are assigned fixed ids so
+ * the interference graph can treat virtual and physical registers uniformly.
+ *
+ * Also computes per-instruction liveAfter[] (stored in LivenessResult.liveAfter)
+ * needed by ig_build() to add edges between definitions and live-at-def vregs.
+ *
+ * @param f        Machine function to analyse.
+ * @param blocks   CFG array produced by build_cfg() in regalloc.c.
+ * @param nBlocks  Number of entries in @p blocks.
+ * @param arena    Arena for all output allocations except varMap.
+ * @return         LivenessResult with liveAfter populated; varMap must be
+ *                 destroyed by the caller.
+ */
 LivenessResult liveness_computeMach(const MachFunction *f,
                                       const BasicBlock *blocks,
                                       int nBlocks, Arena *arena);
