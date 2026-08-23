@@ -37,52 +37,90 @@ INSTR_SEL_SRC   := instr_selector.c
 INTERFERENCE_SRC := interference.c
 REGALLOC_UTILS_SRC := regalloc_utils.c
 REGALLOC_SRC    := regalloc.c
-VARMAP_SRC := varmap.c
-BUCKET_SRC := bucket.c
-CONSTMAP_SRC := constmap.c
+VARMAP_SRC      := varmap.c
+BUCKET_SRC      := bucket.c
+CONSTMAP_SRC    := constmap.c
+RA_COALESCE_SRC := ra_coalesce.c
 RA_COLOR_SRC    := ra_color.c
 RA_SPILL_SRC    := ra_spill.c
-SCHED_DAG_SRC := sched_dag.c
-DYN_ARR_SRC := dynamic_array.c
+SCHED_DAG_SRC   := sched_dag.c
+DYN_ARR_SRC     := dynamic_array.c
 GLOBAL_LOWER_SRC := global_lower.c
-RA_COALESCE_SRC := ra_coalesce.c
+
 COMMON_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
-               $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC)  $(VARMAP_SRC) $(LIVENESS_SRC) $(CONSTMAP_SRC) \
-               $(CP_SRC) $(GLOBAL_LOWER_SRC) $(DYN_ARR_SRC) $(LICM_SRC) $(LOOP_SRC) $(SR_SRC) $(SCHED_DAG_SRC) $(SCHED_SRC) \
-               $(INSTR_SEL_SRC) $(INTERFERENCE_SRC) $(RA_COALESCE_SRC) $(RA_COLOR_SRC) $(RA_SPILL_SRC) $(REGALLOC_UTILS_SRC) $(BUCKET_SRC) $(REGALLOC_SRC)
+               $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) $(VARMAP_SRC) \
+               $(LIVENESS_SRC) $(CONSTMAP_SRC) $(CP_SRC) $(GLOBAL_LOWER_SRC) \
+               $(DYN_ARR_SRC) $(LICM_SRC) $(LOOP_SRC) $(SR_SRC) $(SCHED_DAG_SRC) \
+               $(SCHED_SRC) $(INSTR_SEL_SRC) $(INTERFERENCE_SRC) $(RA_COALESCE_SRC) \
+               $(RA_COLOR_SRC) $(RA_SPILL_SRC) $(REGALLOC_UTILS_SRC) $(BUCKET_SRC) $(REGALLOC_SRC)
 
 MINICC_SRCS      := $(COMMON_SRCS) parser/main.c
 TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
+                    $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
 TEST_SEMANTIC_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
-                       tests/test_semantic.c
+                      $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
+                      tests/test_semantic.c
 TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) $(OPTIMIZE_SRC) \
-                       tests/test_optimize.c
+                      $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
+                      $(OPTIMIZE_SRC) tests/test_optimize.c
 TEST_IR_SRCS      := $(COMMON_SRCS) tests/test_ir.c
 
+# ---- Backend unit tests (nuovi) ----
+# test_bucket: nessuna dipendenza da liveness/IR, solo arena + bucket.
+TEST_BUCKET_SRCS         := $(ARENA_SRC) $(BUCKET_SRC) \
+                            tests/test_bucket.c
+
+# test_regalloc_utils: usa instr_selector.h ma non liveness -> no ir.c.
+TEST_REGALLOC_UTILS_SRCS := $(ARENA_SRC) $(HASHTABLE_SRC) $(DYN_ARR_SRC) \
+                            $(VARMAP_SRC) $(REGALLOC_UTILS_SRC) $(INSTR_SEL_SRC) \
+                            tests/test_regalloc_utils.c
+
+# test_interference e test_ra_color usano liveness_computeMach() che chiama
+# ir_defines_dst / ir_operand_is_storage definite in ir.c. ir.c trascina
+# l'intera catena frontend+ottimizzatori (stesso insieme di COMMON_SRCS):
+# e' la strada piu' semplice senza introdurre nuovi file nel progetto.
+TEST_INTERFERENCE_SRCS   := $(COMMON_SRCS) \
+                            tests/test_interference.c
+TEST_RA_COLOR_SRCS       := $(COMMON_SRCS) \
+                            tests/test_ra_color.c
+
+# ============================================================
 to_objs = $(patsubst %.c,$(BUILD_DIR)/%.o,$(1))
 
-MINICC_OBJS      := $(call to_objs,$(MINICC_SRCS))
-TEST_SYMTAB_OBJS := $(call to_objs,$(TEST_SYMTAB_SRCS))
-TEST_ARENA_OBJS  := $(call to_objs,$(TEST_ARENA_SRCS))
-TEST_PASS1_OBJS  := $(call to_objs,$(TEST_PASS1_SRCS))
-TEST_SEMANTIC_OBJS := $(call to_objs,$(TEST_SEMANTIC_SRCS))
-TEST_OPTIMIZE_OBJS := $(call to_objs,$(TEST_OPTIMIZE_SRCS))
-TEST_IR_OBJS      := $(call to_objs,$(TEST_IR_SRCS))
+MINICC_OBJS          := $(call to_objs,$(MINICC_SRCS))
+TEST_SYMTAB_OBJS     := $(call to_objs,$(TEST_SYMTAB_SRCS))
+TEST_ARENA_OBJS      := $(call to_objs,$(TEST_ARENA_SRCS))
+TEST_PASS1_OBJS      := $(call to_objs,$(TEST_PASS1_SRCS))
+TEST_SEMANTIC_OBJS   := $(call to_objs,$(TEST_SEMANTIC_SRCS))
+TEST_OPTIMIZE_OBJS   := $(call to_objs,$(TEST_OPTIMIZE_SRCS))
+TEST_IR_OBJS         := $(call to_objs,$(TEST_IR_SRCS))
+TEST_BUCKET_OBJS         := $(call to_objs,$(TEST_BUCKET_SRCS))
+TEST_REGALLOC_UTILS_OBJS := $(call to_objs,$(TEST_REGALLOC_UTILS_SRCS))
+TEST_INTERFERENCE_OBJS   := $(call to_objs,$(TEST_INTERFERENCE_SRCS))
+TEST_RA_COLOR_OBJS       := $(call to_objs,$(TEST_RA_COLOR_SRCS))
 
-.PHONY: all clean check regen-scanner
+.PHONY: all clean check check-backend regen-scanner
 
-all: $(BIN_DIR)/minicc $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_pass1 $(BIN_DIR)/test_semantic $(BIN_DIR)/test_optimize $(BIN_DIR)/test_ir
+all: $(BIN_DIR)/minicc \
+     $(BIN_DIR)/test_symtab \
+     $(BIN_DIR)/test_arena \
+     $(BIN_DIR)/test_pass1 \
+     $(BIN_DIR)/test_semantic \
+     $(BIN_DIR)/test_optimize \
+     $(BIN_DIR)/test_ir \
+     $(BIN_DIR)/test_bucket \
+     $(BIN_DIR)/test_regalloc_utils \
+     $(BIN_DIR)/test_interference \
+     $(BIN_DIR)/test_ra_color
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I. -c $< -o $@
 
+# ---- Existing binaries ----
 $(BIN_DIR)/minicc: $(MINICC_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
@@ -111,11 +149,50 @@ $(BIN_DIR)/test_ir: $(TEST_IR_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
-check: $(BIN_DIR)/test_symtab $(BIN_DIR)/test_arena $(BIN_DIR)/test_optimize $(BIN_DIR)/test_ir
+# ---- Backend unit tests (nuovi) ----
+$(BIN_DIR)/test_bucket: $(TEST_BUCKET_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+$(BIN_DIR)/test_regalloc_utils: $(TEST_REGALLOC_UTILS_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+$(BIN_DIR)/test_interference: $(TEST_INTERFERENCE_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+$(BIN_DIR)/test_ra_color: $(TEST_RA_COLOR_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+# ---- Test runners ----
+check: $(BIN_DIR)/test_symtab \
+       $(BIN_DIR)/test_arena \
+       $(BIN_DIR)/test_optimize \
+       $(BIN_DIR)/test_ir \
+       $(BIN_DIR)/test_bucket \
+       $(BIN_DIR)/test_regalloc_utils \
+       $(BIN_DIR)/test_interference \
+       $(BIN_DIR)/test_ra_color
 	./$(BIN_DIR)/test_symtab
 	./$(BIN_DIR)/test_arena
 	./$(BIN_DIR)/test_optimize
 	./$(BIN_DIR)/test_ir
+	./$(BIN_DIR)/test_bucket
+	./$(BIN_DIR)/test_regalloc_utils
+	./$(BIN_DIR)/test_interference
+	./$(BIN_DIR)/test_ra_color
+
+# Esegue solo i 4 nuovi test backend (utile durante il debug del regalloc).
+check-backend: $(BIN_DIR)/test_bucket \
+               $(BIN_DIR)/test_regalloc_utils \
+               $(BIN_DIR)/test_interference \
+               $(BIN_DIR)/test_ra_color
+	./$(BIN_DIR)/test_bucket
+	./$(BIN_DIR)/test_regalloc_utils
+	./$(BIN_DIR)/test_interference
+	./$(BIN_DIR)/test_ra_color
 
 regen-scanner:
 	re2c scanner/re2c/scanner.re -o scanner/re2c/scanner_generated.c

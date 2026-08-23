@@ -106,33 +106,35 @@ void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
     (void)nextVreg;
     *n = 0;
     int r;
-    // src1/src2 base and (if any) SIB index registers are always reads
     r = regalloc_operand_reg(&in->src1);  if (r >= 0) out[(*n)++] = r;
     r = regalloc_operand_reg2(&in->src1); if (r >= 0) out[(*n)++] = r;
     r = regalloc_operand_reg(&in->src2);  if (r >= 0) out[(*n)++] = r;
     r = regalloc_operand_reg2(&in->src2); if (r >= 0) out[(*n)++] = r;
     switch (in->op) {
     case MACH_STORE:
-        /* base register of the destination MO_MEM */
         r = regalloc_operand_reg(&in->dst);  if (r >= 0) out[(*n)++] = r;
-        /* FIX: index register of the destination MO_MEM.
-         * STORE mem(base, idx, scale) reads idx to form the effective address.
-         * Without this the interference graph lacked edges between idx and
-         * other live vregs, allowing the allocator to assign them the same
-         * physical register and silently corrupt the index at runtime. */
         r = regalloc_operand_reg2(&in->dst); if (r >= 0) out[(*n)++] = r;
         break;
     case MACH_PUSH:
     case MACH_IDIV:
     case MACH_CQO:
-        // for these three, 'dst' is actually a source operand: PUSH pushes
-        // its value, IDIV divides by it, CQO sign-extends it
         r = regalloc_operand_reg(&in->dst); if (r >= 0) out[(*n)++] = r;
         break;
-    default: break;
+    default:
+        /* FIX: opcode RMW (ADD/SUB/IMUL/SAL/NEG/NOT/XOR) legge dst PRIMA
+         * di scriverlo (es. "addq %src, %dst" equivale a dst = dst + src).
+         * Senza questo, dst risulta "morto" subito dopo l'istruzione RMW
+         * nella liveness all'indietro, e ig_build() non crea l'arco di
+         * interferenza tra dst e un'altra variabile viva nella stessa
+         * finestra — l'allocatore può sovrapporre lo stesso registro
+         * fisico, corrompendo l'operando implicito in lettura a runtime. */
+        if (regalloc_is_rmw(in->op)) {
+            r = regalloc_operand_reg(&in->dst); if (r >= 0) out[(*n)++] = r;
+        }
+        break;
     }
+#undef SCHED_TRY 
 }
-
 /* =========================================================================
  * instr_implicit_uses / instr_implicit_defs
  * =========================================================================

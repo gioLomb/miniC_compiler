@@ -17,8 +17,6 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
     Buckets buckets = buckets_create(nextVreg, k);
     int remaining   = nextVreg;
 
-    // seed buckets: every node whose initial degree is already < k is
-    // trivially safe to remove first
     for (int v = 0; v < nextVreg; v++)
         if (g->degree[v] < k)
             bucket_insert(&buckets, v, g->degree[v]);
@@ -26,12 +24,9 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
     while (remaining > 0) {
         int d;
         int chosen = bucket_pop_any_low(&buckets, &d);
+        int fromBucket = (chosen >= 0);   /* FIX: traccia provenienza */
 
         if (chosen < 0) {
-            /* no node is safely colorable (all remaining have degree >= k):
-             * optimistic spill — pick the active, not-yet-bucketed node
-             * with the lowest spillCost/degree ratio as the best spill
-             * candidate (cheapest to spill relative to how much it frees up) */
             double best = 1e18;
             for (int v = 0; v < nextVreg; v++) {
                 if (!g->active[v] || buckets.inBucket[v]) continue;
@@ -40,29 +35,29 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
                                : 0.0;
                 if (ratio < best) { best = ratio; chosen = v; }
             }
-            if (chosen < 0) break; // nothing left to process
-            // clamp degree to k-1 for bucket bookkeeping consistency below
+            if (chosen < 0) break;
             d = g->degree[chosen] < k ? g->degree[chosen] : k - 1;
+            /* fromBucket resta 0: questo nodo non e' mai stato bucketizzato */
         }
 
-        bucket_remove(&buckets, chosen, d);
+        /* FIX: bucket_remove() SOLO se chosen viene realmente da un bucket.
+         * Il candidato spill scelto sopra non e' mai stato inserito. */
+        if (fromBucket)
+            bucket_remove(&buckets, chosen, d);
+
         g->active[chosen] = 0;
         remaining--;
         (*outStack)[stackLen++] = chosen;
 
-        // removing 'chosen' lowers the degree of every active neighbour by
-        // one; neighbours crossing below k must move into a lower bucket
         for (int idx = 0; idx < g->adj[chosen].len; idx++) {
             int w = g->adj[chosen].data[idx];
             if (w >= nextVreg || !g->active[w]) continue;
             int oldDeg = g->degree[w];
             g->degree[w]--;
             if (oldDeg < k) {
-                // already bucketed: move to bucket one lower
                 bucket_remove(&buckets, w, oldDeg);
                 bucket_insert(&buckets, w, oldDeg - 1);
             } else if (oldDeg == k) {
-                // just dropped below k: now guaranteed colorable, insert
                 bucket_insert(&buckets, w, k - 1);
             }
         }
@@ -71,7 +66,6 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
     buckets_free(&buckets);
     return stackLen;
 }
-
 /* =========================================================================
  * hint_color — look up a preferred color from the partner list.
  *
