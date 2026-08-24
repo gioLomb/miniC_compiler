@@ -8,6 +8,11 @@
  * trattato come use) si propaghi davvero nell'assenza di un arco nel grafo
  * di interferenza -- il sintomo osservabile che avrebbe causato la
  * corruzione silenziosa di registri nell'allocatore.
+ *
+ * Ogni chiamata a ig_build() passa firstSpillVreg = f.nextVreg: nei
+ * MachFunction sintetici qui costruiti non esistono reload/spill temp
+ * (nessun ra_spill_insert() e' mai girato), quindi nessun vreg deve essere
+ * marcato isReloadTemp.
  */
 
 #include <stdio.h>
@@ -57,7 +62,7 @@ int main(void) {
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, arena);
+        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(has_edge(&g, 0, 1) &&
                "v0 e v1 devono interferire: v0 e' letto E scritto dall'ADD RMW "
@@ -90,7 +95,7 @@ int main(void) {
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, arena);
+        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(g.crossesCall[0] == 1);
         uint32_t callerMask = (1U << PHYS_CALLER_SAVED_COUNT) - 1;
@@ -125,7 +130,7 @@ int main(void) {
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, arena);
+        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(!has_edge(&g, 0, 1) &&
                "v0 e v1 non sono mai vivi simultaneamente: nessuna interferenza attesa");
@@ -158,7 +163,7 @@ int main(void) {
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, arena);
+        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
         assert((g.excl[0] & mask) == mask);

@@ -81,7 +81,8 @@ void ig_free(IGraph *g) {
  * ========================================================================= */
 
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
-                int nextVreg, const LiveSet *liveAfter, Arena *arena) {
+                int nextVreg, const LiveSet *liveAfter, int firstSpillVreg,
+                Arena *arena) {
 
     // total node count: virtual registers + one node per allocatable physical reg
     int totalNodes = nextVreg + PHYS_ALLOCATABLE;
@@ -103,22 +104,34 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
         int_vector_init(&g.adj[i]);
 
     /* --- Parallel metadata arrays --------------------------------------- */
-    g.degree      = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.color       = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.active      = arena_alloc(arena, (size_t)totalNodes * sizeof(bool));
-    g.excl        = arena_alloc(arena, (size_t)totalNodes * sizeof(uint32_t));
-    g.spillCost   = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.crossesCall = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
+    g.degree        = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.color         = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.active        = arena_alloc(arena, (size_t)totalNodes * sizeof(bool));
+    g.excl          = arena_alloc(arena, (size_t)totalNodes * sizeof(uint32_t));
+    g.spillCost     = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g.crossesCall   = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
+    g.isReloadTemp  = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
 
-    memset(g.degree,      0,    (size_t)totalNodes * sizeof(int));
-    memset(g.excl,        0,    (size_t)totalNodes * sizeof(uint32_t));
-    memset(g.spillCost,   0,    (size_t)totalNodes * sizeof(int));
-    memset(g.crossesCall, 0,    (size_t)totalNodes * sizeof(char));
+    memset(g.degree,       0,    (size_t)totalNodes * sizeof(int));
+    memset(g.excl,         0,    (size_t)totalNodes * sizeof(uint32_t));
+    memset(g.spillCost,    0,    (size_t)totalNodes * sizeof(int));
+    memset(g.crossesCall,  0,    (size_t)totalNodes * sizeof(char));
+    memset(g.isReloadTemp, 0,    (size_t)totalNodes * sizeof(char));
 
     // color = -1 (uncoloured): 0xFF fills every byte, which is -1 in two's complement
     memset(g.color,  0xFF, (size_t)totalNodes * sizeof(int));
     // active = true: sizeof(bool)==1, so memset with 1 is correct
     memset(g.active, 1,    (size_t)totalNodes * sizeof(bool));
+
+    /* --- Reload-temp flag -------------------------------------------------
+     * Every vreg id in [firstSpillVreg, nextVreg) was introduced by a
+     * previous ra_spill_insert() round (see interference.h module doc).
+     * Clamp the lower bound so a caller passing firstSpillVreg < 0 (or a
+     * stale value larger than nextVreg) never corrupts the loop bounds. */
+    if (firstSpillVreg < nextVreg) {
+        int from = firstSpillVreg < 0 ? 0 : firstSpillVreg;
+        for (int v = from; v < nextVreg; v++) g.isReloadTemp[v] = 1;
+    }
 
     /* --- Pre-colour physical registers ---------------------------------- */
     // physical regs occupy node ids [nextVreg, nextVreg + PHYS_ALLOCATABLE)

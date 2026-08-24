@@ -22,6 +22,8 @@
  *     4. ra_collect_partners — collect non-interfering MOV pairs for biased coloring
  *     5. ra_simplify      — Briggs-optimistic: remove nodes bucket-by-degree,
  *                           picking lowest spillCost/degree if no safe node exists
+ *                           (reload/spill temps from earlier rounds are skipped
+ *                           as optimistic-spill candidates — see interference.h)
  *     6. ra_select_colors — pop stack, assign colors; prefer partner hint, then
  *                           callee-saved if live across CALL, else lowest available
  *     7. if nSpilled == 0 → finalize() and break
@@ -316,11 +318,27 @@ static void save_restore_callee(MachFunction *f)
  *   partnerlist_free() only in the break branch, leaking `pl` on every
  *   iteration that required spilling.  Fixed by calling partnerlist_free()
  *   unconditionally before either breaking or continuing.
+ *
+ * FIX (optimistic-spill thrashing on reload temps):
+ *   firstSpillVreg is snapshotted ONCE, before the loop starts, from the
+ *   vreg id boundary handed out by instruction selection.  Every vreg id at
+ *   or above this boundary — in every round, including temps introduced by
+ *   ra_spill_insert() in round 1, 2, 3, ... — is a reload/spill temp, never
+ *   a genuine IR-level variable.  Passing this fixed boundary to ig_build()
+ *   on every round lets ra_simplify() recognise and de-prioritise these
+ *   short-lived temps as optimistic-spill candidates (see interference.h),
+ *   instead of repeatedly respilling the "cheapest-looking" temp while the
+ *   real long-lived value causing register pressure is never addressed.
  * ========================================================================= */
 
 static void regalloc_function(MachFunction *f)
 {
     int frameOff = 0; // running stack frame offset; grows by 8 per spilled vreg
+
+    // Fixed boundary: any vreg id >= firstSpillVreg, in any round of the
+    // loop below, was introduced by ra_spill_insert() and is therefore a
+    // reload/spill temp rather than a real IR-level variable/temporary.
+    int firstSpillVreg = f->nextVreg;
 
     for (;;) {
         // --- Step 1: build machine-code CFG ---
@@ -337,7 +355,10 @@ static void regalloc_function(MachFunction *f)
         // Allocates a triangular bit matrix + adjacency lists.
         // Physical registers are pre-coloured nodes; excl[] masks and
         // crossesCall[] flags are set for vregs live across CALL/IDIV/SETcc.
-        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter, livArena);
+        // firstSpillVreg flags every reload/spill temp so ra_simplify() can
+        // avoid respilling them ahead of genuinely long-lived values.
+        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter,
+                            firstSpillVreg, livArena);
 
         // --- Step 4: collect MOV-related vreg pairs for biased coloring ---
         // Must happen AFTER ig_build (needs g.matrix for non-interference check)
@@ -347,7 +368,8 @@ static void regalloc_function(MachFunction *f)
         // --- Step 5: Briggs-optimistic simplification ---
         // Removes nodes from the graph in bucket-by-degree order.
         // Nodes with degree < k are trivially colorable; the rest are
-        // potential spill candidates selected by lowest spillCost/degree.
+        // potential spill candidates selected by lowest spillCost/degree,
+        // preferring non-reload-temp nodes first (see interference.h).
         int *stack    = NULL;
         int  stackLen = ra_simplify(&g, f->nextVreg, &stack);
 
@@ -363,18 +385,6 @@ static void regalloc_function(MachFunction *f)
         partnerlist_free(&pl);
 
         if (nSpilled == 0) {
-            // TEMP DEBUG
-for (int i = 0; i < f->nextVreg; i++) {
-    for (int j = i+1; j < f->nextVreg; j++) {
-        if (g.color[i] >= 0 && g.color[i] == g.color[j]) {
-            // stesso colore: DEVONO non interferire, altrimenti bug
-            long idx = (i > j) ? (long)i*(i-1)/2+j : (long)j*(j-1)/2+i;
-            int interfere = (g.matrix[idx>>6] >> (idx&63)) & 1;
-            fprintf(stderr, "vreg%d e vreg%d: colore=%d, interferenza_edge=%d\n",
-                    i, j, g.color[i], interfere);
-        }
-    }
-}
             // --- Step 7a: coloring succeeded ---
             // Substitute all vreg operands with their assigned physical registers
             // and remove any MOV that became a no-op (same src and dst).
@@ -386,7 +396,9 @@ for (int i = 0; i < f->nextVreg; i++) {
 
         // --- Step 7b: spilling required ---
         // Insert load/store code around each spilled vreg; the resulting new
-        // temporaries will be handled in the next iteration.
+        // temporaries will be handled in the next iteration (and correctly
+        // flagged isReloadTemp on all subsequent rounds, since
+        // firstSpillVreg was captured once before this loop started).
         ra_spill_insert(f, spilled, nSpilled, &frameOff);
         free(stack); free(spilled); ig_free(&g);
         arena_destroy(livArena); free(blocks);

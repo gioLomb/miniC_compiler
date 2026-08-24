@@ -3,12 +3,11 @@
 
 #include "instr_selector.h"
 
-/* Worst-case per-instruction expansion: reload src1 + reload src2 +
- * the (possibly rewritten) original instruction = 3. A store for a
- * spilled dst is emitted separately and not covered by this factor;
- * SPILL_EXTRA_MARGIN absorbs it plus any other slack. */
-#define SPILL_MAX_EXPANSION_PER_INSTR 3
-#define SPILL_EXTRA_MARGIN            16
+/* Worst-case per-instruction expansion, counted exactly for a single
+ * original instruction:
+ */
+#define SPILL_MAX_EXPANSION_PER_INSTR 7
+#define SPILL_EXTRA_MARGIN            4
 
 /**
  * @file ra_spill.h

@@ -36,8 +36,37 @@ static inline int spillset_test(const SpillSet *s, int v)
 }
 
 /* =========================================================================
- * Reload cache — avoids repeated loads of the same slot within a BB.
- * Invalidated on every label/jump/call (possible control-flow change).
+ * Reload cache — avoids repeated loads of the same slot WITHIN a single
+ * original instruction (e.g. an instruction that reads the same spilled
+ * value twice, or whose MO_MEM base and index happen to be the same
+ * spilled vreg).
+ *
+ * ---------------------------------------------------------------------
+ * IMPORTANT — cache scope and why it is per-instruction, not per-block:
+ * ---------------------------------------------------------------------
+ * A reload temporary lives from the point it is loaded to the point it is
+ * last used. If the cache were allowed to persist across MULTIPLE original
+ * instructions (as it previously did — invalidated only on label/jump/call),
+ * a spilled value that is read many times within one straight-line block
+ * (no branches at all) would produce ONE reload temporary reused across
+ * the entire span. That temporary's live range would then be just as long
+ * as the original spilled value's — the spill would not have reduced
+ * register pressure at all.
+ *
+ * Concretely: a function with a single basic block (no labels, no jumps)
+ * where a parameter is read 20 times to compute 20 values recreates the
+ * exact same interference pressure on its cached reload temp as it had on
+ * the original vreg. That temp then also fails to color, gets spilled in
+ * turn, and its own reload is again cached across the same span — the
+ * outer allocation loop in regalloc.c (`for (;;) { ... if (nSpilled==0)
+ * break; ra_spill_insert(...); }`) never converges: it hangs.
+ *
+ * Scoping the cache to a single original instruction bounds every reload
+ * temporary's live range to at most the handful of machine instructions
+ * that one original instruction expands into. Such a short-lived temp is
+ * always trivially colorable (its degree in the interference graph cannot
+ * exceed a small constant), so introducing it can itself never require
+ * another spill — guaranteeing the allocation loop terminates.
  * ========================================================================= */
 
 static inline void invalidate_cache(int *cache, int n)
@@ -49,14 +78,17 @@ static inline void invalidate_cache(int *cache, int n)
 
 /**
  * Load spilled vreg 'origVreg' from stack slot 'off' into a temporary,
- * reusing the cached temp if already loaded earlier in this block.
+ * reusing the cached temp if already loaded earlier for the SAME original
+ * instruction (see cache-scope note above for why the cache is reset before
+ * every instruction rather than persisting across the block).
  * Updates *o to reference the (cached or freshly loaded) temporary.
  */
 static void load_spilled(MachOperand *o, int origVreg, MachFunction *f,
                          int off, MachInstr *newInstrs, int *newCount,
                          int *cache)
 {
-    // cache hit: this slot was already reloaded earlier in the block
+    // cache hit: this slot was already reloaded earlier for this same
+    // original instruction (e.g. used twice, or as both base and index)
     if (cache[origVreg] >= 0) {
         o->kind   = MO_VREG;
         o->vregId = cache[origVreg];
@@ -72,7 +104,7 @@ static void load_spilled(MachOperand *o, int origVreg, MachFunction *f,
     newInstrs[(*newCount)++] = ld;
     o->kind   = MO_VREG;
     o->vregId = tmp;
-    cache[origVreg] = tmp; // remember for subsequent reads of the same slot
+    cache[origVreg] = tmp; // remember for subsequent reads within THIS instruction
 }
 
 /* =========================================================================
@@ -98,7 +130,8 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
     int *cache = malloc((size_t)origNextVreg * sizeof(int));
     invalidate_cache(cache, origNextVreg);
 
-    // worst-case overestimate: at most 3 new instructions per original one, plus margin
+    // worst-case overestimate: at most SPILL_MAX_EXPANSION_PER_INSTR new
+    // instructions per original one, plus a small fixed safety margin
     int maxNew = f->count * SPILL_MAX_EXPANSION_PER_INSTR + SPILL_EXTRA_MARGIN;
     MachInstr *newInstrs = malloc((size_t)maxNew * sizeof(MachInstr));
     int newCount      = 0;
@@ -107,8 +140,12 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
         MachInstr in    = f->instrs[i];
         int isStore     = (in.op == MACH_STORE);
 
-        // label: start of a new basic block, prior cache state no longer applies
-        if (in.op == MACH_LABEL) invalidate_cache(cache, origNextVreg);
+        // Reset the reload cache before every instruction: a cached reload
+        // must never be reused across instruction boundaries, or its live
+        // range would grow to span the whole block (see module header note
+        // above) and defeat the purpose of spilling. This subsumes the old
+        // label-only invalidation, since it now happens unconditionally.
+        invalidate_cache(cache, origNextVreg);
 
         /* ---- Reload spilled sources ---- */
         MachOperand *srcs[2] = { &in.src1, &in.src2 };
@@ -181,14 +218,14 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
             st.src1.kind   = MO_VREG;  st.src1.vregId   = in.dst.vregId;
             st.src2.kind   = MO_NONE;
             newInstrs[newCount++] = st;
-            // the value just stored is now also the freshest reload for this slot
+            // the value just stored is now also the freshest reload for this
+            // slot, but ONLY for the remainder of this same instruction's
+            // expansion (the cache is reset again at the top of the next
+            // loop iteration, see above) — kept for symmetry/documentation,
+            // harmless since nothing after this point reads the cache again
+            // within this iteration.
             cache[origDstVreg]   = in.dst.vregId;
         }
-
-        // jumps/calls: invalidate cache (the next instruction may be reached
-        // from a different predecessor with a different cache state)
-        if (regalloc_is_ctrl_transfer(in.op))
-            invalidate_cache(cache, origNextVreg);
     }
 
     free(f->instrs);

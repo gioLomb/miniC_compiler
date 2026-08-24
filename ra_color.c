@@ -27,14 +27,39 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
         int fromBucket = (chosen >= 0);   /* FIX: traccia provenienza */
 
         if (chosen < 0) {
-            double best = 1e18;
+            // No node has degree < k: must pick an optimistic spill
+            // candidate by lowest spillCost/degree ratio. Single pass over
+            // all active, non-bucketed nodes, tracking the best candidate
+            // in each of two categories simultaneously:
+            //   bestReal    — genuine IR-level variables/temporaries
+            //   bestReload  — reload/spill temps from a previous round
+            //                 (isReloadTemp[v] == 1, see interference.h)
+            // Real candidates are strictly preferred: reload temps have a
+            // naturally tiny spillCost (2-3 def/use sites) that makes them
+            // look "cheapest" by the ratio metric even though respilling
+            // them never relieves the actual register pressure. The reload
+            // candidate is kept only as a fallback for the rare case where
+            // nothing but reload temps remains active (tracked in one pass
+            // instead of two full scans for efficiency).
+            double bestRealRatio = 1e18, bestReloadRatio = 1e18;
+            int    bestReal = -1,        bestReload = -1;
+
             for (int v = 0; v < nextVreg; v++) {
                 if (!g->active[v] || buckets.inBucket[v]) continue;
                 double ratio = g->degree[v] > 0
                                ? (double)g->spillCost[v] / g->degree[v]
                                : 0.0;
-                if (ratio < best) { best = ratio; chosen = v; }
+                if (g->isReloadTemp[v]) {
+                    if (ratio < bestReloadRatio) { bestReloadRatio = ratio; bestReload = v; }
+                } else {
+                    if (ratio < bestRealRatio) { bestRealRatio = ratio; bestReal = v; }
+                }
             }
+
+            // prefer a real candidate; fall back to a reload temp only if
+            // no real candidate remains active (guarantees progress)
+            chosen = (bestReal >= 0) ? bestReal : bestReload;
+
             if (chosen < 0) break;
             d = g->degree[chosen] < k ? g->degree[chosen] : k - 1;
             /* fromBucket resta 0: questo nodo non e' mai stato bucketizzato */

@@ -37,12 +37,27 @@
  * colour selector then prefers callee-saved registers for @p v to minimise
  * push/pop overhead in the prologue/epilogue.
  *
+ * Reload-temp flag
+ * -----------------
+ * @c isReloadTemp[v] is 1 if @p v is a reload/spill temporary introduced by
+ * ra_spill_insert() in a previous round of the same function's regalloc
+ * loop (see ig_build()'s firstSpillVreg parameter).  Such temps are scoped
+ * to 2-3 instructions by construction (one load-use or def-store), so they
+ * naturally have a very low spillCost.  Left unguarded, the Briggs-optimistic
+ * spill heuristic in ra_simplify() picks them as the "cheapest" candidate by
+ * the spillCost/degree ratio, even though respilling them does nothing to
+ * relieve real register pressure — that pressure comes from other, genuinely
+ * long-lived values.  This produced observed pathological cases: a single
+ * value bounced through 15+ stack slots across that many regalloc rounds
+ * before the heuristic finally picked a real candidate.  ra_simplify() uses
+ * this flag to prefer non-reload-temp candidates first.
+ *
  * Lifetime
  * --------
  * Fixed-size arrays (matrix, degree, color, active, excl, spillCost,
- * crossesCall) are allocated from the caller-supplied arena.  Adjacency
- * list data (adj[i].data) is heap-allocated by IntVector and must be
- * released via ig_free() before the arena is destroyed.
+ * crossesCall, isReloadTemp) are allocated from the caller-supplied arena.
+ * Adjacency list data (adj[i].data) is heap-allocated by IntVector and must
+ * be released via ig_free() before the arena is destroyed.
  */
 
 #ifndef INTERFERENCE_H
@@ -94,6 +109,13 @@ typedef struct {
     char     *crossesCall;  /**< 1 if the vreg is live across at least one CALL.
                              *   Used by colour selector to prefer callee-saved regs,
                              *   reducing push/pop overhead in the function frame.  */
+    char     *isReloadTemp; /**< 1 if this node is a reload/spill temp introduced
+                             *   by a previous ra_spill_insert() round (see the
+                             *   module-level doc above and ig_build()'s
+                             *   firstSpillVreg parameter). Consulted by
+                             *   ra_simplify() to avoid respilling short-lived
+                             *   spill-code temporaries ahead of genuinely
+                             *   long-lived values.                              */
 } IGraph;
 
 /**
@@ -121,6 +143,9 @@ typedef struct {
  *   - SETcc instructions add RAX to @c excl for live vregs, because SETcc writes
  *     %al (low byte of RAX) and a vreg in RAX would alias the result.
  *
+ *   - Every node v with @p firstSpillVreg <= v < @p nextVreg has
+ *     @c isReloadTemp[v] set to 1 (see module-level doc and IGraph.isReloadTemp).
+ *
  * Physical registers are pre-coloured: color[nextVreg + p] = p for
  * p in [0, PHYS_ALLOCATABLE).  They are always active and participate in
  * interference edges so the allocator never assigns a conflicting colour.
@@ -135,11 +160,18 @@ typedef struct {
  * @param nBlocks    Number of entries in @p blocks.
  * @param nextVreg   Number of virtual registers in @p f (first physical reg id).
  * @param liveAfter  Per-instruction live sets from liveness analysis.
+ * @param firstSpillVreg  Vreg id boundary marking reload temps: any node v
+ *        with firstSpillVreg <= v < nextVreg is flagged isReloadTemp = 1.
+ *        Pass a value <= 0 (or == nextVreg) to mark none.  The caller should
+ *        snapshot f->nextVreg once before the first regalloc round and pass
+ *        that same fixed value on every subsequent round, so temps
+ *        introduced in round 1 stay correctly flagged in round 2, 3, etc.
  * @param arena      Arena for all IGraph fixed-size arrays.
  * @return           Fully initialised IGraph; call @c ig_free() when done.
  */
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
-                int nextVreg, const LiveSet *liveAfter, Arena *arena);
+                int nextVreg, const LiveSet *liveAfter, int firstSpillVreg,
+                Arena *arena);
 
 /**
  * @brief Free the heap-allocated adjacency-list data of every node.
