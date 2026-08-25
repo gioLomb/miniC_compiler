@@ -18,57 +18,29 @@ int regalloc_spill_weight(int loopDepth) {
     return weights[loopDepth];
 }
 
-/* =========================================================================
- * Operand -> register-id helpers (file-internal)
- * =========================================================================
- * These mirror the sched_utils.h helpers but operate in the register-
- * allocator's id space: physical registers are represented as raw
- * MachPhysReg values (not offset by nextVreg). PHYS_AL is normalised to
- * PHYS_RAX before graph construction so the allocator never sees the alias.
- * ========================================================================= */
+/* regalloc_utils.c */
 
-/**
- * @brief Extract the primary register id from a MachOperand (regalloc view).
- *
- * MO_VREG -> vregId
- * MO_PHYS -> physReg  (PHYS_AL normalised to PHYS_RAX)
- * MO_MEM  -> baseVreg of the SIB addressing mode
- * other   -> -1
- */
-static inline int regalloc_operand_reg(const MachOperand *o) {
+// FIX: manca offset nextVreg per MO_PHYS (bug id-space, vedi header)
+static inline int regalloc_operand_reg(const MachOperand *o, int nextVreg) {
     switch (o->kind) {
     case MO_VREG: return o->vregId;
-    // %al and %rax are the same architectural register at different
-    // widths: normalising here avoids treating them as distinct nodes
-    // in the interference graph
-    case MO_PHYS: return (o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg;
+    // stesso schema id di sched_reg() (sched_utils.h) e di instr_implicit_uses/defs:
+    // fisico P -> id (nextVreg + P), cosi' fisici e virtuali non collidono nel bitset
+    case MO_PHYS: return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
     case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
     default:      return -1;
     }
 }
 
-/**
- * @brief Extract the *index* register id from an MO_MEM operand.
- *
- * Returns `indexVreg` when the operand uses scaled-index addressing;
- * returns -1 for all other kinds or when `indexVreg` is absent.
- */
+// invariata: baseVreg/indexVreg in MO_MEM sono sempre id di vreg puri, mai fisici
 static inline int regalloc_operand_reg2(const MachOperand *o) {
     if (o->kind == MO_MEM && o->mem.indexVreg >= 0)
         return o->mem.indexVreg;
     return -1;
 }
 
-/* =========================================================================
- * instr_def — single register defined by an instruction
- * ========================================================================= */
-
 int instr_def(const MachInstr *in, int nextVreg) {
-    (void)nextVreg;
     switch (in->op) {
-    // these opcodes never write a result register: comparisons only set
-    // flags, control-flow/CALL/RET/PUSH/STORE/CQO/structural markers write
-    // to memory, the stack, or nowhere at all
     case MACH_CMP: case MACH_TEST:
     case MACH_JMP: case MACH_JE: case MACH_JNE:
     case MACH_JL:  case MACH_JLE: case MACH_JG: case MACH_JGE:
@@ -78,62 +50,33 @@ int instr_def(const MachInstr *in, int nextVreg) {
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
         return -1;
     default:
-        // every other opcode writes its result into dst
-        return regalloc_operand_reg(&in->dst);
+        return regalloc_operand_reg(&in->dst, nextVreg);   // FIX: passa nextVreg
     }
 }
 
-/* =========================================================================
- * instr_uses — explicit register reads
- * ========================================================================= */
-
-/**
- * @brief Collect all registers explicitly read by @p in into @p out[].
- *
- * Fills @p out (caller provides space for at least LIVENESS_MAX_IDS ints)
- * with the ids of every register the instruction reads. Includes:
- *   - Primary and index registers of src1, src2.
- *   - For STORE: primary and index registers of dst.mem — STORE reads both
- *     the base and the index to compute the memory address.
- *     **[BUG FIX]** Previously only the base register was extracted for
- *     STORE, causing the interference graph to miss edges between the index
- *     vreg and other live vregs. With a single physical register assigned
- *     to both the index and a live variable, the store would silently
- *     corrupt the variable's value.
- *   - For PUSH, IDIV, CQO: primary register of dst (read before use).
- */
 void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
-    (void)nextVreg;
     *n = 0;
     int r;
-    r = regalloc_operand_reg(&in->src1);  if (r >= 0) out[(*n)++] = r;
-    r = regalloc_operand_reg2(&in->src1); if (r >= 0) out[(*n)++] = r;
-    r = regalloc_operand_reg(&in->src2);  if (r >= 0) out[(*n)++] = r;
-    r = regalloc_operand_reg2(&in->src2); if (r >= 0) out[(*n)++] = r;
+    r = regalloc_operand_reg(&in->src1, nextVreg);  if (r >= 0) out[(*n)++] = r;  // FIX
+    r = regalloc_operand_reg2(&in->src1);           if (r >= 0) out[(*n)++] = r;
+    r = regalloc_operand_reg(&in->src2, nextVreg);  if (r >= 0) out[(*n)++] = r;  // FIX
+    r = regalloc_operand_reg2(&in->src2);           if (r >= 0) out[(*n)++] = r;
     switch (in->op) {
     case MACH_STORE:
-        r = regalloc_operand_reg(&in->dst);  if (r >= 0) out[(*n)++] = r;
-        r = regalloc_operand_reg2(&in->dst); if (r >= 0) out[(*n)++] = r;
+        r = regalloc_operand_reg(&in->dst, nextVreg);  if (r >= 0) out[(*n)++] = r; // FIX
+        r = regalloc_operand_reg2(&in->dst);           if (r >= 0) out[(*n)++] = r;
         break;
     case MACH_PUSH:
     case MACH_IDIV:
     case MACH_CQO:
-        r = regalloc_operand_reg(&in->dst); if (r >= 0) out[(*n)++] = r;
+        r = regalloc_operand_reg(&in->dst, nextVreg); if (r >= 0) out[(*n)++] = r;  // FIX
         break;
     default:
-        /* FIX: opcode RMW (ADD/SUB/IMUL/SAL/NEG/NOT/XOR) legge dst PRIMA
-         * di scriverlo (es. "addq %src, %dst" equivale a dst = dst + src).
-         * Senza questo, dst risulta "morto" subito dopo l'istruzione RMW
-         * nella liveness all'indietro, e ig_build() non crea l'arco di
-         * interferenza tra dst e un'altra variabile viva nella stessa
-         * finestra — l'allocatore può sovrapporre lo stesso registro
-         * fisico, corrompendo l'operando implicito in lettura a runtime. */
         if (regalloc_is_rmw(in->op)) {
-            r = regalloc_operand_reg(&in->dst); if (r >= 0) out[(*n)++] = r;
+            r = regalloc_operand_reg(&in->dst, nextVreg); if (r >= 0) out[(*n)++] = r; // FIX
         }
         break;
     }
-#undef SCHED_TRY 
 }
 /* =========================================================================
  * instr_implicit_uses / instr_implicit_defs

@@ -67,8 +67,9 @@ TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARE
                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
                       $(OPTIMIZE_SRC) tests/test_optimize.c
 TEST_IR_SRCS      := $(COMMON_SRCS) tests/test_ir.c
+TEST_SVN_SRCS      := $(COMMON_SRCS) test_svn.c
 
-# ---- Backend unit tests (nuovi) ----
+# ---- Backend unit tests ----
 # test_bucket: nessuna dipendenza da liveness/IR, solo arena + bucket.
 TEST_BUCKET_SRCS         := $(ARENA_SRC) $(BUCKET_SRC) \
                             tests/test_bucket.c
@@ -87,6 +88,14 @@ TEST_INTERFERENCE_SRCS   := $(COMMON_SRCS) \
 TEST_RA_COLOR_SRCS       := $(COMMON_SRCS) \
                             tests/test_ra_color.c
 
+# test_ra_spill: NUOVO. Costruisce MachFunction sintetiche e chiama
+# ra_spill_insert() direttamente. Serve solo ra_spill.c + regalloc_utils.c
+# (per regalloc_is_rmw) + arena.c (indirettamente incluso via instr_selector.h
+# -> ir.h -> arena non necessario a runtime, ma instr_selector.h/ir.h non
+# richiedono simboli extra): nessuna dipendenza dal resto del frontend/IR.
+TEST_RA_SPILL_SRCS       := $(REGALLOC_UTILS_SRC) $(RA_SPILL_SRC) \
+                            tests/test_ra_spill.c
+
 # ============================================================
 to_objs = $(patsubst %.c,$(BUILD_DIR)/%.o,$(1))
 
@@ -97,10 +106,12 @@ TEST_PASS1_OBJS      := $(call to_objs,$(TEST_PASS1_SRCS))
 TEST_SEMANTIC_OBJS   := $(call to_objs,$(TEST_SEMANTIC_SRCS))
 TEST_OPTIMIZE_OBJS   := $(call to_objs,$(TEST_OPTIMIZE_SRCS))
 TEST_IR_OBJS         := $(call to_objs,$(TEST_IR_SRCS))
+TEST_SVN_OBJS        := $(call to_objs,$(TEST_SVN_SRCS))
 TEST_BUCKET_OBJS         := $(call to_objs,$(TEST_BUCKET_SRCS))
 TEST_REGALLOC_UTILS_OBJS := $(call to_objs,$(TEST_REGALLOC_UTILS_SRCS))
 TEST_INTERFERENCE_OBJS   := $(call to_objs,$(TEST_INTERFERENCE_SRCS))
 TEST_RA_COLOR_OBJS       := $(call to_objs,$(TEST_RA_COLOR_SRCS))
+TEST_RA_SPILL_OBJS       := $(call to_objs,$(TEST_RA_SPILL_SRCS))
 
 .PHONY: all clean check check-backend regen-scanner
 
@@ -111,10 +122,12 @@ all: $(BIN_DIR)/minicc \
      $(BIN_DIR)/test_semantic \
      $(BIN_DIR)/test_optimize \
      $(BIN_DIR)/test_ir \
+     $(BIN_DIR)/test_svn \
      $(BIN_DIR)/test_bucket \
      $(BIN_DIR)/test_regalloc_utils \
      $(BIN_DIR)/test_interference \
-     $(BIN_DIR)/test_ra_color
+     $(BIN_DIR)/test_ra_color \
+     $(BIN_DIR)/test_ra_spill
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -149,7 +162,11 @@ $(BIN_DIR)/test_ir: $(TEST_IR_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
-# ---- Backend unit tests (nuovi) ----
+$(BIN_DIR)/test_svn: $(TEST_SVN_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
+# ---- Backend unit tests ----
 $(BIN_DIR)/test_bucket: $(TEST_BUCKET_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
@@ -166,33 +183,44 @@ $(BIN_DIR)/test_ra_color: $(TEST_RA_COLOR_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
+# NUOVO: test_ra_spill (ra_spill.c non aveva alcun test dedicato).
+$(BIN_DIR)/test_ra_spill: $(TEST_RA_SPILL_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(LDFLAGS) $^ -o $@
+
 # ---- Test runners ----
 check: $(BIN_DIR)/test_symtab \
        $(BIN_DIR)/test_arena \
        $(BIN_DIR)/test_optimize \
        $(BIN_DIR)/test_ir \
+       $(BIN_DIR)/test_svn \
        $(BIN_DIR)/test_bucket \
        $(BIN_DIR)/test_regalloc_utils \
        $(BIN_DIR)/test_interference \
-       $(BIN_DIR)/test_ra_color
+       $(BIN_DIR)/test_ra_color \
+       $(BIN_DIR)/test_ra_spill
 	./$(BIN_DIR)/test_symtab
 	./$(BIN_DIR)/test_arena
 	./$(BIN_DIR)/test_optimize
 	./$(BIN_DIR)/test_ir
+	./$(BIN_DIR)/test_svn
 	./$(BIN_DIR)/test_bucket
 	./$(BIN_DIR)/test_regalloc_utils
 	./$(BIN_DIR)/test_interference
 	./$(BIN_DIR)/test_ra_color
+	./$(BIN_DIR)/test_ra_spill
 
-# Esegue solo i 4 nuovi test backend (utile durante il debug del regalloc).
+# Esegue solo i test backend (utile durante il debug del regalloc).
 check-backend: $(BIN_DIR)/test_bucket \
                $(BIN_DIR)/test_regalloc_utils \
                $(BIN_DIR)/test_interference \
-               $(BIN_DIR)/test_ra_color
+               $(BIN_DIR)/test_ra_color \
+               $(BIN_DIR)/test_ra_spill
 	./$(BIN_DIR)/test_bucket
 	./$(BIN_DIR)/test_regalloc_utils
 	./$(BIN_DIR)/test_interference
 	./$(BIN_DIR)/test_ra_color
+	./$(BIN_DIR)/test_ra_spill
 
 regen-scanner:
 	re2c scanner/re2c/scanner.re -o scanner/re2c/scanner_generated.c

@@ -12,6 +12,23 @@
  *
  * Compilare con -fsanitize=address,undefined rende visibile la corruzione
  * anche quando non produce un crash immediato.
+ *
+ * ---------------------------------------------------------------------
+ * FIX applicato in questa versione: build_clique()/build_path() NON
+ * allocavano ne' azzeravano g.isReloadTemp. ra_simplify() (ra_color.c)
+ * legge pero' g->isReloadTemp[v] per ogni nodo attivo non bucketizzato nel
+ * ramo di spill ottimistico — con isReloadTemp puntatore non inizializzato
+ * (IGraph e' una variabile locale non zero-init, "IGraph g; g.n = n;")
+ * questo e' un accesso a memoria indefinita, non solo un valore sbagliato:
+ * il crash puo' non manifestarsi in build normale (garbage che capita a
+ * essere leggibile) ma AddressSanitizer/Valgrind lo segnalano sempre.
+ * Esempio concreto: PASS 1 (cricca di 15 nodi, k=14) entra SUBITO nel ramo
+ * ottimistico al primo bucket_pop_any_low() (nessun nodo ha grado<k), e per
+ * ognuno degli score valuta `if (g->isReloadTemp[v])` — con isReloadTemp
+ * non allocato questo legge un puntatore casuale della porzione di stack
+ * riusata da chiamate precedenti. Fix: allocare+azzerare isReloadTemp come
+ * gli altri campi paralleli.
+ * ---------------------------------------------------------------------
  */
 
 #include <stdio.h>
@@ -42,6 +59,10 @@ static IGraph build_clique(int n, Arena *arena) {
     g.excl        = arena_alloc(arena, (size_t)n * sizeof(uint32_t));
     g.spillCost   = arena_alloc(arena, (size_t)n * sizeof(int));
     g.crossesCall = arena_alloc(arena, (size_t)n * sizeof(char));
+    /* FIX: isReloadTemp era assente qui — ra_simplify() lo legge sempre
+     * nel ramo di spill ottimistico (vedi nota di modulo sopra). */
+    g.isReloadTemp = arena_alloc(arena, (size_t)n * sizeof(char));
+    memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
 
     for (int i = 0; i < n; i++) {
         int_vector_init(&g.adj[i]);
@@ -79,6 +100,8 @@ static IGraph build_path(int n, Arena *arena) {
     g.excl        = arena_alloc(arena, (size_t)n * sizeof(uint32_t));
     g.spillCost   = arena_alloc(arena, (size_t)n * sizeof(int));
     g.crossesCall = arena_alloc(arena, (size_t)n * sizeof(char));
+    g.isReloadTemp = arena_alloc(arena, (size_t)n * sizeof(char)); /* FIX: vedi build_clique */
+    memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
     for (int i = 0; i < n; i++) {
         int_vector_init(&g.adj[i]);
         g.degree[i] = 0; g.color[i] = -1; g.active[i] = true;
@@ -226,10 +249,12 @@ int main(void) {
         g.excl        = arena_alloc(arena, (size_t)n * sizeof(uint32_t));
         g.spillCost   = arena_alloc(arena, (size_t)n * sizeof(int));
         g.crossesCall = arena_alloc(arena, (size_t)n * sizeof(char));
+        g.isReloadTemp = arena_alloc(arena, (size_t)n * sizeof(char));
         memset(g.degree, 0, (size_t)n * sizeof(int));
         memset(g.excl, 0, (size_t)n * sizeof(uint32_t));
         memset(g.spillCost, 0, (size_t)n * sizeof(int));
         memset(g.crossesCall, 0, (size_t)n * sizeof(char));
+        memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
         g.active[0] = true; g.active[1] = true;
         g.color[0] = -1;
         g.color[1] = 5;          /* partner "gia' colorato" (fuori da Simplify) */
@@ -243,9 +268,106 @@ int main(void) {
 
         int nSpilled = ra_select_colors(&g, n, stack, 1, spilled, &pl);
         assert(nSpilled == 0);
-        assert(g.color[0] == 5 && "il biased coloring deve riusare il colore del partner");
+        assert(g.color[0] == 5 && "il biased coloring deve riusare il colore 5 del partner");
 
         printf("PASS 4 ok: biased coloring riusa il colore 5 del partner non interferente.\n");
+        free(pl.pairs);
+        arena_destroy(arena);
+    }
+
+    /* ================================================================
+     * PASS 5: preferenza reload-temp — cricca di k+1 nodi con il nodo 0
+     * flaggato isReloadTemp=1 e spillCost artificialmente MINIMO (ratio
+     * spillCost/degree piu' basso di tutti). Senza la de-prioritizzazione
+     * documentata in interference.h, l'euristica ottimistica sceglierebbe
+     * SEMPRE il nodo col ratio piu' basso in assoluto, cioe' il reload
+     * temp — respillandolo all'infinito senza mai alleviare la vera
+     * pressione sui registri (vedi bug storico "15+ stack slot" citato
+     * nel modulo). ra_simplify() deve invece preferire un candidato REALE
+     * (bestReal) anche se il suo ratio e' peggiore.
+     * ================================================================ */
+    {
+        int n = PHYS_ALLOCATABLE + 1; /* 15: nessun nodo ha grado<k all'inizio */
+        Arena *arena = arena_create(0);
+        IGraph g = build_clique(n, arena);
+
+        /* nodo 0: reload temp con costo di spill quasi nullo -> ratio minimo */
+        g.isReloadTemp[0] = 1;
+        g.spillCost[0]    = 1;
+        /* tutti gli altri: nodi "reali" con costo alto -> ratio alto */
+        for (int v = 1; v < n; v++) g.spillCost[v] = 10000;
+
+        int *stack;
+        int stackLen = ra_simplify(&g, n, &stack);
+        assert(stackLen == n);
+
+        /* stack[0] = primo nodo rimosso = la prima scelta ottimistica
+         * (nessun nodo bucketizzato al primo giro: tutti grado k). */
+        assert(stack[0] != 0 &&
+               "il primo spill ottimistico non deve mai cadere sul reload-temp "
+               "quando esiste un candidato reale, indipendentemente dal ratio");
+
+        printf("PASS 5 ok: ra_simplify preferisce un candidato reale al reload-temp "
+               "anche con ratio spillCost/degree peggiore.\n");
+        free(stack);
+        arena_destroy(arena);
+    }
+
+    /* ================================================================
+     * PASS 6: hint multipli — il primo partner in ordine di scansione ha
+     * un colore gia' assegnato ma NON disponibile (escluso via excl[]);
+     * hint_color deve scartarlo e proseguire al partner successivo, la
+     * cui colorazione E' disponibile.
+     *
+     * v0 (da colorare) non interferisce con A ne' con B. A e' precolorato
+     * a 0, ma 0 e' forzato non disponibile per v0 tramite excl[0]=bit0.
+     * B e' precolorato a 3 (disponibile). pl = [(v0,A), (v0,B)] in questo
+     * ordine: hint_color deve saltare A e restituire 3 da B.
+     * ================================================================ */
+    {
+        int n = 3; /* 0=v0, 1=A, 2=B */
+        Arena *arena = arena_create(0);
+        IGraph g;
+        g.n = n;
+        g.matrix = arena_alloc(arena, sizeof(uint64_t));
+        memset(g.matrix, 0, sizeof(uint64_t)); /* nessuna interferenza tra i 3 nodi */
+        g.adj = arena_alloc(arena, (size_t)n * sizeof(AdjList));
+        for (int i = 0; i < n; i++) int_vector_init(&g.adj[i]);
+        g.degree       = arena_alloc(arena, (size_t)n * sizeof(int));
+        g.color        = arena_alloc(arena, (size_t)n * sizeof(int));
+        g.active       = arena_alloc(arena, (size_t)n * sizeof(bool));
+        g.excl         = arena_alloc(arena, (size_t)n * sizeof(uint32_t));
+        g.spillCost    = arena_alloc(arena, (size_t)n * sizeof(int));
+        g.crossesCall  = arena_alloc(arena, (size_t)n * sizeof(char));
+        g.isReloadTemp = arena_alloc(arena, (size_t)n * sizeof(char));
+        memset(g.degree, 0, (size_t)n * sizeof(int));
+        memset(g.excl, 0, (size_t)n * sizeof(uint32_t));
+        memset(g.spillCost, 0, (size_t)n * sizeof(int));
+        memset(g.crossesCall, 0, (size_t)n * sizeof(char));
+        memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
+        g.active[0] = g.active[1] = g.active[2] = true;
+
+        g.color[0] = -1;   /* v0: da colorare */
+        g.color[1] = 0;    /* A: gia' colorato a 0 */
+        g.color[2] = 3;    /* B: gia' colorato a 3 */
+        g.excl[0]  = (1u << 0); /* v0 non puo' MAI ricevere il colore 0 */
+
+        int stack[1] = { 0 };
+        int spilled[1];
+        PartnerList pl = { NULL, 0, 0 };
+        pl.pairs = malloc(2 * sizeof *pl.pairs);
+        pl.pairs[0] = (PartnerPair){ .u = 0, .v = 1 }; /* A: colore 0, non disponibile */
+        pl.pairs[1] = (PartnerPair){ .u = 0, .v = 2 }; /* B: colore 3, disponibile */
+        pl.count = 2; pl.cap = 2;
+
+        int nSpilled = ra_select_colors(&g, n, stack, 1, spilled, &pl);
+        assert(nSpilled == 0);
+        assert(g.color[0] == 3 &&
+               "hint del primo partner (colore escluso) deve essere scartato; "
+               "il secondo partner (colore 3, disponibile) va usato");
+
+        printf("PASS 6 ok: hint_color scarta un partner con colore non disponibile "
+               "e usa correttamente il successivo.\n");
         free(pl.pairs);
         arena_destroy(arena);
     }

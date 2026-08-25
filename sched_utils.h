@@ -39,7 +39,7 @@
 
 #ifndef SCHED_UTILS_H
 #define SCHED_UTILS_H
-
+#include "regalloc_utils.h" //TODO
 #include "instr_selector.h"
 
 /* =========================================================================
@@ -272,6 +272,23 @@ static inline int sched_def(const MachInstr *in, int nextVreg) {
  * @param out      Output array; caller must provide at least 5 entries.
  * @param n        Set to the number of ids written into @p out.
  */
+/**
+ * @brief Collect all register ids read (used) by instruction @p in.
+ *
+ * Fills @p out with the ids of every register the instruction reads,
+ * including SIB index registers and instruction-specific implicit reads:
+ *   - STORE: reads both base and index registers of the destination MO_MEM
+ *            (the address is computed from them).
+ *   - PUSH:  reads the dst register (source of the stack write).
+ *   - IDIV:  reads the dst register (the divisor operand).
+ *   - CQO:   reads the dst register (RAX, the value to sign-extend).
+ *   - RMW:   (ADD, SUB, IMUL, SAL, NEG, NOT, XOR) dst is read before being written.
+ *
+ * @param in       Instruction to inspect.
+ * @param nextVreg Base offset for physical-register ids.
+ * @param out      Output array; caller must provide at least 5 entries.
+ * @param n        Set to the number of ids written into @p out.
+ */
 static inline void sched_uses(const MachInstr *in, int nextVreg,
                                int out[], int *n) {
     *n = 0;
@@ -286,7 +303,6 @@ static inline void sched_uses(const MachInstr *in, int nextVreg,
 
     // instruction-specific additional uses not visible in src1/src2
     switch (in->op) {
-    
     case MACH_STORE:
         // dst is a MO_MEM address: both base and index are read to form the EA
         SCHED_TRY(sched_reg    (&in->dst, nextVreg));
@@ -298,7 +314,13 @@ static inline void sched_uses(const MachInstr *in, int nextVreg,
         // dst field holds the source value (push) or divisor/input (idiv/cqo)
         SCHED_TRY(sched_reg(&in->dst, nextVreg));
         break;
-    default: break;
+    default:
+        // FIX: Istruzioni Read-Modify-Write (ADD, SUB, IMUL, SAL, NEG, NOT, XOR)
+        // leggono 'dst' prima di scriverci.
+        if (regalloc_is_rmw(in->op)) {
+            SCHED_TRY(sched_reg(&in->dst, nextVreg));
+        }
+        break;
     }
 #undef SCHED_TRY
 }
