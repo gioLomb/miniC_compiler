@@ -113,8 +113,8 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
     int *blockIdx = malloc((size_t)(count > 0 ? count : 1) * sizeof(int));
     int nLabels = 0;
     for (int b = 0; b < count; b++) {
-        if (f->instrs[blocks[b].start].op == MACH_LABEL) {
-            labelIds[nLabels] = f->instrs[blocks[b].start].dst.labelId;
+        if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
+            labelIds[nLabels] = f->instrs[blocks[b].range.start].dst.labelId;
             blockIdx[nLabels] = b;
             nLabels++;
         }
@@ -122,7 +122,7 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
 
     // Wire CFG edges from each block's last instruction.
     for (int b = 0; b < count; b++) {
-        int last = blocks[b].end - 1;
+        int last = blocks[b].range.end - 1;
         switch (f->instrs[last].op) {
         case MACH_JMP:
             // Unconditional jump: single successor = jump target.

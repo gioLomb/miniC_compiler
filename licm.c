@@ -113,7 +113,7 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
 
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
+        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!ir_defines_dst(in->op) || !ir_operand_is_storage(in->dst.kind)) continue;
             int id = varmap_operand_id(vm, in->dst);
@@ -154,7 +154,7 @@ static int single_loop_def_invariant(IRFunction *f, Loop *L, Operand op,
     int found = -1;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
+        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!ir_defines_dst(in->op)) continue;
             if (in->dst.kind != op.kind) continue;
@@ -273,7 +273,7 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
     // seed: scan the loop body for pure instructions and build usedBy
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
+        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
             IRInstr *in = &f->instrs[j];
 
             // only pure instructions that write a storage dst are candidates
@@ -360,7 +360,7 @@ static inline int dominates_all_exits(Loop *L, LiveSet *Dom, int blk) {
  */
 static inline int instr_block(IRFunction *f, int j) {
     for (int b = 0; b < f->blockCount; b++)
-        if (j >= f->blocks[b].bb.start && j < f->blocks[b].bb.end) return b;
+        if (j >= f->blocks[b].bb.range.start && j < f->blocks[b].bb.range.end) return b;
     return -1;
 }
 
@@ -444,7 +444,7 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     // insertAt: first instruction index of the loop header block —
     // hoisted instructions are placed in the pre-header just before it
-    int insertAt = f->blocks[header].bb.start;
+    int insertAt = f->blocks[header].bb.range.start;
 
     IRInstr *newInstrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
     int newCount = 0;
@@ -480,12 +480,12 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
             // pre-header now contains exactly the hoisted instructions
-            f->blocks[b].bb.start = phMovedStart;
-            f->blocks[b].bb.end   = phNewEnd;
+            f->blocks[b].bb.range.start = phMovedStart;
+            f->blocks[b].bb.range.end   = phNewEnd;
             continue;
         }
 
-        int oldS = f->blocks[b].bb.start, oldE = f->blocks[b].bb.end;
+        int oldS = f->blocks[b].bb.range.start, oldE = f->blocks[b].bb.range.end;
         int newS = -1, newE = -1;
 
         for (int j = oldS; j < oldE; j++) {
@@ -494,8 +494,8 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
             newE = oldToNew[j] + 1;
         }
 
-        f->blocks[b].bb.start = (newS == -1) ? 0 : newS;
-        f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
+        f->blocks[b].bb.range.start = (newS == -1) ? 0 : newS;
+        f->blocks[b].bb.range.end   = (newE == -1) ? 0 : newE;
     }
 
     f->curBlockStart = 0;

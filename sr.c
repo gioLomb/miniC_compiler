@@ -118,7 +118,7 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
     // Count definitions of each variable in the loop body
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start; j < f->blocks[b].bb.end; j++) {
+        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
             IRInstr *in = &f->instrs[j];
             if (!ir_defines_dst(in->op)) continue;
             int id = varmap_operand_id(vm, in->dst);
@@ -129,8 +129,8 @@ static int findInductionBase(IRFunction *f, Loop *L, VarMap *vm,
     // Filter candidate basic induction variables (pattern: dst = dst +/- CONST)
     for (int i = 0; i < L->bodyCount && count < MAX_IVARS; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start;
-             j < f->blocks[b].bb.end && count < MAX_IVARS;
+        for (int j = f->blocks[b].bb.range.start;
+             j < f->blocks[b].bb.range.end && count < MAX_IVARS;
              j++) {
             const IRInstr *in = &f->instrs[j];
 
@@ -178,8 +178,8 @@ static int findDerived(IRFunction *f, Loop *L, VarMap *vm,
 
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.start;
-             j < f->blocks[b].bb.end && count < MAX_DERIVED;
+        for (int j = f->blocks[b].bb.range.start;
+             j < f->blocks[b].bb.range.end && count < MAX_DERIVED;
              j++) {
             const IRInstr *in = &f->instrs[j];
 
@@ -268,7 +268,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     int header   = L->header;
     int nInstrs  = f->count;
     int nBlocks  = f->blockCount;
-    int insertAt = f->blocks[header].bb.start;
+    int insertAt = f->blocks[header].bb.range.start;
 
     // Retrieve loop body and outer nesting depths
     int bodyDepth  = f->instrs[insertAt].loopDepth;
@@ -358,11 +358,11 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     // Update instruction bounds [start, end) for basic blocks
     for (int b = 0; b < nBlocks; b++) {
         if (b == phIdx) {
-            f->blocks[b].bb.start = phInitStart;
-            f->blocks[b].bb.end   = phInitEnd;
+            f->blocks[b].bb.range.start = phInitStart;
+            f->blocks[b].bb.range.end   = phInitEnd;
             continue;
         }
-        int oldS = f->blocks[b].bb.start, oldE = f->blocks[b].bb.end;
+        int oldS = f->blocks[b].bb.range.start, oldE = f->blocks[b].bb.range.end;
         int newS = -1, newE = -1;
         for (int j = oldS; j < oldE; j++) {
             if (oldToNew[j] == -1) continue;
@@ -374,8 +374,8 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
             newS = oldS + derivedCount;
             newE = oldE + derivedCount;
         }
-        f->blocks[b].bb.start = (newS == -1) ? 0 : newS;
-        f->blocks[b].bb.end   = (newE == -1) ? 0 : newE;
+        f->blocks[b].bb.range.start = (newS == -1) ? 0 : newS;
+        f->blocks[b].bb.range.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
     free(oldToNew);

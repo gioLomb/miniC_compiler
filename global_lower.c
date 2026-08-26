@@ -176,14 +176,14 @@ void ir_lower_globals(IRFunction *f) {
 
     /* Riallinea [start, end) di ogni blocco sulla nuova numerazione. */
     for (int b = 0; b < f->blockCount; b++) {
-        int oldS = f->blocks[b].bb.start;
-        int oldE = f->blocks[b].bb.end;
+        int oldS = f->blocks[b].bb.range.start;
+        int oldE = f->blocks[b].bb.range.end;
         if (oldE > oldS) {
-            f->blocks[b].bb.start = newStart[oldS];
-            f->blocks[b].bb.end   = newEnd[oldE - 1];
+            f->blocks[b].bb.range.start = newStart[oldS];
+            f->blocks[b].bb.range.end   = newEnd[oldE - 1];
         } else {
             /* Blocco vuoto: punta oltre la fine. */
-            f->blocks[b].bb.start = f->blocks[b].bb.end = e.count;
+            f->blocks[b].bb.range.start = f->blocks[b].bb.range.end = e.count;
         }
     }
     f->curBlockStart = 0;

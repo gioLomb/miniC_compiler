@@ -274,7 +274,7 @@ int loop_build_pre_header(IRFunction *f, Loop *L) {
     IRBlock *ph = &f->blocks[phIdx];
 
     // empty block: instructions will be inserted here by LICM/SR
-    ph->bb.start   = ph->bb.end = f->count;
+    ph->bb.range.start   = ph->bb.range.end = f->count;
     ph->bb.succ[0] = header; // pre-header falls through to the loop header
     ph->bb.succ[1] = -1;
     ph->predCount  = 0;

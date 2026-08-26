@@ -24,7 +24,7 @@ def split_file():
         filepath = match.group(1).strip()
         start_idx = match.end()
         # Il contenuto del file arriva fino al delimitatore successivo o alla fine del mega-file
-        end_idx = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        end_idx = matches[i + 1].range.start() if i + 1 < len(matches) else len(content)
 
         file_code = content[start_idx:end_idx].strip() + "\n"
 

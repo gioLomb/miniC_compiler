@@ -436,8 +436,8 @@ static void svn_processEbb(IRFunction *f, int blockIdx, SVNScope *parent,
     svn_scopeInit(&scope, parent);
 
     // Process each instruction in this block under the current scope.
-    for (int i = f->blocks[blockIdx].bb.start;
-         i < f->blocks[blockIdx].bb.end; i++)
+    for (int i = f->blocks[blockIdx].bb.range.start;
+         i < f->blocks[blockIdx].bb.range.end; i++)
         svn_processInstr(&f->instrs[i], &scope, vnCounter);
 
     // Recursively extend the EBB to any successor with a single predecessor.

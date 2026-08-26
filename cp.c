@@ -239,7 +239,7 @@ static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
 
             // compute new out[b] = transfer(in[b]) into tmp
             const_map_copy(tmp, &in[b]);
-            for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
+            for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++)
                 cp_transfer(&f->instrs[i], tmp, vm);
 
             // if out[b] changed, record it and keep iterating
@@ -325,8 +325,8 @@ static int cp_is_redundant_jump(IRFunction *f, int idx) {
     int labelId = in->dst.data.labelId;
     // scan blocks to confirm idx+1 is inside a block and starts with the label
     for (int b = 0; b < f->blockCount; b++) {
-        int start = f->blocks[b].bb.start;
-        int end   = f->blocks[b].bb.end;
+        int start = f->blocks[b].bb.range.start;
+        int end   = f->blocks[b].bb.range.end;
         if (start <= idx + 1 && idx + 1 < end) {
             if (f->instrs[idx + 1].op == IR_LABEL &&
                 f->instrs[idx + 1].dst.data.labelId == labelId) {
@@ -414,7 +414,7 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
     const_map_init(&live, numVars, arena);
     const_map_copy(&live, &inMap[b]);
 
-    for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++) {
+    for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++) {
         IRInstr *in = &f->instrs[i];
 
         /* ---- 1. Jump-to-next elimination ---- */

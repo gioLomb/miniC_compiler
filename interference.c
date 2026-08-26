@@ -144,7 +144,7 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
     int tmpArr[LIVENESS_MAX_IDS];
 
     for (int b = 0; b < nBlocks; b++) {
-        for (int i = blocks[b].start; i < blocks[b].end; i++) {
+        for (int i = blocks[b].range.start; i < blocks[b].range.end; i++) {
             const MachInstr *in = &f->instrs[i];
 
             // spill cost weight: 10^loopDepth so hot-loop variables resist spilling

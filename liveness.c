@@ -82,7 +82,7 @@ LivenessBlockSets liveness_computeCore(int nBlocks, const BasicBlock *blocks,
     for (int b = 0; b < nBlocks; b++) {
         if (reachable && !reachable[b]) continue; // skip unreachable blocks
 
-        for (int i = blocks[b].start; i < blocks[b].end; i++) {
+        for (int i = blocks[b].range.start; i < blocks[b].range.end; i++) {
             extract(ctx, i, uses, &nUses, defs, &nDefs);
 
             // A use counts towards Use[b] only if the variable has not yet
@@ -174,7 +174,7 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
         bitset_copy(&live, &blockLiveOut[b]);
 
         // Scan instructions in reverse order within the block.
-        for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
+        for (int i = blocks[b].range.end - 1; i >= blocks[b].range.start; i--) {
             // Record what is live just after instruction i runs.
             bitset_copy(&liveAfter[i], &live);
 

@@ -185,7 +185,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
 
         // unreachable block: all instructions are dead by definition
         if (!reachable[b]) {
-            for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
+            for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++)
                 eliminate[i] = 1;
             continue;
         }
@@ -194,7 +194,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
         BitSet live = bitset_new(arena, words);
         bitset_copy(&live, &liv->blockSets.LiveOut[b]);
 
-        for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
+        for (int i = f->blocks[b].bb.range.end - 1; i >= f->blocks[b].bb.range.start; i--) {
             IRInstr *in = &f->instrs[i];
 
             // two-part check: opcode must write a dst AND dst must be a trackable
@@ -254,7 +254,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
 
 //         // unreachable block: all instructions are dead by definition
 //         if (!reachable[b]) {
-//             for (int i = f->blocks[b].bb.start; i < f->blocks[b].bb.end; i++)
+//             for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++)
 //                 eliminate[i] = 1;
 //             continue;
 //         }
@@ -263,7 +263,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
 //         BitSet live = bitset_new(arena, words);
 //         bitset_copy(&live, &liv->blockSets.LiveOut[b]);
 
-//         for (int i = f->blocks[b].bb.end - 1; i >= f->blocks[b].bb.start; i--) {
+//         for (int i = f->blocks[b].bb.range.end - 1; i >= f->blocks[b].bb.range.start; i--) {
 //             IRInstr *in = &f->instrs[i];
 
 //             // two-part check: opcode must write a dst AND dst must be a trackable

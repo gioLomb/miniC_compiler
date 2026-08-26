@@ -1,301 +1,204 @@
 /**
  * @file sched_dag.c
- * @brief Dependency DAG construction for the instruction scheduler — implementation.
+ * @brief Dependency DAG construction for the instruction scheduler.
  *
- * See sched_dag.h for the module overview and full API documentation.
- *
- * Internal organisation
- * ---------------------
- *  smap_init / smap_get / smap_set  — O(1) sparse-set-backed integer map.
- *  dag_add_edge                      — guarded edge insertion (dedup + arena alloc).
- *  build_dag                         — four-pass DAG construction driver.
- *
- * Four-pass algorithm inside build_dag()
- * ---------------------------------------
- *  Pass 1 — Node initialisation: instrIdx, latency, initial height.
- *  Pass 2 — Macro-fusion scan: pin CMP/TEST nodes that precede a Jcc.
- *  Pass 3 — Forward edge-building with register renaming:
- *              RAW edges via currentName[] + SparseMap lookup per source reg,
- *              for both EXPLICIT operand uses (sched_uses) and IMPLICIT ABI
- *              uses (instr_implicit_uses — e.g. CALL reading argument regs).
- *              Side-effect serialisation via lastSideEffect chain.
- *              Memory ordering serialisation via lastMemoryOp chain.
- *              WAW edge from previous writer + fresh rename id per definition,
- *              for both the EXPLICIT dst and any IMPLICIT def
- *              (instr_implicit_defs — e.g. CALL writing %rax on return).
- *  Pass 4 — Backward height propagation: height = latency + max(succ heights).
- *
- * Register renaming (pass 3 detail)
- * ----------------------------------
- * The universe has (nextVreg + PHYS_ALLOCATABLE) architectural ids, plus up
- * to n fresh ids (one per definition in the block, worst case).  The SparseMap
- * is therefore initialised with capacity = universe + n.
- *
- * currentName[r] maps architectural register r to its current rename id.
- * Initialised to currentName[r] = r (identity).  On a definition of r:
- *   1. Look up oldRenamed = currentName[r] in the SparseMap; if it has a
- *      previous writer, emit a WAW edge from that writer to the current node.
- *   2. Allocate fresh = nextFresh++ as the new rename id for r.
- *   3. Update currentName[r] = fresh and record this node as the writer.
- * On a use of r: resolve currentName[r] and emit a RAW edge from its writer.
- *
- * This scheme eliminates WAR edges between virtual registers and reduces WAW
- * edges to those that are truly unavoidable.
- *
- * Implicit ABI uses/defs (CALL, IDIV, CQO)
- * -----------------------------------------
- * MACH_CALL does not carry the argument registers (%rdi, %rsi, ...) or the
- * return register (%rax) as explicit src1/src2/dst operands — the calling
- * convention places them there implicitly.  sched_uses()/sched_def() only
- * see explicit operands, so without extra handling the scheduler has no edge
- * between the MOVs that load the argument registers and the CALL, nor
- * between the CALL and the MOV that reads %rax afterwards.  This lets the
- * greedy list scheduler hoist CALL before its arguments are ready (or the
- * result-copy before the call has even run), corrupting the calling
- * convention while still producing a structurally valid schedule.
- *
- * Fixed here by additionally consulting instr_implicit_uses()/
- * instr_implicit_defs() (regalloc_utils.h) — the same functions the register
- * allocator already uses to model CALL/IDIV/CQO's implicit register
- * traffic for liveness/interference — and feeding their results through the
- * identical RAW/WAW + renaming machinery used for explicit operands.
- *
- * Memory ordering (pass 3 detail)
- * --------------------------------
- * Without alias analysis we cannot determine whether two memory operations
- * access overlapping locations.  A conservative lastMemoryOp chain ensures
- * every LOAD and STORE is serialised relative to all preceding LOAD/STOREs,
- * preventing the scheduler from reordering them in ways that could violate
- * load/store semantics.
+ * See sched_dag.h for the module overview. Internal organisation:
+ *   RenameTracker         — per-register bookkeeping (rename generation,
+ *                            last writer of each generation, last reader).
+ *   track_read/track_write — apply one register access to the tracker,
+ *                            emitting RAW/WAR/WAW edges as needed.
+ *   dag_add_edge           — dedup'd, arena-allocated edge insertion.
+ *   build_dag               — four-pass driver (see header).
  */
 
 #include <string.h>
 #include "sched_dag.h"
 #include "sched_utils.h"
-#include "regalloc_utils.h"  /* instr_implicit_uses/defs: usi/def impliciti (es. CALL
-                               * legge i registri argomento e scrive %rax) non visibili
-                               * in src1/src2/dst, quindi invisibili a sched_uses()/
-                               * sched_def(). Riusati qui invece di duplicare la logica
-                               * (gia' corretta) usata dal register allocator. */
+#include "regalloc_utils.h"   /* instr_implicit_uses/defs: ABI-implicit register
+                                * traffic (CALL args/return, IDIV/CQO RAX:RDX)
+                                * invisible to sched_uses()/sched_def(). Reused
+                                * from the register allocator instead of
+                                * duplicating the logic. */
+
+
 
 /* =========================================================================
- * SparseMap
+ * RenameTracker
+ * =========================================================================
+ * currentName[r]: rename generation currently representing architectural
+ *                 register r. Virtual registers start at identity and get a
+ *                 fresh generation on every write (see track_write). Physical
+ *                 registers NEVER change generation — instr_implicit_uses/defs
+ *                 look them up by their fixed id (nextVreg + physReg), so
+ *                 renaming them would make that lookup fail.
+ * lastWriter[id]: local instruction index that last wrote generation 'id',
+ *                 or -1. Indexed directly by rename id (plain array, not a
+ *                 sparse map): currentName/lastReader already pay an
+ *                 O(universe) init per block, so a sparse structure here
+ *                 would only save initialising the few extra "fresh vreg
+ *                 generation" slots — not worth the added indirection.
+ * lastReader[r]:  local instruction index that last read the CURRENT
+ *                 generation of r, or -1. Chaining reads through this field
+ *                 (instead of tracking every reader) is what lets a single
+ *                 field capture the WAR edge for track_write below.
  * ========================================================================= */
+typedef struct {
+    int  vregCount;     /**< f->nextVreg: boundary between renamed (vreg) and fixed (phys) ids. */
+    int  universe;      /**< vregCount + PHYS_ALLOCATABLE: total architectural register ids. */
+    int  nextFresh;      /**< Next rename generation to hand out to a vreg definition. */
+    int *currentName;
+    int *lastWriter;    /**< Size universe + n: room for one fresh generation per instruction. */
+    int *lastReader;
+} RenameTracker;
 
-void smap_init(SparseMap *m, int cap, Arena *arena) {
-    m->sparse = arena_alloc(arena, (size_t)cap * sizeof(int));
-    m->dense  = arena_alloc(arena, (size_t)cap * sizeof(int));
-    m->val    = arena_alloc(arena, (size_t)cap * sizeof(int));
-    m->n   = 0;
-    m->cap = cap;
-    // sparse[] intentionally left uninitialised: stale values are harmless
-    // because membership is validated by the round-trip dense[sparse[k]] == k
-}
+/**
+ * @brief Initialise a RenameTracker for a block of @p n instructions.
+ *
+ * All arrays are arena-allocated and start at "nobody has touched this
+ * register yet" (currentName = identity, lastReader/lastWriter = -1).
+ */
+static RenameTracker rename_tracker_create(int vregCount, int physCount, int n, Arena *arena) {
+    int universe = vregCount + physCount;
+    int cap = universe + n; // one extra rename generation per instruction is the worst case
 
-int smap_get(const SparseMap *m, int k) {
-    // cast to unsigned: rejects negative k with a single comparison
-    if ((unsigned)k >= (unsigned)m->cap) return -1;
-    unsigned pos = (unsigned)m->sparse[k];
-    // round-trip validation: stale sparse[k] entries point outside [0,n) or
-    // to a slot whose dense[] entry holds a different key
-    if (pos >= (unsigned)m->n || m->dense[pos] != k) return -1;
-    return m->val[pos];
-}
+    int *currentName = arena_alloc(arena, (size_t)universe * sizeof(int));
+    int *lastReader  = arena_alloc(arena, (size_t)universe * sizeof(int));
+    int *lastWriter  = arena_alloc(arena, (size_t)cap * sizeof(int));
 
-void smap_set(SparseMap *m, int k, int v) {
-    if ((unsigned)k >= (unsigned)m->cap) return;
-    unsigned pos = (unsigned)m->sparse[k];
-    if (pos < (unsigned)m->n && m->dense[pos] == k) {
-        // key already present: update value in-place (no layout change)
-        m->val[pos] = v;
-        return;
+    // Inizializzazione identità (0, 1, 2, ...)
+    for (int r = 0; r < universe; r++) {
+        currentName[r] = r;
     }
-    // new key: append to the dense/val arrays and record its position
-    m->sparse[k]   = m->n;
-    m->dense[m->n] = k;
-    m->val[m->n]   = v;
-    m->n++;
-}
 
-/* =========================================================================
- * DAG edge insertion
- * ========================================================================= */
+    // memset a 0xFF imposta tutti i byte a 1, che per gli int in complemento a due equivale a -1
+    memset(lastReader, 0xFF, (size_t)universe * sizeof(int));
+    memset(lastWriter, 0xFF, (size_t)cap * sizeof(int));
+
+    // Ritorno della struct creata tramite Compound Literal
+    return (RenameTracker){
+        .vregCount   = vregCount,
+        .universe    = universe,
+        .nextFresh   = universe,
+        .currentName = currentName,
+        .lastReader  = lastReader,
+        .lastWriter  = lastWriter
+    };
+}
 
 /**
  * @brief Add a directed dependency edge from node @p from to node @p to.
  *
- * Guards against self-loops (from == to) and duplicate edges: the successor
- * list is walked to check for an existing edge before allocating a SuccNode.
- * Edges are prepended to the singly-linked list for O(1) insertion.
- *
- * @param nodes  DAGNode array for the current block.
- * @param from   Source node index (predecessor).
- * @param to     Destination node index (dependent successor).
- * @param arena  Arena from which the new SuccNode is allocated.
+ * Guards self-loops and duplicate edges (linear scan of the — normally
+ * short — successor list). Prepended for O(1) insertion.
  */
 static void dag_add_edge(DAGNode *nodes, int from, int to, Arena *arena) {
     if (from == to) return;
 
-    // dedup: skip if edge already exists (successor list is short in practice)
     for (SuccNode *s = nodes[from].succs; s; s = s->next)
-        if (s->to == to) return;
+        if (s->to == to) return; // already present: skip
 
     SuccNode *sn      = arena_alloc(arena, sizeof(SuccNode));
     sn->to            = to;
-    sn->next          = nodes[from].succs;  // prepend for O(1) insertion
+    sn->next          = nodes[from].succs;
     nodes[from].succs = sn;
     nodes[from].nSuccs++;
     nodes[to].predCount++;
 }
 
-/* =========================================================================
- * Per-register read/write dependency helpers
- * =========================================================================
- * Small helpers factoring out the RAW+WAR bookkeeping for one read, and
- * the WAR-drain+WAW+rename bookkeeping for one write, so build_dag()'s
- * main loop stays readable when applied to both explicit and implicit
- * operand sets.
- * ========================================================================= */
-
 /**
  * @brief Record instruction @p j reading architectural register @p r.
  *
- * Emits the RAW edge from r's current writer (if any), then chains this
- * read after the previous one via lastReader[r] (WAR bookkeeping: see
- * module header for why chaining reads is enough to cover all of them).
+ * Emits the RAW edge from r's current-generation writer (if any), then
+ * chains this read after the previous one so a later write to r can pick
+ * up the WAR edge in O(1) via track_write().
  */
-static void dag_process_read(DAGNode *nodes, Arena *arena, int universe,
-                              const int *currentName, int *lastReader,
-                              const SparseMap *smap, int j, int r) {
-    if (r < 0 || r >= universe) return;
+static void track_read(RenameTracker *rt, DAGNode *nodes, Arena *arena, int j, int r) {
+    if (r < 0 || r >= rt->universe) return;
 
-    int dep = smap_get(smap, currentName[r]);
-    if (dep >= 0) dag_add_edge(nodes, dep, j, arena); // RAW
+    int writer = rt->lastWriter[rt->currentName[r]];
+    if (writer >= 0) dag_add_edge(nodes, writer, j, arena); // RAW
 
-    if (lastReader[r] >= 0) dag_add_edge(nodes, lastReader[r], j, arena); // read-after-read chain
-    lastReader[r] = j;
+    if (rt->lastReader[r] >= 0) dag_add_edge(nodes, rt->lastReader[r], j, arena); // read chain
+    rt->lastReader[r] = j;
 }
 
 /**
  * @brief Record instruction @p j writing architectural register @p d.
  *
- * Drains lastReader[d] into a WAR edge (this def must follow every earlier
- * read, transitively via the chain built by dag_process_read), emits the
- * WAW edge from the previous writer, then allocates a fresh rename id.
+ * WAR edge from the last reader of the current generation, WAW edge from
+ * the previous writer, then a fresh generation is allocated — for virtual
+ * registers only; physical registers keep their fixed id (see RenameTracker doc).
  */
-static void dag_process_write(DAGNode *nodes, Arena *arena, int universe,
-                               int *currentName, int *lastReader,
-                               SparseMap *smap, int *nextFresh, int j, int d) {
-    if (d < 0 || d >= universe) return;
+static void track_write(RenameTracker *rt, DAGNode *nodes, Arena *arena, int j, int d) {
+    if (d < 0 || d >= rt->universe) return;
 
-    if (lastReader[d] >= 0 && lastReader[d] != j) {
-        dag_add_edge(nodes, lastReader[d], j, arena); // WAR
-    }
-    lastReader[d] = -1; // fresh generation
+    if (rt->lastReader[d] >= 0 && rt->lastReader[d] != j)
+        dag_add_edge(nodes, rt->lastReader[d], j, arena); // WAR
+    rt->lastReader[d] = -1; // this write starts a fresh generation: no readers yet
 
-    int prevDef = smap_get(smap, currentName[d]);
-    if (prevDef >= 0) dag_add_edge(nodes, prevDef, j, arena); // WAW
+    int prevWriter = rt->lastWriter[rt->currentName[d]];
+    if (prevWriter >= 0) dag_add_edge(nodes, prevWriter, j, arena); // WAW
 
-    // FIX RENAMING:
-    // I registri virtuali (< nextVreg) usano il renaming dinamico (fresh).
-    // I registri FISICI (>= nextVreg, es. RAX) NON devono cambiare ID (niente fresh),
-    // altrimenti le implicit_uses/defs ABI non li troveranno piu'!
-    int renameId;
-    if (d < (universe - PHYS_ALLOCATABLE)) {
-        renameId = (*nextFresh)++;
-    } else {
-        renameId = d; // Mantiene l'id fisso per i registri fisici
-    }
-
-    currentName[d] = renameId;
-    smap_set(smap, renameId, j);
+    int newGen = (d < rt->vregCount) ? (rt->nextFresh++) : d; // vreg: fresh id; phys: fixed id
+    rt->currentName[d]     = newGen;
+    rt->lastWriter[newGen] = j;
 }
 
 /* =========================================================================
- * DAG construction — four passes
+ * build_dag — four passes (see sched_dag.h for the semantic overview)
  * ========================================================================= */
-
-void build_dag(const MachFunction *f, int start, int end, DAGNode *nodes,
+void build_dag(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena) {
-    int n        = end - start;
-    int universe = f->nextVreg + PHYS_ALLOCATABLE;
-    int cap      = universe + n;  // n extra slots for fresh rename ids
+    int n = blk.end - blk.start;
 
-    // currentName[r]: current rename generation of architectural register r.
-    int *currentName = arena_alloc(arena, (size_t)universe * sizeof(int));
-    for (int r = 0; r < universe; r++) currentName[r] = r;
-    int nextFresh = universe;
+    RenameTracker rt = rename_tracker_create(f->nextVreg, PHYS_ALLOCATABLE, n, arena);
 
-    // lastReader[r]: most recent node that read r since its last definition
-    // (-1 = none). See module header for the WAR-via-chaining rationale.
-    int *lastReader = arena_alloc(arena, (size_t)universe * sizeof(int));
-    for (int r = 0; r < universe; r++) lastReader[r] = -1;
-
-    SparseMap smap;
-    smap_init(&smap, cap, arena);
-
-    /* ---- Pass 1: node initialisation ---- */
+    /* ---- Pass 1: node init ---- */
     for (int i = 0; i < n; i++) {
-        nodes[i] = (DAGNode){
-            .instrIdx = start + i,
-            .latency  = sched_latency_of(f->instrs[start + i].op),
-            .height   = sched_latency_of(f->instrs[start + i].op),
-        };
+        MachOp op  = f->instrs[blk.start + i].op;
+        int    lat = sched_latency_of(op);
+        nodes[i] = (DAGNode){ .instrIdx = blk.start + i, .latency = lat, .height = lat };
     }
 
-    /* ---- Pass 2: macro-fusion scan ---- */
-    for (int i = 0; i + 1 < n; i++) {
-        if (sched_is_cmp_or_test(f->instrs[start + i].op) &&
-            sched_is_jcc(f->instrs[start + i + 1].op))
+    /* ---- Pass 2: macro-fusion pinning (CMP/TEST immediately before Jcc) ---- */
+    for (int i = 0; i + 1 < n; i++)
+        if (sched_is_cmp_or_test(f->instrs[blk.start + i].op) &&
+            sched_is_jcc(f->instrs[blk.start + i + 1].op))
             nodes[i].pinnedForFusion = 1;
-    }
 
-    /* ---- Pass 3: RAW + WAR + WAW + side-effect/memory ordering ---- */
+    /* ---- Pass 3: RAW/WAR/WAW + side-effect + memory ordering ---- */
     int lastSideEffect = -1;
     int lastMemoryOp   = -1;
+    int regs[SCHED_MAX_REG_IDS], nregs;
 
     for (int j = 0; j < n; j++) {
-        const MachInstr *inj = &f->instrs[start + j];
+        const MachInstr *in = &f->instrs[blk.start + j];
 
         // reads: explicit operands, then implicit ABI reads (e.g. CALL args)
-        int uses[5], nuses;
-        sched_uses(inj, f->nextVreg, uses, &nuses);
-        for (int u = 0; u < nuses; u++)
-            dag_process_read(nodes, arena, universe, currentName, lastReader,
-                              &smap, j, uses[u]);
+        sched_uses(in, f->nextVreg, regs, &nregs);
+        for (int k = 0; k < nregs; k++) track_read(&rt, nodes, arena, j, regs[k]);
 
-        int iuses[16], niuses;
-        instr_implicit_uses(inj, f->nextVreg, iuses, &niuses);
-        for (int u = 0; u < niuses; u++)
-            dag_process_read(nodes, arena, universe, currentName, lastReader,
-                              &smap, j, iuses[u]);
+        instr_implicit_uses(in, f->nextVreg, regs, &nregs);
+        for (int k = 0; k < nregs; k++) track_read(&rt, nodes, arena, j, regs[k]);
 
-        // side-effect serialisation (STORE/PUSH/CALL/IDIV/CQO in program order)
-        if (sched_has_side_effect(inj->op)) {
+        // side-effect serialisation: STORE/PUSH/CALL/IDIV/CQO in program order
+        if (sched_has_side_effect(in->op)) {
             if (lastSideEffect >= 0) dag_add_edge(nodes, lastSideEffect, j, arena);
             lastSideEffect = j;
         }
 
-        // memory ordering (no alias analysis: serialise all LOAD/STORE)
-        if (inj->op == MACH_LOAD || inj->op == MACH_STORE) {
+        // memory ordering: no alias analysis, so serialise all LOAD/STORE
+        if (in->op == MACH_LOAD || in->op == MACH_STORE) {
             if (lastMemoryOp >= 0) dag_add_edge(nodes, lastMemoryOp, j, arena);
             lastMemoryOp = j;
         }
 
         // writes: explicit dst, then implicit ABI defs (e.g. CALL clobbers)
-        int explicitDef = sched_def(inj, f->nextVreg);
-        if (explicitDef >= 0)
-            dag_process_write(nodes, arena, universe, currentName, lastReader,
-                               &smap, &nextFresh, j, explicitDef);
+        int def = sched_def(in, f->nextVreg);
+        if (def >= 0) track_write(&rt, nodes, arena, j, def);
 
-        int idefs[16], nidefs;
-        instr_implicit_defs(inj, f->nextVreg, idefs, &nidefs);
-        for (int k = 0; k < nidefs; k++){
-            dag_process_write(nodes, arena, universe, currentName, lastReader,
-                               &smap, &nextFresh, j, idefs[k]);}
-            printf("INSTR %d (%d): def=%d | uses=", j, inj->op, explicitDef);
-for (int u = 0; u < nuses; u++){ printf("%d ", uses[u]);}
-printf("\n");
+        instr_implicit_defs(in, f->nextVreg, regs, &nregs);
+        for (int k = 0; k < nregs; k++) track_write(&rt, nodes, arena, j, regs[k]);
     }
 
     /* ---- Pass 4: backward height propagation ---- */

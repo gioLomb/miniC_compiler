@@ -131,8 +131,8 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     int newCount   = 0;
 
     for (int b = 0; b < nBlocks; b++) {
-        int oldStart = f->blocks[b].bb.start;
-        int oldEnd   = f->blocks[b].bb.end;
+        int oldStart = f->blocks[b].bb.range.start;
+        int oldEnd   = f->blocks[b].bb.range.end;
         int newStart = newCount;
 
         // copy over every surviving instruction of this block, in order
@@ -142,8 +142,8 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
         }
 
         // block range shrinks to match however many instructions survived
-        f->blocks[b].bb.start = newStart;
-        f->blocks[b].bb.end   = newCount;
+        f->blocks[b].bb.range.start = newStart;
+        f->blocks[b].bb.range.end   = newCount;
     }
 
     free(f->instrs);
@@ -163,7 +163,7 @@ static inline void ir_closeBlock(IRFunction *f, int start, int end) {
         f->blocks = realloc(f->blocks, (size_t)f->blockCap * sizeof(IRBlock));
     }
     f->blocks[f->blockCount++] = (IRBlock){
-        .bb       = { .start = start, .end = end, .succ = {-1, -1} },
+        .bb       = { .range = {.start = start, .end = end}, .succ = {-1, -1} },
         .predCount = 0,
     };
 }
@@ -246,7 +246,7 @@ static void ir_resolveCFG(IRFunction *f) {
 
     // for every block, derive its successor edges from its last instruction
     for (int b = 0; b < f->blockCount; b++) {
-        int last = f->blocks[b].bb.end - 1;
+        int last = f->blocks[b].bb.range.end - 1;
         IROp op  = f->instrs[last].op;
 
         if (op == IR_GOTO) {

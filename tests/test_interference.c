@@ -17,6 +17,11 @@
  * PASS 1-4: casi originali (RMW, CALL, vite disgiunte, IDIV).
  * PASS 5-6: aggiunti — SETcc end-to-end e CFG multi-blocco a diamante,
  * casi non coperti in precedenza (solo blocco singolo testato).
+ *
+ * NOTA (block.h): BasicBlock.start/.end sono ora dentro il campo nominato
+ * 'range' (BlockRange), non piu' promossi direttamente su BasicBlock.
+ * Ogni literal qui sotto usa quindi .range = { .start = ..., .end = ... }
+ * invece di .start/.end diretti; .succ resta un campo diretto di BasicBlock.
  */
 
 #include <stdio.h>
@@ -63,7 +68,7 @@ int main(void) {
         };
         MachFunction f = { .name = "t1", .instrs = instrs, .count = 5,
                            .capacity = 5, .frameSize = 0, .nextVreg = 2 };
-        BasicBlock blocks[1] = {{ .start = 0, .end = 5, .succ = {-1, -1} }};
+        BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 5 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
@@ -96,7 +101,7 @@ int main(void) {
         };
         MachFunction f = { .name = "t2", .instrs = instrs, .count = 4,
                            .capacity = 4, .frameSize = 0, .nextVreg = 1 };
-        BasicBlock blocks[1] = {{ .start = 0, .end = 4, .succ = {-1, -1} }};
+        BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 4 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
@@ -131,7 +136,7 @@ int main(void) {
         };
         MachFunction f = { .name = "t3", .instrs = instrs, .count = 5,
                            .capacity = 5, .frameSize = 0, .nextVreg = 2 };
-        BasicBlock blocks[1] = {{ .start = 0, .end = 5, .succ = {-1, -1} }};
+        BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 5 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
@@ -164,7 +169,7 @@ int main(void) {
         };
         MachFunction f = { .name = "t4", .instrs = instrs, .count = 4,
                            .capacity = 4, .frameSize = 0, .nextVreg = 1 };
-        BasicBlock blocks[1] = {{ .start = 0, .end = 4, .succ = {-1, -1} }};
+        BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 4 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
@@ -196,7 +201,7 @@ int main(void) {
         };
         MachFunction f = { .name = "t5", .instrs = instrs, .count = 4,
                            .capacity = 4, .frameSize = 0, .nextVreg = 1 };
-        BasicBlock blocks[1] = {{ .start = 0, .end = 4, .succ = {-1, -1} }};
+        BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 4 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
         LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
@@ -243,10 +248,10 @@ int main(void) {
          * non indici di istruzione — coerente con il modello usato da
          * loop.c/liveness.c. */
         BasicBlock blocks[4] = {
-            { .start = 0, .end = 2, .succ = { 1, 2 } },  /* JE: fallthrough=b1, taken(.L1)=b2 */
-            { .start = 2, .end = 4, .succ = { 3, -1 } }, /* JMP .L2 -> b3 */
-            { .start = 4, .end = 6, .succ = { 3, -1 } }, /* fallthrough -> b3 */
-            { .start = 6, .end = 8, .succ = { -1, -1 } },
+            { .range = { .start = 0, .end = 2 }, .succ = { 1, 2 } },  /* JE: fallthrough=b1, taken(.L1)=b2 */
+            { .range = { .start = 2, .end = 4 }, .succ = { 3, -1 } }, /* JMP .L2 -> b3 */
+            { .range = { .start = 4, .end = 6 }, .succ = { 3, -1 } }, /* fallthrough -> b3 */
+            { .range = { .start = 6, .end = 8 }, .succ = { -1, -1 } },
         };
 
         Arena *arena = arena_create(0);
