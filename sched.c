@@ -129,6 +129,18 @@ static int ready_heap_pop(ReadyHeap *h) {
  * Per-block scheduling phases
  * ========================================================================= */
 
+ /*
+ * Returns 1 if node i is a candidate for the ready heap based on its
+ * static/scheduling-state properties alone (NOT predCount — the seed loop
+ * and the successor-unlock loop check predCount differently: seed checks
+ * it as-is, successors check it right after a decrement — so that part
+ * stays explicit at each call site instead of being hidden in here).
+ */
+static inline int is_schedulable(const MachInstr src, const DAGNode node) {
+    return !(node.scheduled || sched_is_pinned(src.op) || node.pinnedForFusion);
+}
+
+
 /**
  * @brief Place structural headers (LABEL, FUNC_BEGIN) first, unconditionally.
  *
@@ -161,10 +173,7 @@ static int emit_pinned_headers(const MachInstr *src, int instrCount,
 static void seed_ready_heap(const MachInstr *src, int instrCount,
                              DAGNode *nodes, ReadyHeap *heap) {
     for (int i = 0; i < instrCount; i++) {
-        if (nodes[i].scheduled)         continue;
-        if (sched_is_pinned(src[i].op)) continue;
-        if (nodes[i].pinnedForFusion)   continue;
-        if (nodes[i].predCount == 0)    ready_heap_push(heap, i);
+        if(is_schedulable(src[i],nodes[i]) && nodes[i].predCount == 0) ready_heap_push(heap, i);   
     }
 }
 
@@ -188,10 +197,7 @@ static int run_list_scheduling(const MachInstr *src, DAGNode *nodes,
 
         for (SuccNode *s = nodes[chosen].succs; s; s = s->next) {
             int succ = s->to;
-            if (nodes[succ].scheduled)         continue;
-            if (sched_is_pinned(src[succ].op)) continue;
-            if (nodes[succ].pinnedForFusion)   continue;
-            if (--nodes[succ].predCount == 0)  ready_heap_push(heap, succ);
+            if (--nodes[succ].predCount == 0 && is_schedulable(src[succ],nodes[succ])) ready_heap_push(heap, succ);
         }
     }
     return rCount;
@@ -251,7 +257,7 @@ void sched_schedule(MachProgram *mp) {
     for (int fi = 0; fi < mp->count; fi++) {
         MachFunction *f = mp->functions[fi];
         if (!f || f->count == 0) continue;
-        
+
         Arena *blockArena = arena_create(0);
         BlockRange *blocks = arena_alloc(blockArena, (size_t)f->count * sizeof(BlockRange));
         int bbCount = find_basic_blocks(f, blocks);
