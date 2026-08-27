@@ -28,7 +28,7 @@ struct Arena {
 /**
  * @brief Aligns requested byte size upward to the target architecture's pointer alignment.
  */
-static size_t align_up(size_t n) {
+static inline size_t align_up(size_t n) {
     size_t a = sizeof(void *);
     return (n + a - 1) & ~(a - 1);
 }
@@ -43,10 +43,10 @@ static ArenaBlock *block_create(size_t capacity) {
         fprintf(stderr, "arena: out of memory (requested %zu bytes)\n", capacity);
         exit(1);
     }
-    block->next     = NULL;
-    block->capacity = capacity;
-    block->used     = 0;
+
+    *block = (ArenaBlock){.next = NULL, .capacity = capacity, .used = 0};
     return block;
+    
 }
 
 Arena *arena_create(size_t blockSize) {
@@ -59,9 +59,7 @@ Arena *arena_create(size_t blockSize) {
         exit(1);
     }
 
-    arena->defaultBlockSize = blockSize;
-    arena->head             = block_create(blockSize);
-    arena->current          = arena->head;
+    *arena = (Arena){.defaultBlockSize = blockSize, .head = block_create(blockSize), .current = arena->head};
     return arena;
 }
 
