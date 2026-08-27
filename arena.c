@@ -59,7 +59,10 @@ Arena *arena_create(size_t blockSize) {
         exit(1);
     }
 
-    *arena = (Arena){.defaultBlockSize = blockSize, .head = block_create(blockSize), .current = arena->head};
+    arena->defaultBlockSize = blockSize;
+    arena->head             = block_create(blockSize);
+    arena->current          = arena->head;
+
     return arena;
 }
 
