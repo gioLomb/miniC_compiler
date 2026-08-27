@@ -21,7 +21,7 @@
  * @brief Three-address IR opcode set.
  *
  * Values are used as bit indices into 32-bit predicate masks (ir_is_pure,
- * ir_defines_dst, ir_isCommutative), so the enum must stay within [0, 32)
+ * ir_defines_dst, ir_is_commutative), so the enum must stay within [0, 32)
  * and its relative ordering only matters where those masks are built.
  */
 typedef enum {
@@ -226,7 +226,7 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks);
  *
  * @return An Operand with kind == OPND_NONE.
  */
-Operand noOperand(void);
+Operand no_operand(void);
 
 /**
  * @brief Print a human-readable dump of @p prog (globals + per-function instructions) to stdout.
@@ -272,6 +272,6 @@ int ir_operand_is_storage(OperandKind kind);
  * @param op IR opcode to test.
  * @return   1 for ADD, MUL, EQ, NE; 0 otherwise.
  */
-int ir_isCommutative(IROp op);
+int ir_is_commutative(IROp op);
 
 #endif /* IR_H */

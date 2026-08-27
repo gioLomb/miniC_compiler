@@ -76,7 +76,7 @@ static int emit_global_addr(int symOff, int *nextTemp,
                              Emitter *e, int loopDepth) {
     int t = (*nextTemp)++;
     emitter_push(e, IR_GLOBAL_ADDR, mkT(t), mkGlobalOp(symOff),
-                 noOperand(), loopDepth);
+                 no_operand(), loopDepth);
     return t;
 }
 
@@ -138,8 +138,8 @@ void ir_lower_globals(IRFunction *f) {
         /* ---- dst ----
          * Se la destinazione e' un globale scalare, ridirige la scrittura
          * su un temp fresco e aggiunge uno STORE_ARR dopo l'istruzione. */
-        Operand deferredStoreAddr = noOperand();
-        Operand deferredStoreVal  = noOperand();
+        Operand deferredStoreAddr = no_operand();
+        Operand deferredStoreVal  = no_operand();
         int     hasDeferredStore  = 0;
 
         if (in.dst.kind == OPND_GLOBAL) {

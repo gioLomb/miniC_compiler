@@ -312,7 +312,7 @@ static void svn_lookupOrInsertExpr(IRInstr *in, const ExprKey *ek,
         // Redundant computation: replace with a copy from the leader.
         in->op   = IR_ASSIGN;
         in->src1 = leader;
-        in->src2 = noOperand();
+        in->src2 = no_operand();
         svn_defineValue(&in->dst, exprVN, scope);
     }else{
         // New expression: record its VN for future de-duplication.
@@ -347,7 +347,7 @@ static void svn_processInstr(IRInstr *in, SVNScope *scope, int *vnCounter) {
         int vn2 = svn_valueNumberOf(in->src2, scope, vnCounter);
 
         // Canonicalise commutative operands so "a+b" == "b+a".
-        if (ir_isCommutative(in->op) && vn1 > vn2) {
+        if (ir_is_commutative(in->op) && vn1 > vn2) {
             int t = vn1; vn1 = vn2; vn2 = t;
         }
 
