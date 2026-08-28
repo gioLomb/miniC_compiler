@@ -212,7 +212,7 @@ static void dag_pin_fusion_pairs(const MachFunction *f, BlockRange blk,
  * @param lastMemoryOp   In/out: node index of the last LOAD/STORE seen so
  *                        far in the block, or -1.
  */
-static void dag_process_instr_deps(const MachFunction *f, int blkStart, int j,
+static void dag_process_instr_dependencies(const MachFunction *f, int blkStart, int j,
                                     RenameTracker *rt, DAGNode *nodes, Arena *arena,
                                     int *lastSideEffect, int *lastMemoryOp) {
     const MachInstr *in = &f->instrs[blkStart + j];
@@ -249,7 +249,7 @@ static void dag_process_instr_deps(const MachFunction *f, int blkStart, int j,
  * @brief Pass 3: build all RAW/WAR/WAW + side-effect + memory ordering
  *        edges for the block.
  *
- * Drives dag_process_instr_deps() over every instruction in program order,
+ * Drives dag_process_instr_dependencies() over every instruction in program order,
  * threading the side-effect/memory-op "last seen" state through the loop.
  *
  * @param f     Machine function owning the instructions.
@@ -259,13 +259,13 @@ static void dag_process_instr_deps(const MachFunction *f, int blkStart, int j,
  * @param arena Scratch arena for edge allocation.
  * @param n     Number of instructions in @p blk.
  */
-static void dag_build_deps(const MachFunction *f, BlockRange blk, RenameTracker *rt,
+static void dag_build_dependencies(const MachFunction *f, BlockRange blk, RenameTracker *rt,
                             DAGNode *nodes, Arena *arena, int n) {
     int lastSideEffect = -1;
     int lastMemoryOp   = -1;
 
     for (int j = 0; j < n; j++)
-        dag_process_instr_deps(f, blk.start, j, rt, nodes, arena,
+        dag_process_instr_dependencies(f, blk.start, j, rt, nodes, arena,
                                 &lastSideEffect, &lastMemoryOp);
 }
 
@@ -301,6 +301,6 @@ void build_dag(const MachFunction *f, BlockRange blk, DAGNode *nodes,
 
     dag_init_nodes(f, blk, nodes, n);
     dag_pin_fusion_pairs(f, blk, nodes, n);
-    dag_build_deps(f, blk, &rt, nodes, arena, n);
+    dag_build_dependencies(f, blk, &rt, nodes, arena, n);
     dag_propagate_heights(nodes, n);
 }

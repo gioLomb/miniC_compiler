@@ -1,0 +1,60 @@
+--------------------------------------------------------------------------------
+Profile data file 'callgrind.out' (creator: callgrind-3.22.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 1114614
+Trigger: Program termination
+Profiled target:  ./bin/minicc examples/stress_test.c -S -o /tmp/out.s (PID 20390, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       99
+Include dirs:     
+User annotated:   
+Auto-annotation:  on
+
+--------------------------------------------------------------------------------
+Ir                 
+--------------------------------------------------------------------------------
+5,535,546 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                file:function
+--------------------------------------------------------------------------------
+393,083 ( 7.10%)  ./malloc/./malloc/malloc.c:_int_malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+306,123 ( 5.53%)  ./malloc/./malloc/malloc.c:_int_free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+276,227 ( 4.99%)  hash_table.c:ht_get [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+234,519 ( 4.24%)  varmap.c:varmap_operand_id [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+193,030 ( 3.49%)  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:memcpy@GLIBC_2.2.5 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+179,069 ( 3.23%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+167,024 ( 3.02%)  interference.c:ig_add_edge.part.0 [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+124,648 ( 2.25%)  ./malloc/./malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+120,591 ( 2.18%)  ./string/../sysdeps/x86_64/multiarch/memcmp-sse2.S:__memcmp_sse2 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+117,971 ( 2.13%)  arena.c:arena_alloc [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 96,701 ( 1.75%)  hash_table.c:ht_set [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 95,102 ( 1.72%)  interference.c:ig_build [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 90,304 ( 1.63%)  liveness.c:machExtract [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 84,928 ( 1.53%)  varmap.c:varmap_hash [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 78,698 ( 1.42%)  dynamic_array.c:int_vector_push [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 74,848 ( 1.35%)  ra_color.c:ra_select_colors [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 68,661 ( 1.24%)  ./malloc/./malloc/malloc.c:realloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 67,485 ( 1.22%)  svn.c:svn_hash [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 65,196 ( 1.18%)  regalloc_utils.c:instr_uses [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 64,298 ( 1.16%)  ra_color.c:ra_simplify [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 63,165 ( 1.14%)  ./stdio-common/./stdio-common/Xprintf_buffer_write.c:__printf_buffer_write [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 62,664 ( 1.13%)  ./string/../sysdeps/x86_64/multiarch/strlen-sse2.S:__strlen_sse2 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 61,576 ( 1.11%)  ./stdio-common/./stdio-common/vfprintf-internal.c:__printf_buffer [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 57,536 ( 1.04%)  cp.c:cp_optimize [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 55,157 ( 1.00%)  scanner_generated.c:lexer_next_token
+ 54,274 ( 0.98%)  sched_dag.c:build_dag [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 50,390 ( 0.91%)  sched.c:sched_schedule [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 47,410 ( 0.86%)  arena.c:arena_strdup [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 46,627 ( 0.84%)  ./malloc/./malloc/malloc.c:_int_free_merge_chunk [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 44,766 ( 0.81%)  liveness.c:irExtract [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 44,460 ( 0.80%)  bitset.h:ig_build
+ 42,921 ( 0.78%)  cp.c:cp_transfer [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]
+ 42,515 ( 0.77%)  ./string/../sysdeps/x86_64/multiarch/strlen-sse2.S:__strnlen_sse2 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 41,281 ( 0.75%)  ./malloc/./malloc/malloc.c:_int_realloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 40,012 ( 0.72%)  regalloc_utils.c:instr_defs [/mnt/c/Users/IO/Desktop/GIORGIO_A_SCUOLA/PROGETTI/miniC_compiler/bin/minicc]

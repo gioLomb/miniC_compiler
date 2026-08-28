@@ -2,7 +2,7 @@
 # Makefile - miniC compiler project
 # ============================================================
 CC      := gcc
-CFLAGS  := -Wall -Wextra -std=gnu11 -g
+CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3
 LDFLAGS :=
 
 ifeq ($(SANITIZE),1)
@@ -56,7 +56,7 @@ COMMON_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC)
                $(RA_COLOR_SRC) $(RA_SPILL_SRC) $(REGALLOC_UTILS_SRC) $(BUCKET_SRC) $(REGALLOC_SRC)
 
 MINICC_SRCS      := $(COMMON_SRCS) parser/main.c
-TEST_SYMTAB_SRCS := $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
+TEST_SYMTAB_SRCS := $(ARENA_SRC) $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
 TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                     $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
