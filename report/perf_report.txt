@@ -1,0 +1,1280 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 31  of event 'cpu/cycles/P'
+# Event count (approx.): 5873828
+#
+# Children      Self  Command  Shared Object         Symbol                             
+# ........  ........  .......  ....................  ...................................
+#
+    20.43%     0.00%  minicc   [kernel.kallsyms]     [k] entry_SYSCALL_64_after_hwframe
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               |          
+               |--5.51%--x64_sys_call
+               |          __x64_sys_exit_group
+               |          do_group_exit
+               |          do_exit
+               |          mm_release
+               |          
+               |--5.29%--ksys_read
+               |          vfs_read
+               |          ovl_read_iter
+               |          backing_file_read_iter
+               |          vfs_iter_read
+               |          rw_verify_area
+               |          security_file_permission
+               |          apparmor_file_permission
+               |          aa_file_perm
+               |          
+               |--5.23%--__x64_sys_mprotect
+               |          do_mprotect_pkey
+               |          mprotect_fixup
+               |          vma_modify
+               |          __split_vma
+               |          vma_prepare
+               |          __rb_insert_augmented
+               |          
+                --4.40%--__x64_sys_execve
+                          do_execveat_common.isra.0
+                          bprm_execve
+                          load_elf_binary
+                          |          
+                          |--2.63%--elf_load
+                          |          vm_mmap_pgoff
+                          |          do_mmap
+                          |          mmap_region
+                          |          mas_preallocate
+                          |          mas_wr_walk
+                          |          
+                           --1.77%--setup_arg_pages
+                                     shift_arg_pages
+                                     vma_shrink
+                                     vma_complete
+
+    20.43%     0.00%  minicc   [kernel.kallsyms]     [k] do_syscall_64
+            |
+            ---do_syscall_64
+               |          
+               |--5.51%--x64_sys_call
+               |          __x64_sys_exit_group
+               |          do_group_exit
+               |          do_exit
+               |          mm_release
+               |          
+               |--5.29%--ksys_read
+               |          vfs_read
+               |          ovl_read_iter
+               |          backing_file_read_iter
+               |          vfs_iter_read
+               |          rw_verify_area
+               |          security_file_permission
+               |          apparmor_file_permission
+               |          aa_file_perm
+               |          
+               |--5.23%--__x64_sys_mprotect
+               |          do_mprotect_pkey
+               |          mprotect_fixup
+               |          vma_modify
+               |          __split_vma
+               |          vma_prepare
+               |          __rb_insert_augmented
+               |          
+                --4.40%--__x64_sys_execve
+                          do_execveat_common.isra.0
+                          bprm_execve
+                          load_elf_binary
+                          |          
+                          |--2.63%--elf_load
+                          |          vm_mmap_pgoff
+                          |          do_mmap
+                          |          mmap_region
+                          |          mas_preallocate
+                          |          mas_wr_walk
+                          |          
+                           --1.77%--setup_arg_pages
+                                     shift_arg_pages
+                                     vma_shrink
+                                     vma_complete
+
+    19.28%     5.03%  minicc   [kernel.kallsyms]     [k] __handle_mm_fault
+            |          
+            |--14.25%--__handle_mm_fault
+            |          |          
+            |          |--11.02%--do_anonymous_page
+            |          |          |          
+            |          |           --5.58%--set_ptes.isra.0
+            |          |                     native_set_pte
+            |          |                     asm_sysvec_apic_timer_interrupt
+            |          |          
+            |           --3.23%--do_fault
+            |                     filemap_map_pages
+            |                     _raw_spin_unlock
+            |          
+             --5.03%--0x5f4342494c470036
+                       _dl_map_new_object
+                       _dl_map_object_from_fd
+                       asm_exc_page_fault
+                       exc_page_fault
+                       do_user_addr_fault
+                       handle_mm_fault
+                       __handle_mm_fault
+                       __rcu_read_unlock
+
+    19.28%     0.00%  minicc   [kernel.kallsyms]     [k] asm_exc_page_fault
+            |
+            ---asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               |          
+               |--11.02%--do_anonymous_page
+               |          |          
+               |           --5.58%--set_ptes.isra.0
+               |                     native_set_pte
+               |                     asm_sysvec_apic_timer_interrupt
+               |          
+               |--5.03%--__rcu_read_unlock
+               |          
+                --3.23%--do_fault
+                          filemap_map_pages
+                          _raw_spin_unlock
+
+    19.28%     0.00%  minicc   [kernel.kallsyms]     [k] exc_page_fault
+            |
+            ---exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               |          
+               |--11.02%--do_anonymous_page
+               |          |          
+               |           --5.58%--set_ptes.isra.0
+               |                     native_set_pte
+               |                     asm_sysvec_apic_timer_interrupt
+               |          
+               |--5.03%--__rcu_read_unlock
+               |          
+                --3.23%--do_fault
+                          filemap_map_pages
+                          _raw_spin_unlock
+
+    19.28%     0.00%  minicc   [kernel.kallsyms]     [k] do_user_addr_fault
+            |
+            ---do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               |          
+               |--11.02%--do_anonymous_page
+               |          |          
+               |           --5.58%--set_ptes.isra.0
+               |                     native_set_pte
+               |                     asm_sysvec_apic_timer_interrupt
+               |          
+               |--5.03%--__rcu_read_unlock
+               |          
+                --3.23%--do_fault
+                          filemap_map_pages
+                          _raw_spin_unlock
+
+    19.28%     0.00%  minicc   [kernel.kallsyms]     [k] handle_mm_fault
+            |
+            ---handle_mm_fault
+               __handle_mm_fault
+               |          
+               |--11.02%--do_anonymous_page
+               |          |          
+               |           --5.58%--set_ptes.isra.0
+               |                     native_set_pte
+               |                     asm_sysvec_apic_timer_interrupt
+               |          
+               |--5.03%--__rcu_read_unlock
+               |          
+                --3.23%--do_fault
+                          filemap_map_pages
+                          _raw_spin_unlock
+
+    11.02%     5.44%  minicc   [kernel.kallsyms]     [k] do_anonymous_page
+            |          
+            |--5.58%--do_anonymous_page
+            |          set_ptes.isra.0
+            |          native_set_pte
+            |          asm_sysvec_apic_timer_interrupt
+            |          
+             --5.44%--_int_malloc
+                       asm_exc_page_fault
+                       exc_page_fault
+                       do_user_addr_fault
+                       handle_mm_fault
+                       __handle_mm_fault
+                       do_anonymous_page
+
+     9.41%     0.00%  minicc   ld-linux-x86-64.so.2  [.] _dl_start_user
+            |
+            ---_dl_start_user
+               _dl_sysdep_start
+               |          
+               |--5.23%--mprotect
+               |          entry_SYSCALL_64_after_hwframe
+               |          do_syscall_64
+               |          __x64_sys_mprotect
+               |          do_mprotect_pkey
+               |          mprotect_fixup
+               |          vma_modify
+               |          __split_vma
+               |          vma_prepare
+               |          __rb_insert_augmented
+               |          
+                --4.18%--_dl_debug_initialize
+
+     9.41%     0.00%  minicc   ld-linux-x86-64.so.2  [.] _dl_sysdep_start
+            |
+            ---_dl_sysdep_start
+               |          
+               |--5.23%--mprotect
+               |          entry_SYSCALL_64_after_hwframe
+               |          do_syscall_64
+               |          __x64_sys_mprotect
+               |          do_mprotect_pkey
+               |          mprotect_fixup
+               |          vma_modify
+               |          __split_vma
+               |          vma_prepare
+               |          __rb_insert_augmented
+               |          
+                --4.18%--_dl_debug_initialize
+
+     5.58%     5.58%  minicc   [kernel.kallsyms]     [k] native_set_pte
+            |
+            ---sysmalloc
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               do_anonymous_page
+               set_ptes.isra.0
+               native_set_pte
+               asm_sysvec_apic_timer_interrupt
+
+     5.58%     0.00%  minicc   libc.so.6             [.] sysmalloc
+            |
+            ---sysmalloc
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               do_anonymous_page
+               set_ptes.isra.0
+               native_set_pte
+               asm_sysvec_apic_timer_interrupt
+
+     5.58%     0.00%  minicc   [kernel.kallsyms]     [k] set_ptes.isra.0
+            |
+            ---set_ptes.isra.0
+               native_set_pte
+               asm_sysvec_apic_timer_interrupt
+
+     5.58%     0.00%  minicc   [kernel.kallsyms]     [k] asm_sysvec_apic_timer_interrupt
+            |
+            ---asm_sysvec_apic_timer_interrupt
+
+     5.56%     5.56%  minicc   minicc                [.] machExtract
+            |
+            ---0x5615eb2dcee0
+               machExtract
+
+     5.56%     0.00%  minicc   [unknown]             [.] 0x00005615eb2dcee0
+            |
+            ---0x5615eb2dcee0
+               machExtract
+
+     5.55%     5.55%  minicc   minicc                [.] varmap_operand_id
+            |
+            ---0
+               0x5615eb2da930
+               varmap_operand_id
+
+     5.55%     0.00%  minicc   [unknown]             [.] 0000000000000000
+            |
+            ---0
+               0x5615eb2da930
+               varmap_operand_id
+
+     5.55%     0.00%  minicc   [unknown]             [.] 0x00005615eb2da930
+            |
+            ---0x5615eb2da930
+               varmap_operand_id
+
+     5.52%     5.52%  minicc   minicc                [.] liveness_computeCore
+            |
+            ---liveness_computeCore
+
+     5.51%     5.51%  minicc   [kernel.kallsyms]     [k] mm_release
+            |
+            ---_exit
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               x64_sys_call
+               __x64_sys_exit_group
+               do_group_exit
+               do_exit
+               mm_release
+
+     5.51%     0.00%  minicc   libc.so.6             [.] _exit
+            |
+            ---_exit
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               x64_sys_call
+               __x64_sys_exit_group
+               do_group_exit
+               do_exit
+               mm_release
+
+     5.51%     0.00%  minicc   [kernel.kallsyms]     [k] x64_sys_call
+            |
+            ---x64_sys_call
+               __x64_sys_exit_group
+               do_group_exit
+               do_exit
+               mm_release
+
+     5.51%     0.00%  minicc   [kernel.kallsyms]     [k] __x64_sys_exit_group
+            |
+            ---__x64_sys_exit_group
+               do_group_exit
+               do_exit
+               mm_release
+
+     5.51%     0.00%  minicc   [kernel.kallsyms]     [k] do_group_exit
+            |
+            ---do_group_exit
+               do_exit
+               mm_release
+
+     5.51%     0.00%  minicc   [kernel.kallsyms]     [k] do_exit
+            |
+            ---do_exit
+               mm_release
+
+     5.50%     5.50%  minicc   libc.so.6             [.] _IO_file_xsputn@@GLIBC_2.2.5
+            |
+            ---_IO_file_xsputn@@GLIBC_2.2.5
+
+     5.50%     5.50%  minicc   minicc                [.] ra_select_colors
+            |
+            ---0x2800000003
+               0x100000000f
+               ra_select_colors
+
+     5.50%     0.00%  minicc   [unknown]             [.] 0x0000002800000003
+            |
+            ---0x2800000003
+               0x100000000f
+               ra_select_colors
+
+     5.50%     0.00%  minicc   [unknown]             [.] 0x000000100000000f
+            |
+            ---0x100000000f
+               ra_select_colors
+
+     5.50%     5.50%  minicc   minicc                [.] ht_get
+            |
+            ---ht_get
+
+     5.47%     5.47%  minicc   libc.so.6             [.] __memmove_sse2_unaligned_erms
+            |
+            ---__memmove_sse2_unaligned_erms
+
+     5.44%     0.00%  minicc   libc.so.6             [.] _int_malloc
+            |
+            ---_int_malloc
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               do_anonymous_page
+
+     5.40%     5.40%  minicc   minicc                [.] sym_hash
+            |
+            ---sym_hash
+
+     5.37%     5.37%  minicc   libc.so.6             [.] malloc
+            |
+            ---malloc
+
+     5.32%     5.32%  minicc   minicc                [.] arena_strndup
+            |
+            ---0x617865006363696e
+               0x7fff200b2627
+               arena_strndup
+
+     5.32%     0.00%  minicc   [unknown]             [.] 0x617865006363696e
+            |
+            ---0x617865006363696e
+               0x7fff200b2627
+               arena_strndup
+
+     5.32%     0.00%  minicc   [unknown]             [.] 0x00007fff200b2627
+            |
+            ---0x7fff200b2627
+               arena_strndup
+
+     5.29%     5.29%  minicc   [kernel.kallsyms]     [k] __rcu_read_lock
+            |
+            ---__internal_syscall_cancel
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               ksys_read
+               vfs_read
+               ovl_read_iter
+               backing_file_read_iter
+               vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   libc.so.6             [.] __internal_syscall_cancel
+            |
+            ---__internal_syscall_cancel
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               ksys_read
+               vfs_read
+               ovl_read_iter
+               backing_file_read_iter
+               vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] ksys_read
+            |
+            ---ksys_read
+               vfs_read
+               ovl_read_iter
+               backing_file_read_iter
+               vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] vfs_read
+            |
+            ---vfs_read
+               ovl_read_iter
+               backing_file_read_iter
+               vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] ovl_read_iter
+            |
+            ---ovl_read_iter
+               backing_file_read_iter
+               vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] backing_file_read_iter
+            |
+            ---backing_file_read_iter
+               vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] vfs_iter_read
+            |
+            ---vfs_iter_read
+               rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] rw_verify_area
+            |
+            ---rw_verify_area
+               security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] security_file_permission
+            |
+            ---security_file_permission
+               apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] apparmor_file_permission
+            |
+            ---apparmor_file_permission
+               aa_file_perm
+
+     5.29%     0.00%  minicc   [kernel.kallsyms]     [k] aa_file_perm
+            |
+            ---aa_file_perm
+
+     5.23%     5.23%  minicc   [kernel.kallsyms]     [k] __rb_insert_augmented
+            |
+            ---_dl_start_user
+               _dl_sysdep_start
+               mprotect
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_mprotect
+               do_mprotect_pkey
+               mprotect_fixup
+               vma_modify
+               __split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   ld-linux-x86-64.so.2  [.] mprotect
+            |
+            ---mprotect
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_mprotect
+               do_mprotect_pkey
+               mprotect_fixup
+               vma_modify
+               __split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   [kernel.kallsyms]     [k] __x64_sys_mprotect
+            |
+            ---__x64_sys_mprotect
+               do_mprotect_pkey
+               mprotect_fixup
+               vma_modify
+               __split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   [kernel.kallsyms]     [k] do_mprotect_pkey
+            |
+            ---do_mprotect_pkey
+               mprotect_fixup
+               vma_modify
+               __split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   [kernel.kallsyms]     [k] mprotect_fixup
+            |
+            ---mprotect_fixup
+               vma_modify
+               __split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   [kernel.kallsyms]     [k] vma_modify
+            |
+            ---vma_modify
+               __split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   [kernel.kallsyms]     [k] __split_vma
+            |
+            ---__split_vma
+               vma_prepare
+               __rb_insert_augmented
+
+     5.23%     0.00%  minicc   [kernel.kallsyms]     [k] vma_prepare
+            |
+            ---vma_prepare
+               __rb_insert_augmented
+
+     5.03%     0.00%  minicc   [unknown]             [k] 0x5f4342494c470036
+            |
+            ---0x5f4342494c470036
+               _dl_map_new_object
+               _dl_map_object_from_fd
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               __rcu_read_unlock
+
+     5.03%     0.00%  minicc   ld-linux-x86-64.so.2  [.] _dl_map_new_object
+            |
+            ---_dl_map_new_object
+               _dl_map_object_from_fd
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               __rcu_read_unlock
+
+     5.03%     0.00%  minicc   ld-linux-x86-64.so.2  [.] _dl_map_object_from_fd
+            |
+            ---_dl_map_object_from_fd
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               __rcu_read_unlock
+
+     5.03%     0.00%  minicc   [kernel.kallsyms]     [k] __rcu_read_unlock
+            |
+            ---__rcu_read_unlock
+
+     4.40%     0.00%  minicc   [unknown]             [k] 0x00007fd3f6ede557
+            |
+            ---0x7fd3f6ede557
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               |          
+               |--2.63%--elf_load
+               |          vm_mmap_pgoff
+               |          do_mmap
+               |          mmap_region
+               |          mas_preallocate
+               |          mas_wr_walk
+               |          
+                --1.77%--setup_arg_pages
+                          shift_arg_pages
+                          vma_shrink
+                          vma_complete
+
+     4.40%     0.00%  minicc   [kernel.kallsyms]     [k] __x64_sys_execve
+            |
+            ---__x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               |          
+               |--2.63%--elf_load
+               |          vm_mmap_pgoff
+               |          do_mmap
+               |          mmap_region
+               |          mas_preallocate
+               |          mas_wr_walk
+               |          
+                --1.77%--setup_arg_pages
+                          shift_arg_pages
+                          vma_shrink
+                          vma_complete
+
+     4.40%     0.00%  minicc   [kernel.kallsyms]     [k] do_execveat_common.isra.0
+            |
+            ---do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               |          
+               |--2.63%--elf_load
+               |          vm_mmap_pgoff
+               |          do_mmap
+               |          mmap_region
+               |          mas_preallocate
+               |          mas_wr_walk
+               |          
+                --1.77%--setup_arg_pages
+                          shift_arg_pages
+                          vma_shrink
+                          vma_complete
+
+     4.40%     0.00%  minicc   [kernel.kallsyms]     [k] bprm_execve
+            |
+            ---bprm_execve
+               load_elf_binary
+               |          
+               |--2.63%--elf_load
+               |          vm_mmap_pgoff
+               |          do_mmap
+               |          mmap_region
+               |          mas_preallocate
+               |          mas_wr_walk
+               |          
+                --1.77%--setup_arg_pages
+                          shift_arg_pages
+                          vma_shrink
+                          vma_complete
+
+     4.40%     0.00%  minicc   [kernel.kallsyms]     [k] load_elf_binary
+            |
+            ---load_elf_binary
+               |          
+               |--2.63%--elf_load
+               |          vm_mmap_pgoff
+               |          do_mmap
+               |          mmap_region
+               |          mas_preallocate
+               |          mas_wr_walk
+               |          
+                --1.77%--setup_arg_pages
+                          shift_arg_pages
+                          vma_shrink
+                          vma_complete
+
+     4.18%     4.18%  minicc   ld-linux-x86-64.so.2  [.] _dl_debug_initialize
+            |
+            ---_dl_start_user
+               _dl_sysdep_start
+               _dl_debug_initialize
+
+     3.23%     3.23%  minicc   [kernel.kallsyms]     [k] _raw_spin_unlock
+            |
+            ---_start
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               do_fault
+               filemap_map_pages
+               _raw_spin_unlock
+
+     3.23%     0.00%  minicc   ld-linux-x86-64.so.2  [.] _start
+            |
+            ---_start
+               asm_exc_page_fault
+               exc_page_fault
+               do_user_addr_fault
+               handle_mm_fault
+               __handle_mm_fault
+               do_fault
+               filemap_map_pages
+               _raw_spin_unlock
+
+     3.23%     0.00%  minicc   [kernel.kallsyms]     [k] do_fault
+            |
+            ---do_fault
+               filemap_map_pages
+               _raw_spin_unlock
+
+     3.23%     0.00%  minicc   [kernel.kallsyms]     [k] filemap_map_pages
+            |
+            ---filemap_map_pages
+               _raw_spin_unlock
+
+     2.63%     2.63%  minicc   [kernel.kallsyms]     [k] mas_wr_walk
+            |
+            ---0x7fd3f6ede557
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               elf_load
+               vm_mmap_pgoff
+               do_mmap
+               mmap_region
+               mas_preallocate
+               mas_wr_walk
+
+     2.63%     0.00%  minicc   [kernel.kallsyms]     [k] elf_load
+            |
+            ---elf_load
+               vm_mmap_pgoff
+               do_mmap
+               mmap_region
+               mas_preallocate
+               mas_wr_walk
+
+     2.63%     0.00%  minicc   [kernel.kallsyms]     [k] vm_mmap_pgoff
+            |
+            ---vm_mmap_pgoff
+               do_mmap
+               mmap_region
+               mas_preallocate
+               mas_wr_walk
+
+     2.63%     0.00%  minicc   [kernel.kallsyms]     [k] do_mmap
+            |
+            ---do_mmap
+               mmap_region
+               mas_preallocate
+               mas_wr_walk
+
+     2.63%     0.00%  minicc   [kernel.kallsyms]     [k] mmap_region
+            |
+            ---mmap_region
+               mas_preallocate
+               mas_wr_walk
+
+     2.63%     0.00%  minicc   [kernel.kallsyms]     [k] mas_preallocate
+            |
+            ---mas_preallocate
+               mas_wr_walk
+
+     1.77%     1.77%  minicc   [kernel.kallsyms]     [k] vma_complete
+            |
+            ---0x7fd3f6ede557
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               setup_arg_pages
+               shift_arg_pages
+               vma_shrink
+               vma_complete
+
+     1.77%     0.00%  minicc   [kernel.kallsyms]     [k] setup_arg_pages
+            |
+            ---setup_arg_pages
+               shift_arg_pages
+               vma_shrink
+               vma_complete
+
+     1.77%     0.00%  minicc   [kernel.kallsyms]     [k] shift_arg_pages
+            |
+            ---shift_arg_pages
+               vma_shrink
+               vma_complete
+
+     1.77%     0.00%  minicc   [kernel.kallsyms]     [k] vma_shrink
+            |
+            ---vma_shrink
+               vma_complete
+
+     1.41%     0.00%  perf-ex  [unknown]             [k] 0x00007fd3f6ede557
+            |
+            ---0x7fd3f6ede557
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] entry_SYSCALL_64_after_hwframe
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] do_syscall_64
+            |
+            ---do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] __x64_sys_execve
+            |
+            ---__x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] do_execveat_common.isra.0
+            |
+            ---do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] bprm_execve
+            |
+            ---bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] load_elf_binary
+            |
+            ---load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.00%  perf-ex  [kernel.kallsyms]     [k] begin_new_exec
+            |
+            ---begin_new_exec
+               perf_event_exec
+               |          
+                --1.37%--asm_sysvec_irq_work
+                          |          
+                           --1.27%--sysvec_irq_work
+                                     __sysvec_irq_work
+                                     |          
+                                      --0.90%--irq_work_run_list
+                                                irq_work_single
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_poll_callback
+                                                __wake_up
+                                                __wake_up_common
+                                                ep_autoremove_wake_function
+                                                try_to_wake_up
+                                                set_task_cpu
+                                                migrate_task_rq_fair
+                                                remove_entity_load_avg
+
+     1.41%     0.10%  perf-ex  [kernel.kallsyms]     [k] perf_event_exec
+            |          
+             --1.31%--perf_event_exec
+                       |          
+                        --1.27%--asm_sysvec_irq_work
+                                  sysvec_irq_work
+                                  __sysvec_irq_work
+                                  |          
+                                   --0.90%--irq_work_run_list
+                                             irq_work_single
+                                             __wake_up
+                                             __wake_up_common
+                                             ep_poll_callback
+                                             __wake_up
+                                             __wake_up_common
+                                             ep_autoremove_wake_function
+                                             try_to_wake_up
+                                             set_task_cpu
+                                             migrate_task_rq_fair
+                                             remove_entity_load_avg
+
+     1.37%     0.00%  perf-ex  [kernel.kallsyms]     [k] asm_sysvec_irq_work
+            |
+            ---asm_sysvec_irq_work
+               |          
+                --1.27%--sysvec_irq_work
+                          __sysvec_irq_work
+                          |          
+                           --0.90%--irq_work_run_list
+                                     irq_work_single
+                                     __wake_up
+                                     __wake_up_common
+                                     ep_poll_callback
+                                     __wake_up
+                                     __wake_up_common
+                                     ep_autoremove_wake_function
+                                     try_to_wake_up
+                                     set_task_cpu
+                                     migrate_task_rq_fair
+                                     remove_entity_load_avg
+
+     1.27%     0.00%  perf-ex  [kernel.kallsyms]     [k] sysvec_irq_work
+            |
+            ---sysvec_irq_work
+               __sysvec_irq_work
+               |          
+                --0.90%--irq_work_run_list
+                          irq_work_single
+                          __wake_up
+                          __wake_up_common
+                          ep_poll_callback
+                          __wake_up
+                          __wake_up_common
+                          ep_autoremove_wake_function
+                          try_to_wake_up
+                          set_task_cpu
+                          migrate_task_rq_fair
+                          remove_entity_load_avg
+
+     1.27%     0.00%  perf-ex  [kernel.kallsyms]     [k] __sysvec_irq_work
+            |
+            ---__sysvec_irq_work
+               |          
+                --0.90%--irq_work_run_list
+                          irq_work_single
+                          __wake_up
+                          __wake_up_common
+                          ep_poll_callback
+                          __wake_up
+                          __wake_up_common
+                          ep_autoremove_wake_function
+                          try_to_wake_up
+                          set_task_cpu
+                          migrate_task_rq_fair
+                          remove_entity_load_avg
+
+     1.27%     0.00%  perf-ex  [kernel.kallsyms]     [k] irq_work_run_list
+            |
+            ---irq_work_run_list
+               irq_work_single
+               |          
+                --0.90%--__wake_up
+                          __wake_up_common
+                          ep_poll_callback
+                          __wake_up
+                          __wake_up_common
+                          ep_autoremove_wake_function
+                          try_to_wake_up
+                          set_task_cpu
+                          migrate_task_rq_fair
+                          remove_entity_load_avg
+
+     1.27%     0.00%  perf-ex  [kernel.kallsyms]     [k] irq_work_single
+            |
+            ---irq_work_single
+               |          
+                --0.90%--__wake_up
+                          __wake_up_common
+                          ep_poll_callback
+                          __wake_up
+                          __wake_up_common
+                          ep_autoremove_wake_function
+                          try_to_wake_up
+                          set_task_cpu
+                          migrate_task_rq_fair
+                          remove_entity_load_avg
+
+     0.90%     0.90%  perf-ex  [kernel.kallsyms]     [k] remove_entity_load_avg
+            |
+            ---0x7fd3f6ede557
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_execve
+               do_execveat_common.isra.0
+               bprm_execve
+               load_elf_binary
+               begin_new_exec
+               perf_event_exec
+               asm_sysvec_irq_work
+               sysvec_irq_work
+               __sysvec_irq_work
+               irq_work_run_list
+               irq_work_single
+               __wake_up
+               __wake_up_common
+               ep_poll_callback
+               __wake_up
+               __wake_up_common
+               ep_autoremove_wake_function
+               try_to_wake_up
+               set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] __wake_up
+            |
+            ---__wake_up
+               __wake_up_common
+               ep_poll_callback
+               __wake_up
+               __wake_up_common
+               ep_autoremove_wake_function
+               try_to_wake_up
+               set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] __wake_up_common
+            |
+            ---__wake_up_common
+               ep_poll_callback
+               __wake_up
+               __wake_up_common
+               ep_autoremove_wake_function
+               try_to_wake_up
+               set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] ep_poll_callback
+            |
+            ---ep_poll_callback
+               __wake_up
+               __wake_up_common
+               ep_autoremove_wake_function
+               try_to_wake_up
+               set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] ep_autoremove_wake_function
+            |
+            ---ep_autoremove_wake_function
+               try_to_wake_up
+               set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] try_to_wake_up
+            |
+            ---try_to_wake_up
+               set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] set_task_cpu
+            |
+            ---set_task_cpu
+               migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.90%     0.00%  perf-ex  [kernel.kallsyms]     [k] migrate_task_rq_fair
+            |
+            ---migrate_task_rq_fair
+               remove_entity_load_avg
+
+     0.37%     0.37%  perf-ex  [kernel.kallsyms]     [k] vsnprintf
+     0.37%     0.00%  perf-ex  [kernel.kallsyms]     [k] irq_work_run
+     0.37%     0.00%  perf-ex  [kernel.kallsyms]     [k] _printk
+     0.37%     0.00%  perf-ex  [kernel.kallsyms]     [k] vprintk_emit
+     0.37%     0.00%  perf-ex  [kernel.kallsyms]     [k] vprintk_store
+     0.04%     0.00%  perf-ex  [kernel.kallsyms]     [k] native_write_msr
+     0.04%     0.00%  perf-ex  [kernel.kallsyms]     [k] perf_ctx_enable
+     0.04%     0.00%  perf-ex  [kernel.kallsyms]     [k] __intel_pmu_enable_all.isra.0
+     0.03%     0.03%  perf-ex  [kernel.kallsyms]     [k] exc_nmi
+     0.01%     0.01%  perf-ex  [kernel.kallsyms]     [k] native_sched_clock
+
+
+#
+# (Tip: For tracepoint events, try: perf report -s trace_fields)
+#

@@ -8,10 +8,6 @@ static Entry *create_entry(Arena *arena, void *key, size_t keySize,
 
 static int ht_resize(Hash_Table *table);
 
-static int is_prime(size_t n);
-
-static size_t next_prime(size_t n);
-
 static inline void save_entry(Entry *e, FILE *f);
 
 static inline int keys_equal(const void *a, size_t aSize, const void *b, size_t bSize);
@@ -24,11 +20,13 @@ Hash_Table *ht_create(size_t initialCapacity, hash_func hashFunction) {
     if (!table) return NULL;
 
     table->size = 0;
-    table->capacity = initialCapacity > 0 ? initialCapacity : HT_DEFAULT_CAPACITY;
+    // capacity must stay a power of 2: index computation uses AND, not modulo
+    size_t requested = initialCapacity > 0 ? initialCapacity : HT_DEFAULT_CAPACITY;
+    table->capacity = round_pow2(requested);
 
     table->pool = calloc(table->capacity, sizeof(Entry *));
     if (!table->pool) {
-        free(table); 
+        free(table);
         return NULL;
     }
 
@@ -55,31 +53,36 @@ int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
     if (!table || !key) return 0;
 
     unsigned long h = table->hashFunction(key, keySize);
-    unsigned int index = h % table->capacity;
+    // capacity is a power of 2: h & (capacity-1) == h % capacity, no division
+    unsigned int index = (unsigned int)(h & (table->capacity - 1));
 
     for (Entry *e = table->pool[index]; e; e = e->next) {
         if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
 
-        if (valueSize <= e->size) {
-            // stesso spazio o piu' piccolo: overwrite in place, ZERO alloc
-            // (caso comune: VarMap aggiorna sempre un int a size fissa)
+        if (valueSize <= e->cap) {
+            // buffer already large enough (even if a previous update shrank
+            // 'size' below 'cap'): overwrite in place, zero allocation
             memcpy(e->value, value, valueSize);
             e->size = valueSize;
         } else {
-            // cresciuto: serve blocco arena nuovo, il vecchio resta "leaked"
-            // nell'arena (reclaimed in blocco da ht_destroy, mai prima --
-            // tradeoff accettabile: lifetime delle hashtable in questo
-            // progetto e' sempre limitata a una singola pass del compilatore)
-            e->value = arena_alloc(table->arena, valueSize);
+            // grown past the current physical buffer: allocate a new one,
+            // rounded up to a power of 2 so a following moderate re-growth
+            // reuses this same buffer instead of re-allocating again.
+            // the old buffer stays "leaked" inside the arena (reclaimed in
+            // bulk by ht_destroy, never before -- same tradeoff as before:
+            // hash table lifetime here is always a single compiler pass)
+            size_t newCap = round_pow2(valueSize);
+            e->value = arena_alloc(table->arena, newCap);
             memcpy(e->value, value, valueSize);
             e->size = valueSize;
+            e->cap  = newCap;
         }
         return 1;
     }
 
     if (table->size + 1 >= table->capacity) {
         if (!ht_resize(table)) return 0;
-        index = h % table->capacity;
+        index = (unsigned int)(h & (table->capacity - 1));
     }
 
     Entry *newEntry = create_entry(table->arena, key, keySize, value, valueSize, h);
@@ -94,7 +97,7 @@ int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
            void * restrict destBuffer, size_t destSize) {
     if (!table || !key || !destBuffer) return 0;
 
-    unsigned int index = table->hashFunction(key, keySize) % table->capacity;
+    unsigned int index = (unsigned int)(table->hashFunction(key, keySize) & (table->capacity - 1));
     for (Entry *e = table->pool[index]; e; e = e->next) {
         if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
 
@@ -109,7 +112,7 @@ int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
 int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize) {
     if (!table || !key) return 0;
 
-    unsigned int index = table->hashFunction(key, keySize) % table->capacity;
+    unsigned int index = (unsigned int)(table->hashFunction(key, keySize) & (table->capacity - 1));
     Entry *prev = NULL;
     Entry *e = table->pool[index];
 
@@ -132,15 +135,18 @@ int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize) 
 }
 
 static int ht_resize(Hash_Table *table) {
-    size_t  newCap  = next_prime(table->capacity * 2);
+    // capacity is already a power of 2: doubling keeps that invariant,
+    // no next_prime() search needed
+    size_t  newCap  = table->capacity * 2;
     Entry **newPool = calloc(newCap, sizeof(Entry *));
     if (!newPool) return 0;
 
+    size_t mask = newCap - 1;
     for (size_t i = 0; i < table->capacity; i++) {
         Entry *e = table->pool[i];
         while (e) {
             Entry *next = e->next;
-            unsigned int newIndex = e->hash % newCap;
+            unsigned int newIndex = (unsigned int)(e->hash & mask);
 
             e->next = newPool[newIndex];
             newPool[newIndex] = e;
@@ -244,37 +250,23 @@ static inline void save_entry(Entry *e, FILE *f) {
 static Entry *create_entry(Arena *arena, void *key, size_t keySize,
                             void *value, size_t valueSize,
                             unsigned long hash) {
-    // arena_alloc mai NULL (arena.c fa exit(1) su OOM): niente piu' goto error,
-    // 3 arena_alloc invece di 3 malloc, ma bump allocation e' ~gratis
+    // arena_alloc mai NULL (arena.c fa exit(1) su OOM): niente goto error,
+    // arena_alloc invece di malloc, bump allocation e' ~gratis
     Entry *e = arena_alloc(arena, sizeof(Entry));
 
     e->key = arena_alloc(arena, keySize);
     memcpy(e->key, key, keySize);
     e->keySize = keySize;
 
-    e->value = arena_alloc(arena, valueSize);
+    // value buffer rounded up to a power of 2: a later update that grows
+    // moderately (still <= cap) reuses this same buffer, see ht_set
+    size_t cap = round_pow2(valueSize);
+    e->value = arena_alloc(arena, cap);
     memcpy(e->value, value, valueSize);
     e->size = valueSize;
+    e->cap  = cap;
 
     e->hash = hash;
     e->next = NULL;
     return e;
-}
-
-static int is_prime(size_t n) {
-    if (n < 2) return 0;
-    if (n == 2 || n == 3) return 1;
-    if (n % 2 == 0 || n % 3 == 0) return 0;
-
-    for (size_t i = 5; i * i <= n; i += 6) {
-        if (n % i == 0 || n % (i + 2) == 0) return 0;
-    }
-    return 1;
-}
-
-static size_t next_prime(size_t n) {
-    if (n < 2) return 2;
-    if (n % 2 == 0) n++;
-    while (!is_prime(n)) n += 2;
-    return n;
 }
