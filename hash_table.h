@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "arena.h"
 
 #define MAX_KEY_LEN     (1 << 12)
 #define MAX_VALUE_SIZE  (1 << 20)
@@ -33,11 +34,14 @@ typedef void (*ht_foreach_cb)(void *key, size_t keySize,
                                void *value, size_t valueSize,
                                void *userdata);
 
+
+
 typedef struct Entry {
     void *key;
     size_t keySize;
     void *value;
-    size_t size;
+    size_t size;   
+    size_t cap;    
     unsigned long hash;
     struct Entry *next;
 } Entry;
@@ -47,7 +51,8 @@ typedef struct {
     size_t size;
     size_t capacity;
     hash_func hashFunction;
-    /* 'seed' e 'lock' rimossi rispetto alla versione originale */
+    Arena *arena;   /* backs every Entry + key/value bytes: bump alloc,
+                        no malloc/free per insert (vedi profiling) */
 } Hash_Table;
 
 /* ── API ─────────────────────────────────────────────────────────────── */

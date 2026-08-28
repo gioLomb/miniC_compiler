@@ -2,7 +2,7 @@
 
 /* ── Forward declarations ───────────────────────────────────────────────── */
 
-static Entry *create_entry(void *key, size_t keySize,
+static Entry *create_entry(Arena *arena, void *key, size_t keySize,
                             void *value, size_t valueSize,
                             unsigned long hash);
 
@@ -20,20 +20,19 @@ static inline int keys_equal(const void *a, size_t aSize, const void *b, size_t 
 /* ── API implementation ──────────────────────────────────────────────── */
 
 Hash_Table *ht_create(size_t initialCapacity, hash_func hashFunction) {
-    // Allocate memory for the main structure
     Hash_Table *table = malloc(sizeof(Hash_Table));
     if (!table) return NULL;
 
     table->size = 0;
-    // Ensure capacity is at least the default value
     table->capacity = initialCapacity > 0 ? initialCapacity : HT_DEFAULT_CAPACITY;
 
-    // Allocate bucket array and initialize with NULL pointers
     table->pool = calloc(table->capacity, sizeof(Entry *));
     if (!table->pool) {
-        free(table); return NULL;
+        free(table); 
+        return NULL;
     }
 
+    table->arena = arena_create(0);  // vita = vita della tabella
     table->hashFunction = hashFunction;
     return table;
 }
@@ -61,13 +60,20 @@ int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
     for (Entry *e = table->pool[index]; e; e = e->next) {
         if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
 
-        void *newValue = malloc(valueSize);
-        if (!newValue) return 0;
-        free(e->value);
-        e->value = newValue;
-        memcpy(e->value, value, valueSize);
-        e->size = valueSize;
-
+        if (valueSize <= e->size) {
+            // stesso spazio o piu' piccolo: overwrite in place, ZERO alloc
+            // (caso comune: VarMap aggiorna sempre un int a size fissa)
+            memcpy(e->value, value, valueSize);
+            e->size = valueSize;
+        } else {
+            // cresciuto: serve blocco arena nuovo, il vecchio resta "leaked"
+            // nell'arena (reclaimed in blocco da ht_destroy, mai prima --
+            // tradeoff accettabile: lifetime delle hashtable in questo
+            // progetto e' sempre limitata a una singola pass del compilatore)
+            e->value = arena_alloc(table->arena, valueSize);
+            memcpy(e->value, value, valueSize);
+            e->size = valueSize;
+        }
         return 1;
     }
 
@@ -76,9 +82,7 @@ int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
         index = h % table->capacity;
     }
 
-    Entry *newEntry = create_entry(key, keySize, value, valueSize, h);
-    if (!newEntry) return 0;
-
+    Entry *newEntry = create_entry(table->arena, key, keySize, value, valueSize, h);
     newEntry->next = table->pool[index];
     table->pool[index] = newEntry;
     table->size++;
@@ -119,9 +123,9 @@ int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize) 
     if (prev) prev->next = e->next;
     else table->pool[index] = e->next;
 
-    free(e->key);
-    free(e->value);
-    free(e);
+    // no free(): memoria e' nell'arena, reclaimed in blocco da ht_destroy.
+    // entry solo scollegata dalla catena bucket (leak fino a destroy, stesso
+    // tradeoff di ht_set sopra).
     table->size--;
 
     return 1;
@@ -151,7 +155,7 @@ static int ht_resize(Hash_Table *table) {
 }
 
 static inline int keys_equal(const void *a, size_t aSize,
-                              const void *b, size_t bSize) {
+                             const void *b, size_t bSize) {
     return aSize == bSize && memcmp(a, b, aSize) == 0;
 }
 
@@ -160,16 +164,9 @@ void ht_destroy(Hash_Table *table, const char *persistenceFilePath) {
 
     if (persistenceFilePath) ht_snapshot(table, persistenceFilePath);
 
-    for (size_t i = 0; i < table->capacity; i++) {
-        Entry *e = table->pool[i];
-        while (e) {
-            Entry *next = e->next;
-            free(e->key);
-            free(e->value);
-            free(e);
-            e = next;
-        }
-    }
+    // BONUS: prima serviva walk O(n) su ogni bucket con 3 free() per entry;
+    // ora un solo arena_destroy libera tutto in blocco, O(1) rispetto a n
+    arena_destroy(table->arena);
 
     free(table->pool);
     free(table);
@@ -244,32 +241,24 @@ static inline void save_entry(Entry *e, FILE *f) {
     fwrite(e->value,     e->size,       1, f);
 }
 
-static Entry *create_entry(void *key, size_t keySize,
+static Entry *create_entry(Arena *arena, void *key, size_t keySize,
                             void *value, size_t valueSize,
                             unsigned long hash) {
-    Entry *e = malloc(sizeof(Entry));
-    if (!e) return NULL;
-    e->key = e->value = NULL;
+    // arena_alloc mai NULL (arena.c fa exit(1) su OOM): niente piu' goto error,
+    // 3 arena_alloc invece di 3 malloc, ma bump allocation e' ~gratis
+    Entry *e = arena_alloc(arena, sizeof(Entry));
 
-    e->key = malloc(keySize);
-    if (!e->key) goto error;
+    e->key = arena_alloc(arena, keySize);
     memcpy(e->key, key, keySize);
     e->keySize = keySize;
 
-    e->value = malloc(valueSize);
-    if (!e->value) goto error;
+    e->value = arena_alloc(arena, valueSize);
     memcpy(e->value, value, valueSize);
-
     e->size = valueSize;
+
     e->hash = hash;
     e->next = NULL;
     return e;
-
-error:
-    free(e->key);
-    free(e->value);
-    free(e);
-    return NULL;
 }
 
 static int is_prime(size_t n) {
