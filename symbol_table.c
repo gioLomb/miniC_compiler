@@ -4,17 +4,7 @@
 
 /**
  * @brief Deterministic FNV-1a hash algorithm for identifier lookup keys.
- *
-static unsigned long sym_hash(const void *key, size_t keySize) {
-    const unsigned char *bytes = key;
-    unsigned long h = 2166136261UL;
-    for (size_t i = 0; i < keySize; i++) {
-        h ^= bytes[i];
-        h *= 16777619UL;
-    }
-    return h;
-}*/
-// symbol_table.c
+ */
 static unsigned long sym_hash(const void *key, size_t keySize) {
     const unsigned char *bytes = key;
     unsigned long h = 2166136261UL;
