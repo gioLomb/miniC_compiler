@@ -4,7 +4,7 @@
 
 /**
  * @brief Deterministic FNV-1a hash algorithm for identifier lookup keys.
- */
+ *
 static unsigned long sym_hash(const void *key, size_t keySize) {
     const unsigned char *bytes = key;
     unsigned long h = 2166136261UL;
@@ -13,8 +13,28 @@ static unsigned long sym_hash(const void *key, size_t keySize) {
         h *= 16777619UL;
     }
     return h;
-}
+}*/
+// symbol_table.c
+static unsigned long sym_hash(const void *key, size_t keySize) {
+    const unsigned char *bytes = key;
+    unsigned long h = 2166136261UL;
+    size_t i = 0;
 
+    // process 8 bytes/iteration via memcpy (safe for unaligned keys);
+    // folds each word into the FNV accumulator with the same step as below
+    for (; i + sizeof(uint64_t) <= keySize; i += sizeof(uint64_t)) {
+        uint64_t word;
+        memcpy(&word, bytes + i, sizeof(word));
+        h ^= word;
+        h *= 16777619UL;
+    }
+    // tail (<8 residual bytes): original byte-by-byte FNV-1a
+    for (; i < keySize; i++) {
+        h ^= bytes[i];
+        h *= 16777619UL;
+    }
+    return h;
+}
 Scope *sym_scopeCreate(Scope *parent) {
     // Allocate memory for new scope container
     Scope *scope = malloc(sizeof(Scope));
