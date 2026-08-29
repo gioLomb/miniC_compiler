@@ -10,7 +10,7 @@
 
 // Parser state variables
 static int   current_token;
-static char *current_lexeme = NULL;
+static const char *current_lexeme = NULL;
 
 // astArena: persistent memory arena for AST node strings
 // scratchArena: temporary memory arena for internal parsing allocations
@@ -39,14 +39,17 @@ static ASTNode *ParseFactor(void);
 
 // Helper macro to construct a new AST node allocating its text in the persistent astArena
 #define NEW_NODE(kind, text) newNode(astArena, (kind), (text))
-
+/*
 // Token management helper: advances the lexer state to the next token
 static void advance(void) {
     current_token = lexer_next_token();
     free(current_lexeme);
     current_lexeme = strdup(lexer_current_lexeme());
+}*/
+static void advance(void) {
+    current_token = lexer_next_token();
+    current_lexeme = lexer_current_lexeme();
 }
-
 // Matches expected token type or reports a syntax error
 static void match(int expected) {
     if (current_token == expected) {
