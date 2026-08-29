@@ -325,30 +325,29 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
  * @param f  IR function to optimise (modified in place).
  * @return   1 if at least one instruction was eliminated, 0 if IR is unchanged.
  */
-int dce_optimize(IRFunction *f) {
+int dce_optimize(IRFunction *f,Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
-    Arena *arena = arena_create(0);
 
     // phase 1: identify unreachable blocks
-    char *reachable = arena_alloc(arena, (size_t)nBlocks);
+    char *reachable = arena_alloc(arenaScratch, (size_t)nBlocks);
     memset(reachable, 0, (size_t)nBlocks);
-    mark_reachable_blocks(f, reachable, arena);
+    mark_reachable_blocks(f, reachable, arenaScratch);
 
     // passing reachable to liveness_computeIr lets the dataflow engine skip
     // unreachable blocks entirely — both a performance win and a correctness
     // guard (unreachable blocks may have malformed or stale succ[] entries)
 
     // phase 2: backward liveness dataflow over the IR
-    LivenessResult liv = liveness_computeIr(f, reachable, arena);
+    LivenessResult liv = liveness_computeIr(f, reachable, arenaScratch);
 
     // allocate eliminate AFTER liveness: f->count is stable at this point
     // (liveness_computeIr is read-only with respect to the instruction array)
 
     // phase 3: mark dead instructions
-    char *eliminate = arena_alloc(arena, (size_t)f->count);
-    dce_mark(f, reachable, &liv, arena, eliminate);
+    char *eliminate = arena_alloc(arenaScratch, (size_t)f->count);
+    dce_mark(f, reachable, &liv, arenaScratch, eliminate);
 
     // phase 4: compact the instruction array
     int changed = ir_sweep(f, eliminate, nBlocks);
@@ -357,7 +356,6 @@ int dce_optimize(IRFunction *f) {
     // pool was allocated with malloc (not inside the arena), so the arena
     // cannot free it — only varmap_destroy() can
     varmap_destroy(&liv.varMap);
-    arena_destroy(arena);
 
     return changed;
 }

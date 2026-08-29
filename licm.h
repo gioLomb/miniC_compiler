@@ -64,6 +64,6 @@
  * @param f  IR function to optimise (modified in place).
  * @return   1 if at least one instruction was moved, 0 if the IR is unchanged.
  */
-int licm_optimize(IRFunction *f);
+int licm_optimize(IRFunction *f,Arena *arenaScratch);
 
 #endif /* LICM_H */

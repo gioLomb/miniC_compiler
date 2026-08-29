@@ -647,27 +647,28 @@ static IRFunction *ir_build_function(ASTNode *decl) {
      * Must happen BEFORE SVN/DCE/CP so every optimiser sees homogeneous IR
      * and can reason about globals exactly like any other variable. */
     ir_lower_globals(f);
-
+    
+    Arena *arena = arena_create(0);
     svn_optimize(f);
-    dce_optimize(f);
+    dce_optimize(f,arena);
 
     // constant propagation exposes dead code, DCE removing dead defs can
     // expose further propagation opportunities: iterate to a fixed point
     int changed;
     do {
-        changed  = cp_optimize(f);
-        changed |= dce_optimize(f);
+        changed  = cp_optimize(f,arena);
+        changed |= dce_optimize(f,arena);
     } while (changed);
 
-    changed  = licm_optimize(f);
-    changed |= sr_optimize(f);
+    changed  = licm_optimize(f,arena);
+    changed |= sr_optimize(f,arena);
 
     if (changed) {
         // LICM/SR can leave behind dead multiplications and newly-exposed
         // constants (see sr.h): run one more CP+DCE fixed-point round
         do {
-            changed  = cp_optimize(f);
-            changed |= dce_optimize(f);
+            changed  = cp_optimize(f,arena);
+            changed |= dce_optimize(f,arena);
         } while (changed);
     }
 

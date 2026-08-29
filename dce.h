@@ -53,6 +53,6 @@
  * @param f  IR function to optimise (modified in place).
  * @return   1 if at least one instruction was removed, 0 if IR is unchanged.
  */
-int dce_optimize(IRFunction *f);
+int dce_optimize(IRFunction *f, Arena *arenaScratch);
 
 #endif /* DCE_H */

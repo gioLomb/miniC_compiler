@@ -46,6 +46,6 @@
  * @param f Pointer to the IR function to optimize.
  * @return 1 if at least one transformation was applied, 0 otherwise.
  */
-int sr_optimize(IRFunction *f);
+int sr_optimize(IRFunction *f,Arena *arena);
 
 #endif /* SR_H */

@@ -386,31 +386,30 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
  * Public Interface
  * ========================================================================= */
 
-int sr_optimize(IRFunction *f) {
+int sr_optimize(IRFunction *f, Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
     int words   = (nBlocks + BITS_PER_WORD - 1) / BITS_PER_WORD;
-    Arena *arena = arena_create(0);
+    arena_reset(arenaScratch);   // caller-owned, come in licm_optimize
+ 
+    BitSet  *Dom    = loop_compute_dominators(f, words, arenaScratch);
+    Loop    *loops  = arena_alloc(arenaScratch, MAX_LOOPS * sizeof(Loop));
+    int      nLoops = loop_find(f, Dom, loops, arenaScratch);
+    if (nLoops == 0) return 0;   // no arena_destroy: caller-owned
 
-    BitSet  *Dom  = loop_compute_dominators(f, words, arena);
-    Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
-    int      nLoops = loop_find(f, Dom, loops, arena);
-    if (nLoops == 0) { arena_destroy(arena); return 0; }
-
+    // livArena interno, stessa motivazione di licm.c
     Arena         *livArena = arena_create(0);
     LivenessResult  liv     = liveness_computeIr(f, NULL, livArena);
     VarMap         *vm      = &liv.varMap;
 
-    // Compute highest temporary ID in use across all function instructions
     int nextTemp = 0;
     for (int i = 0; i < f->count; i++) {
         const IRInstr *in = &f->instrs[i];
         const Operand *ops[3] = { &in->dst, &in->src1, &in->src2 };
-        for (int k = 0; k < 3; k++) {
+        for (int k = 0; k < 3; k++)
             if (ops[k]->kind == OPND_TEMP && ops[k]->data.tempId >= nextTemp)
                 nextTemp = ops[k]->data.tempId + 1;
-        }
     }
 
     int totalChanged = 0;
@@ -421,7 +420,7 @@ int sr_optimize(IRFunction *f) {
         InductionBase    ivars[MAX_IVARS];
         InductionDerived derived[MAX_DERIVED];
 
-        int ivarCount    = findInductionBase(f, L, vm, ivars, arena);
+        int ivarCount    = findInductionBase(f, L, vm, ivars, arenaScratch);
         if (ivarCount == 0) continue;
 
         int derivedCount = findDerived(f, L, vm, ivars, ivarCount, derived, &nextTemp);
@@ -433,6 +432,6 @@ int sr_optimize(IRFunction *f) {
 
     varmap_destroy(&liv.varMap);
     arena_destroy(livArena);
-    arena_destroy(arena);
     return totalChanged > 0;
 }
+ 

@@ -507,20 +507,25 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
  * Public entry point
  * ========================================================================= */
 
-int licm_optimize(IRFunction *f) {
+int licm_optimize(IRFunction *f, Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
     int words   = (nBlocks + 63) / 64;
-    Arena *arena = arena_create(0);
+    // Outer scratch (dominators, loop descriptors, invariant flags): caller-owned.
+    arena_reset(arenaScratch);
 
     // compute dominators and find natural loops
-    LiveSet *Dom    = loop_compute_dominators(f, words, arena);
-    Loop    *loops  = arena_alloc(arena, MAX_LOOPS * sizeof(Loop));
-    int      nLoops = loop_find(f, Dom, loops, arena);
-    if (nLoops == 0) { arena_destroy(arena); return 0; }
+    LiveSet *Dom    = loop_compute_dominators(f, words, arenaScratch);
+    Loop    *loops  = arena_alloc(arenaScratch, MAX_LOOPS * sizeof(Loop));
+    int      nLoops = loop_find(f, Dom, loops, arenaScratch);
+    if (nLoops == 0) return 0;
 
     // compute initial liveness (needed for live-in check in move_invariants)
+    // livArena stays internally managed: tied to the per-loop scan below and
+    // recreated only when something is actually hoisted. Sharing arenaScratch
+    // here would invalidate Dom/loops still in use by subsequent loop
+    // iterations in this same call.
     Arena         *livArena = arena_create(0);
     LivenessResult  liv     = liveness_computeIr(f, NULL, livArena);
     int totalMoved = 0;
@@ -535,12 +540,12 @@ int licm_optimize(IRFunction *f) {
         int numVars = liv.blockSets.numVars;
 
         // phase 1: count definitions inside the loop body
-        int *defCount = count_defs_in_loop(f, L, vm, numVars, arena);
+        int *defCount = count_defs_in_loop(f, L, vm, numVars, arenaScratch);
 
         // phase 2: find all loop-invariant instructions
-        char *invariant = arena_alloc(arena, (size_t)f->count);
+        char *invariant = arena_alloc(arenaScratch, (size_t)f->count);
         memset(invariant, 0, (size_t)f->count);
-        find_invariants(f, L, vm, numVars, defCount, invariant, arena);
+        find_invariants(f, L, vm, numVars, defCount, invariant, arenaScratch);
 
         // phase 3: move safe invariants to the pre-header
         int moved = move_invariants(f, L, Dom, invariant, defCount, vm, &liv);
@@ -557,6 +562,5 @@ int licm_optimize(IRFunction *f) {
 
     varmap_destroy(&liv.varMap);
     arena_destroy(livArena);
-    arena_destroy(arena);
     return totalMoved > 0;
 }

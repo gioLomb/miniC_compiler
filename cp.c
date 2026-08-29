@@ -504,11 +504,13 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
 
 
 
-int cp_optimize(IRFunction *f) {
+int cp_optimize(IRFunction *f, Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
-    Arena *arena = arena_create(0); // all dataflow storage lives here
+    // Caller-owned scratch: reset here instead of create/destroy per call,
+    // reused across the CP+DCE fixed-point loop in ir_build_function().
+    arena_reset(arenaScratch);
 
     /* Pass 1: VarMap */
     VarMap vm;
@@ -516,13 +518,13 @@ int cp_optimize(IRFunction *f) {
     int numVars = vm.nextId;
 
     /* Pass 2: allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init */
-    ConstMap *in  = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
-    ConstMap *out = arena_alloc(arena, (size_t)nBlocks * sizeof(ConstMap));
+    ConstMap *in  = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
+    ConstMap *out = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap  tmp;
-    const_map_init(&tmp, numVars, arena);
+    const_map_init(&tmp, numVars, arenaScratch);
     for (int b = 0; b < nBlocks; b++) {
-        const_map_init(&in[b],  numVars, arena);
-        const_map_init(&out[b], numVars, arena);
+        const_map_init(&in[b],  numVars, arenaScratch);
+        const_map_init(&out[b], numVars, arenaScratch);
     }
 
     /* Pass 3: forward dataflow */
@@ -531,11 +533,11 @@ int cp_optimize(IRFunction *f) {
     /* Pass 4: rewrite + CFG pruning */
     int modified = 0;
     // eliminate[] is a boolean per-instruction: 1 = delete in sweep
-    char *eliminate = arena_alloc(arena, (size_t)f->count * sizeof(char));
+    char *eliminate = arena_alloc(arenaScratch, (size_t)f->count * sizeof(char));
     memset(eliminate, 0, (size_t)f->count * sizeof(char));
 
     for (int b = 0; b < nBlocks; b++)
-        modified |= cp_rewrite_block(f, b, in, eliminate, &vm, arena);
+        modified |= cp_rewrite_block(f, b, in, eliminate, &vm, arenaScratch);
 
     // orphan labels left after CFG pruning can be removed safely
     modified |= (cp_mark_orphan_labels(f, eliminate) > 0);
@@ -544,7 +546,6 @@ int cp_optimize(IRFunction *f) {
     if (modified)
         modified = ir_sweep(f, eliminate, nBlocks);
 
-    arena_destroy(arena);
     varmap_destroy(&vm);
     return modified;
 }

@@ -84,6 +84,6 @@
  * @param f  IR function to optimise (modified in place).
  * @return   1 if @p f was modified, 0 if the IR was already at fixed point.
  */
-int cp_optimize(IRFunction *f);
+int cp_optimize(IRFunction *f,Arena *arenaScratch);
 
 #endif /* CP_H */
