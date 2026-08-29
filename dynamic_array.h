@@ -20,6 +20,9 @@
 #ifndef DYNAMIC_ARRAY_H
 #define DYNAMIC_ARRAY_H
 
+/** Initial capacity on the first push (avoids realloc on every early push). */
+#define INT_VECTOR_INITIAL_CAP 4
+
 /**
  * @brief Resizable array of @c int values.
  *
@@ -33,14 +36,21 @@ typedef struct {
 } IntVector;
 
 /**
- * @brief Initialise an empty IntVector.
+ * @brief Initialise an IntVector, optionally pre-reserving capacity.
  *
- * Sets all fields to zero/NULL.  Must be called before any other
- * IntVector operation.  Pairs with @c int_vector_free().
- *
- * @param v  IntVector to initialise (must not be NULL).
+ * @param v         IntVector to initialise (must not be NULL).
+ * @param capacity  Initial capacity to reserve. Pass 0 for the original
+ *                  lazy behaviour (no allocation until the first push,
+ *                  which then grows by doubling from INT_VECTOR_INITIAL_CAP).
+ *                  Pass a positive value to allocate it upfront in one shot,
+ *                  skipping the early doubling steps int_vector_push() would
+ *                  otherwise trigger — useful when a reasonable upper bound
+ *                  on the final size is known ahead of time (e.g. graph
+ *                  degree bounded by node count). Growth beyond @p capacity
+ *                  still falls back to normal doubling; correctness is
+ *                  unaffected either way.
  */
-void int_vector_init(IntVector *v);
+void int_vector_init(IntVector *v, int capacity);
 
 /**
  * @brief Append @p value to the end of @p v, growing the backing array if needed.

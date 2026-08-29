@@ -8,14 +8,25 @@
 #include <stdlib.h>
 #include "dynamic_array.h"
 
-/** Initial capacity on the first push (avoids realloc on every early push). */
-#define INT_VECTOR_INITIAL_CAP 4
 
-void int_vector_init(IntVector *v) {
+
+void int_vector_init(IntVector *v, int capacity) {
     if (!v) return;
-    v->data = NULL;
-    v->len  = 0;
-    v->cap  = 0;
+
+    if (capacity <= 0) {
+        // lazy path: nessuna allocazione finché non arriva il primo push
+        v->data = NULL;
+        v->len  = 0;
+        v->cap  = 0;
+        return;
+    }
+
+    // eager path: un solo malloc alla capacità richiesta, evita i raddoppi
+    // iniziali (4->8->16...) che int_vector_push farebbe altrimenti
+    v->data = malloc((size_t)capacity * sizeof(*v->data));
+    if (!v->data) abort(); // coerente con la policy OOM del resto del compilatore
+    v->len = 0;
+    v->cap = capacity;
 }
 
 void int_vector_push(IntVector *v, int value) {

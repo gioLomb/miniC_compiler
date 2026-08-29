@@ -65,7 +65,7 @@ static IGraph build_clique(int n, Arena *arena) {
     memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
 
     for (int i = 0; i < n; i++) {
-        int_vector_init(&g.adj[i]);
+        int_vector_init(&g.adj[i],IG_ADJ_INITIAL_CAPACITY);
         g.degree[i] = 0;
         g.color[i]  = -1;
         g.active[i] = true;
@@ -103,7 +103,7 @@ static IGraph build_path(int n, Arena *arena) {
     g.isReloadTemp = arena_alloc(arena, (size_t)n * sizeof(char)); /* FIX: vedi build_clique */
     memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
     for (int i = 0; i < n; i++) {
-        int_vector_init(&g.adj[i]);
+        int_vector_init(&g.adj[i],IG_ADJ_INITIAL_CAPACITY);
         g.degree[i] = 0; g.color[i] = -1; g.active[i] = true;
         g.excl[i] = 0; g.spillCost[i] = 1; g.crossesCall[i] = 0;
     }
@@ -242,7 +242,7 @@ int main(void) {
         g.matrix = arena_alloc(arena, words * sizeof(uint64_t));
         memset(g.matrix, 0, words * sizeof(uint64_t)); /* nessun arco: v0,v1 non interferiscono */
         g.adj = arena_alloc(arena, (size_t)n * sizeof(AdjList));
-        for (int i = 0; i < n; i++) int_vector_init(&g.adj[i]);
+        for (int i = 0; i < n; i++) int_vector_init(&g.adj[i],IG_ADJ_INITIAL_CAPACITY);
         g.degree      = arena_alloc(arena, (size_t)n * sizeof(int));
         g.color       = arena_alloc(arena, (size_t)n * sizeof(int));
         g.active      = arena_alloc(arena, (size_t)n * sizeof(bool));
@@ -332,7 +332,7 @@ int main(void) {
         g.matrix = arena_alloc(arena, sizeof(uint64_t));
         memset(g.matrix, 0, sizeof(uint64_t)); /* nessuna interferenza tra i 3 nodi */
         g.adj = arena_alloc(arena, (size_t)n * sizeof(AdjList));
-        for (int i = 0; i < n; i++) int_vector_init(&g.adj[i]);
+        for (int i = 0; i < n; i++) int_vector_init(&g.adj[i],IG_ADJ_INITIAL_CAPACITY);
         g.degree       = arena_alloc(arena, (size_t)n * sizeof(int));
         g.color        = arena_alloc(arena, (size_t)n * sizeof(int));
         g.active       = arena_alloc(arena, (size_t)n * sizeof(bool));

@@ -101,7 +101,7 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
     // headers are arena-allocated; backing data arrays are heap-allocated by IntVector
     g.adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
     for (int i = 0; i < totalNodes; i++)
-        int_vector_init(&g.adj[i]);
+        int_vector_init(&g.adj[i], IG_ADJ_INITIAL_CAPACITY);
 
     /* --- Parallel metadata arrays --------------------------------------- */
     g.degree        = arena_alloc(arena, (size_t)totalNodes * sizeof(int));

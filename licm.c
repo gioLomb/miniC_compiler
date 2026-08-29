@@ -264,7 +264,7 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
     UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
     if (!usedBy) abort();
     for (int id = 0; id < numVars; id++)
-        int_vector_init(&usedBy[id]);
+        int_vector_init(&usedBy[id],0);
 
     /* worklist: dimensione massima nota, quindi arena */
     int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));

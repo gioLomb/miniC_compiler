@@ -70,6 +70,8 @@
 #include "arena.h"
 #include "dynamic_array.h"
 
+#define IG_ADJ_INITIAL_CAPACITY 8
+
 /** Maximum number of explicit def/use operands extracted per instruction. */
 #define MAX_INSTR_OPERANDS 16
 
