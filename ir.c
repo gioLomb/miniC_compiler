@@ -617,7 +617,7 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
  * Function compilation
  * ========================================================================= */
 
-static IRFunction *ir_build_function(ASTNode *decl) {
+static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     // decl->text is "returnType funcName"; the name is everything after the last space
     const char *space = strrchr(decl->text, ' ');
     const char *name  = space ? space + 1 : decl->text;
@@ -648,7 +648,6 @@ static IRFunction *ir_build_function(ASTNode *decl) {
      * and can reason about globals exactly like any other variable. */
     ir_lower_globals(f);
     
-    Arena *arena = arena_create(0);
     svn_optimize(f);
     dce_optimize(f,arena);
 
@@ -671,7 +670,7 @@ static IRFunction *ir_build_function(ASTNode *decl) {
             changed |= dce_optimize(f,arena);
         } while (changed);
     }
-
+    
     return f;
 }
 
@@ -767,6 +766,7 @@ IRProgram *ir_generate(ASTNode *program) {
     nextLabel = 0;
 
     IRProgram *prog = calloc(1, sizeof(IRProgram));
+    Arena *arena = arena_create(0);
 
     // pass 1: register every global variable with a sequential symOffset.
     // Both ND_VAR_DECL and ND_FUNC_DECL advance the counter so symOffset
@@ -786,9 +786,10 @@ IRProgram *ir_generate(ASTNode *program) {
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         if (decl->kind == ND_FUNC_DECL)
-            ir_program_append(prog, ir_build_function(decl));
+            ir_program_append(prog, ir_build_function(decl,arena));
     }
-
+    
+    arena_destroy(arena);
     return prog;
 }
 

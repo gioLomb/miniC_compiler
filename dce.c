@@ -329,7 +329,7 @@ int dce_optimize(IRFunction *f,Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
-
+    arena_reset(arenaScratch);
     // phase 1: identify unreachable blocks
     char *reachable = arena_alloc(arenaScratch, (size_t)nBlocks);
     memset(reachable, 0, (size_t)nBlocks);
