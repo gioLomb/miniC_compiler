@@ -96,6 +96,25 @@ int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
 int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
            void * restrict destBuffer, size_t destSize) {
     if (!table || !key || !destBuffer) return 0;
+    unsigned long h = table->hashFunction(key, keySize);
+    // capacity always power of 2 (round_pow2 in ht_create/ht_resize):
+    // h & (capacity-1) == h % capacity, no integer division needed
+    unsigned int index = (unsigned int)(h & (table->capacity - 1));
+    for (Entry *e = table->pool[index]; e; e = e->next) {
+        // fast reject: differing cached hash implies differing keys,
+        // skips the memcmp entirely on non-matching bucket entries
+        if (e->hash != h) continue;
+        if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
+        size_t n = e->size < destSize ? e->size : destSize;
+        memcpy(destBuffer, e->value, n);
+        return 1;
+    }
+    return 0;
+}
+/*
+int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
+           void * restrict destBuffer, size_t destSize) {
+    if (!table || !key || !destBuffer) return 0;
 
     unsigned int index = (unsigned int)(table->hashFunction(key, keySize) & (table->capacity - 1));
     for (Entry *e = table->pool[index]; e; e = e->next) {
@@ -107,7 +126,7 @@ int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
     }
 
     return 0;
-}
+}*/
 
 int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize) {
     if (!table || !key) return 0;

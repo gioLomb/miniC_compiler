@@ -7,3 +7,4 @@ errorCollector.txt
 theory/*
 theory/
 all.txt
+perf*
