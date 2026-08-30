@@ -26,7 +26,8 @@ static IRProgram *pipeline(const char *src, ASTNode **outRoot, Arena **outArena)
 
     if (errs > 0) {
         fprintf(stderr, "errori semantici (%d)\n", errs);
-        freeAST(root); arena_destroy(astArena); exit(1);
+        //freeAST(root); 
+        arena_destroy(astArena); exit(1);
     }
     *outRoot  = root;
     *outArena = astArena;
@@ -41,7 +42,7 @@ static int countOp(IRFunction *f, IROp op) {
     return c;
 }
 
-#define CLEANUP(prog, root, arena) do { ir_free(prog); freeAST(root); arena_destroy(arena); } while(0)
+#define CLEANUP(prog, root, arena) do { ir_free(prog); arena_destroy(arena); } while(0)
 
 int main(void) {
     IRProgram *prog; ASTNode *root; IRFunction *f; Arena *arena;

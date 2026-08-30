@@ -67,9 +67,3 @@ void printAST(const ASTNode *node, int depth) {
     for (int i = 0; i < node->nchildren; i++)
         printAST(node->children[i], depth + 1);
 }
-
-void freeAST(ASTNode *node) {
-    // Everything (struct, children[], text) is arena-owned now: nothing to
-    // free here. Kept only so every existing call site keeps compiling.
-    (void)node;
-}

@@ -55,7 +55,6 @@ int main(int argc, char **argv) {
     ht_foreach(global->table, printSymbol, NULL);
 
     sym_finalize(global);
-    freeAST(root);
     arena_destroy(astArena);
 
     return symErrors > 0 ? 1 : 0;

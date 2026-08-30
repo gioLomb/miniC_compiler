@@ -99,17 +99,4 @@ void addChild(Arena *arena, ASTNode *parent, ASTNode *child);
  */
 void printAST(const ASTNode *node, int depth);
 
-/**
- * @brief No-op kept for API/call-site compatibility.
- *
- * ASTNode structs, their children arrays, and their text are all owned
- * by the Arena passed to newNode()/addChild(); nothing is individually
- * malloc'd anymore, so there is nothing to individually free. Real AST
- * memory is reclaimed in one O(1) step by destroying the owning arena
- * with arena_destroy(). Safe to call with any node, including NULL.
- *
- * @param node Root of the (formerly heap-owned) AST subtree; unused.
- */
-void freeAST(ASTNode *node);
-
 #endif /* AST_H */

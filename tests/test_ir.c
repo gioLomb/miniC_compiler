@@ -54,7 +54,7 @@ static int firstIndexOfOp(IRFunction *f, IROp op) {
     return -1;
 }
 
-#define CLEANUP(prog, root, arena) do { ir_free(prog); freeAST(root); arena_destroy(arena); } while(0)
+#define CLEANUP(prog, root, arena) do { ir_free(prog);  arena_destroy(arena); } while(0)
 
 int main(void) {
     IRProgram *prog;

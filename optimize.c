@@ -26,21 +26,6 @@ static inline int literalIntEquals(ASTNode *n, long v) {
     return isIntLiteral(n) && literalAsLong(n) == v;
 }
 
-/**
- * @brief Deallocates an AST node container without freeing its text buffer.
- *
- * @details Frees the array of child pointers and the ASTNode structure itself.
- *          The `text` field is allocated inside the persistent memory arena and must not be freed individually.
- *
- * @param node Pointer to the AST node to be shallow-freed.
- */
-static void freeNodeShallow(ASTNode *node) {
-/*    if (!node) return;
-    free(node->children);
-    free(node);*/
-    (void)node;
-}
-
 // ============================================================================
 // SIDE-EFFECT ANALYSIS
 // ============================================================================
@@ -232,8 +217,9 @@ static int containsFloatLiteral(ASTNode *n) {
  *
  * @details Traverses a potentially deeply nested, unbalanced binary expression subtree 
  *          containing the same associative operator (e.g., `a + (b + (c + d))`). It extracts 
- *          all non-operator operand subtrees (leaves) into a linear dynamically-allocated array 
- *          while shallow-freeing intermediate binary node wrappers to avoid memory leaks.
+ *          all non-operator operand subtrees (leaves) into a linear dynamically-allocated array.
+ *          Intermediate binary-node wrappers consumed along the way are simply abandoned in
+ *          the AST arena (no leak: arena_destroy() reclaims everything in one bulk step).
  *
  * @param node   Pointer to the current AST node in the associative chain.
  * @param opKey  16-bit key representing the target associative operator to flatten.
@@ -247,7 +233,7 @@ static void flattenChain(ASTNode *node, unsigned short opKey,
         OP_KEY(node->text[0], node->text[1]) == opKey) {
         flattenChain(node->children[0], opKey, leaves, count, cap);
         flattenChain(node->children[1], opKey, leaves, count, cap);
-        freeNodeShallow(node); // Discard internal binary node wrappers
+        // 'node' itself (the binary wrapper) is abandoned in the arena here
     } else {
         if (*count == *cap) {
             *cap = *cap ? *cap * 2 : 4;
@@ -263,6 +249,7 @@ static void flattenChain(ASTNode *node, unsigned short opKey,
  * @details Constructs a tree with minimal height (O(log N)) using a pairwise reduction 
  *          approach across the provided array of leaf nodes. During tree construction, adjacent 
  *          literal leaves are immediately folded to compress constant terms efficiently.
+ *          Leaves consumed by folding are simply abandoned in the AST arena.
  *
  * @param arena    Pointer to the memory arena used for allocating new binary nodes.
  * @param leaves   Array of pointers to AST leaf subtrees.
@@ -283,7 +270,7 @@ static ASTNode *buildBalanced(Arena *arena,
                 char opStr[3] = { opChar, '\0', '\0' };
                 ASTNode *folded = foldBinopLiterals(arena, opStr, sx, dx);
                 if (folded) {
-                    freeAST(sx); freeAST(dx);
+                    // sx/dx abandoned in the arena, replaced by the folded literal
                     leaves[writeIdx++] = folded;
                     continue;
                 }
@@ -324,6 +311,9 @@ static ASTNode *balanceAssocChain(Arena *arena, ASTNode *expr) {
     char opChar = expr->text[0];
     unsigned short opKey = OP_KEY(opChar, 0);
 
+    // NOTE: 'leaves' is a plain heap array of ASTNode* bookkeeping pointers
+    // (malloc/realloc/free), NOT arena memory: the AST nodes it points to
+    // live in the arena, only this scratch pointer array is heap-owned here.
     ASTNode **leaves = NULL;
     int count = 0, cap = 0;
 
@@ -351,6 +341,11 @@ static ASTNode *balanceAssocChain(Arena *arena, ASTNode *expr) {
  *          5. Short-circuit logical simplification (`0 && x -> 0`, `1 || x -> 1`).
  *          6. Rebalancing of associative tree chains (+ and *) to reduce depth.
  *
+ * @note Any subtree replaced/discarded by a transformation below is simply
+ *       abandoned in the AST arena: it is never freed individually, it just
+ *       stops being reachable from the tree and is reclaimed in bulk when
+ *       the arena is destroyed.
+ *
  * @param arena Pointer to the memory arena used for new node allocations.
  * @param expr  Pointer to the AST expression node to optimize.
  * @return Pointer to the optimized AST expression node (or a newly folded node).
@@ -372,7 +367,7 @@ static ASTNode *rewriteExpr(Arena *arena, ASTNode *expr) {
         // Fold constant unary operations
         if (isNumericLiteral(child)) {
             ASTNode *folded = foldUnaryLiteral(arena, expr->text, child);
-            if (folded) { freeAST(expr); return folded; }
+            if (folded) return folded; // expr abandoned in arena
         }
         return expr;
     }
@@ -386,38 +381,36 @@ static ASTNode *rewriteExpr(Arena *arena, ASTNode *expr) {
         // 1. Fold binary operations on constant literal pair
         if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
             ASTNode *folded = foldBinopLiterals(arena, expr->text, sx, dx);
-            if (folded) { freeAST(expr); return folded; }
+            if (folded) return folded; // expr abandoned in arena
         }
 
         // 2. Algebraic Identities Simplifications
         unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
         switch (key) {
             case OP_KEY('+', 0):
-                if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; } // x + 0 -> x
-                if (literalIntEquals(sx, 0)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; } // 0 + x -> x
+                if (literalIntEquals(dx, 0)) return sx; // x + 0 -> x  (dx, expr abandoned)
+                if (literalIntEquals(sx, 0)) return dx; // 0 + x -> x  (sx, expr abandoned)
                 break;
             case OP_KEY('-', 0):
-                if (literalIntEquals(dx, 0)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; } // x - 0 -> x
+                if (literalIntEquals(dx, 0)) return sx; // x - 0 -> x  (dx, expr abandoned)
                 break;
             case OP_KEY('*', 0):
-                if (literalIntEquals(dx, 1)) { freeNodeShallow(dx); freeNodeShallow(expr); return sx; } // x * 1 -> x
-                if (literalIntEquals(sx, 1)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; } // 1 * x -> x
+                if (literalIntEquals(dx, 1)) return sx; // x * 1 -> x  (dx, expr abandoned)
+                if (literalIntEquals(sx, 1)) return dx; // 1 * x -> x  (sx, expr abandoned)
 
                 // x * 0 -> 0 (Valid only if x has no side effects)
-                if (literalIntEquals(dx, 0) && !hasSideEffect(sx)) {
-                    freeAST(expr); return newNode(arena, ND_NUM_INT, "0");
-                }
-                if (literalIntEquals(sx, 0) && !hasSideEffect(dx)) {
-                    freeAST(expr); return newNode(arena, ND_NUM_INT, "0");
-                }
+                if (literalIntEquals(dx, 0) && !hasSideEffect(sx))
+                    return newNode(arena, ND_NUM_INT, "0"); // expr abandoned
+                if (literalIntEquals(sx, 0) && !hasSideEffect(dx))
+                    return newNode(arena, ND_NUM_INT, "0"); // expr abandoned
                 break;
             case OP_KEY('&','&'):
-                if (literalIntEquals(sx, 0)) { freeAST(expr); return newNode(arena, ND_NUM_INT, "0"); } // 0 && x -> 0
-                if (literalIntEquals(sx, 1)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; } // 1 && x -> x
+                if (literalIntEquals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); // 0 && x -> 0
+                if (literalIntEquals(sx, 1)) return dx; // 1 && x -> x  (sx, expr abandoned)
                 break;
             case OP_KEY('|','|'):
-                if (literalIntEquals(sx, 1)) { freeAST(expr); return newNode(arena, ND_NUM_INT, "1"); } // 1 || x -> 1
-                if (literalIntEquals(sx, 0)) { freeNodeShallow(sx); freeNodeShallow(expr); return dx; } // 0 || x -> x
+                if (literalIntEquals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); // 1 || x -> 1
+                if (literalIntEquals(sx, 0)) return dx; // 0 || x -> x  (sx, expr abandoned)
                 break;
             default:
                 break;
@@ -461,6 +454,10 @@ static ASTNode *rewriteExpr(Arena *arena, ASTNode *expr) {
  *          - **While Loops**: Removes `while(0)` loops entirely if the condition evaluates to constant false.
  *          - **Return / Expression Statements**: Optimizes attached child expressions.
  *
+ * @note As in rewriteExpr(), any node pruned away here (dead branch, whole
+ *       `while(0)` statement, the `if`/condition wrapper itself, ...) is
+ *       simply abandoned in the AST arena rather than individually freed.
+ *
  * @param arena Pointer to the memory arena for node allocation.
  * @param stmt  Pointer to the AST statement node to optimize.
  * @return Pointer to the optimized statement node, a replacement node, or `NULL` if eliminated.
@@ -479,7 +476,7 @@ static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
         ASTNode **oldChildren = stmt->children;
         int oldCount = stmt->nchildren;
 
-        // FIX: stmt->children is arena-owned (see ast.c) -- must NOT be
+        // stmt->children is arena-owned (see ast.c) -- must NOT be
         // malloc'd/free'd here. Rebuild it from the same arena; the old
         // buffer is simply abandoned in the arena like any other addChild()
         // growth (never freed individually).
@@ -494,7 +491,7 @@ static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
             if (result->kind == ND_BLOCK) {
                 for (int j = 0; j < result->nchildren; j++)
                     addChild(arena, stmt, result->children[j]);
-                freeNodeShallow(result);
+                // 'result' (the now-flattened nested block wrapper) abandoned in arena
             } else {
                 addChild(arena, stmt, result);
             }
@@ -512,12 +509,9 @@ static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
             ASTNode *thenBr = stmt->children[1];
             ASTNode *elseBr = (stmt->nchildren > 2) ? stmt->children[2] : NULL;
 
-            ASTNode *survivor   = condTrue ? thenBr : elseBr;
-            ASTNode *deadBranch = condTrue ? elseBr : thenBr;
-
-            freeAST(cond);
-            if (deadBranch) freeAST(deadBranch); // Prune dead code branch
-            freeNodeShallow(stmt);
+            ASTNode *survivor = condTrue ? thenBr : elseBr;
+            // cond, the dead branch, and stmt itself are all simply
+            // abandoned in the arena (never individually freed)
 
             return survivor ? rewriteStmt(arena, survivor) : NULL;
         }
@@ -537,11 +531,10 @@ static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
         stmt->children[0] = rewriteExpr(arena, stmt->children[0]);
         ASTNode *cond = stmt->children[0];
 
-        // Eliminate while loop entirely if condition is constant zero (false)
-        if (isNumericLiteral(cond) && literalIsZero(cond)) {
-            freeAST(stmt); 
+        // Eliminate while loop entirely if condition is constant zero (false);
+        // the whole loop subtree is abandoned in the arena
+        if (isNumericLiteral(cond) && literalIsZero(cond))
             return NULL;
-        }
 
         stmt->children[1] = rewriteStmt(arena, stmt->children[1]);
         if (!stmt->children[1]) stmt->children[1] = newNode(arena, ND_BLOCK, NULL);

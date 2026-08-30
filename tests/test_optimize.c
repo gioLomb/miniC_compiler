@@ -76,7 +76,7 @@ static int binopHeight(ASTNode *node) {
 }
 
 /* macro per ridurre boilerplate cleanup */
-#define CLEANUP(root, arena) do { freeAST(root); arena_destroy(arena); } while(0)
+#define CLEANUP(root, arena) do {arena_destroy(arena); } while(0)
 
 int main(void) {
     ASTNode *root, *body, *node;

@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
     printf("Pass 2 + analisi semantica: %d errori.\n", semErrors);
 
     sym_finalize(global);
-    freeAST(root);
+    //freeAST(root);
     arena_destroy(astArena);
 
     return (pass1Errors > 0 || semErrors > 0) ? 1 : 0;
