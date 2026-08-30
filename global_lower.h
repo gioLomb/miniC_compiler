@@ -2,6 +2,7 @@
 #define GLOBAL_LOWER_H
 
 #include "ir.h"
+#include "arena.h"
 
 /**
  * @file global_lower.h
@@ -26,6 +27,17 @@
  * dentro un branch non domina usi in altri path. SVN deduplica entro EBB,
  * LICM issa fuori dai loop — entrambi vedono IR_GLOBAL_ADDR come pura/invariante.
  */
-void ir_lower_globals(IRFunction *f);
+
+/**
+ * @brief Lower every OPND_GLOBAL operand of @p f into IR_GLOBAL_ADDR + LOAD/STORE_ARR.
+ *
+ * @param f      IR function rewritten in place (instrs/blocks arrays reallocated).
+ * @param arena  Scratch arena for the temporary [oldIndex]->[newStart,newEnd)
+ *               remap arrays used to realign block ranges after the
+ *               instruction count changes. Pure scratch: never survives past
+ *               this call, caller retains ownership and is free to reset it
+ *               afterwards.
+ */
+void ir_lower_globals(IRFunction *f, Arena *arena);
 
 #endif /* GLOBAL_LOWER_H */

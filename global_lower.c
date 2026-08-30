@@ -84,7 +84,7 @@ static int emit_global_addr(int symOff, int *nextTemp,
  * Pass principale
  * ========================================================================= */
 
-void ir_lower_globals(IRFunction *f) {
+void ir_lower_globals(IRFunction *f, Arena *arena) {
     if (f->count == 0 || !function_touches_globals(f)) return;
 
     int oldCount = f->count;
@@ -98,8 +98,8 @@ void ir_lower_globals(IRFunction *f) {
     };
 
     /* Mappa oldIndex -> [newStart, newEnd) per riallineare i blocchi. */
-    int *newStart = malloc((size_t)oldCount * sizeof(int));
-    int *newEnd   = malloc((size_t)oldCount * sizeof(int));
+    int *newStart = arena_alloc(arena, (size_t)oldCount * sizeof(int));
+    int *newEnd   = arena_alloc(arena, (size_t)oldCount * sizeof(int));
 
     for (int i = 0; i < oldCount; i++) {
         IRInstr in = f->instrs[i];
@@ -187,7 +187,4 @@ void ir_lower_globals(IRFunction *f) {
         }
     }
     f->curBlockStart = 0;
-
-    free(newStart);
-    free(newEnd);
 }

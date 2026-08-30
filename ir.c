@@ -646,7 +646,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     /* Lowering: OPND_GLOBAL -> IR_GLOBAL_ADDR + LOAD/STORE_ARR, uniform form.
      * Must happen BEFORE SVN/DCE/CP so every optimiser sees homogeneous IR
      * and can reason about globals exactly like any other variable. */
-    ir_lower_globals(f);
+    ir_lower_globals(f,arena);
     
     svn_optimize(f);
     dce_optimize(f,arena);

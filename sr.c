@@ -261,7 +261,8 @@ static inline IRInstr make_instr(IROp op, Operand dst,
  */
 static int applyStrengthReduction(IRFunction *f, Loop *L,
                                    InductionBase *ivars, int ivarCount,
-                                   InductionDerived *derived, int derivedCount) {
+                                   InductionDerived *derived, int derivedCount,
+                                   Arena *arena) {
     if (derivedCount == 0) return 0;
 
     int phIdx    = L->preHeader;
@@ -278,7 +279,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
     IRInstr *newInstrs = malloc((size_t)maxNew * sizeof(IRInstr));
     int newCount = 0;
 
-    int *oldToNew = malloc((size_t)nInstrs * sizeof(int));
+    int *oldToNew = arena_alloc(arena, (size_t)nInstrs * sizeof(int));
     memset(oldToNew, -1, (size_t)nInstrs * sizeof(int));
 
     int phInitStart = -1, phInitEnd = -1;
@@ -378,7 +379,6 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
         f->blocks[b].bb.range.end   = (newE == -1) ? 0 : newE;
     }
     f->curBlockStart = 0;
-    free(oldToNew);
     return 1;
 }
 
@@ -427,7 +427,7 @@ int sr_optimize(IRFunction *f, Arena *arenaScratch) {
         if (derivedCount == 0) continue;
 
         totalChanged += applyStrengthReduction(f, L, ivars, ivarCount,
-                                                derived, derivedCount);
+                                                derived, derivedCount,arenaScratch);
     }
 
     varmap_destroy(&liv.varMap);

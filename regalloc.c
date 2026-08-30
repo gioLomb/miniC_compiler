@@ -88,7 +88,7 @@ static int find_label_block(const int *labelIds, const int *blockIdx,
  * @param outCount Set to the number of BasicBlock entries returned.
  * @return         Heap-allocated BasicBlock array; caller must free.
  */
-static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
+static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
 {
     int cap = 8, count = 0;
     BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
@@ -109,8 +109,8 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
     }
 
     // Build a label-id → block-index lookup table for jump-target resolution.
-    int *labelIds = malloc((size_t)(count > 0 ? count : 1) * sizeof(int));
-    int *blockIdx = malloc((size_t)(count > 0 ? count : 1) * sizeof(int));
+    int *labelIds = arena_alloc(arena, (size_t)(count > 0 ? count : 1) * sizeof(int));
+    int *blockIdx = arena_alloc(arena, (size_t)(count > 0 ? count : 1) * sizeof(int));
     int nLabels = 0;
     for (int b = 0; b < count; b++) {
         if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
@@ -145,8 +145,6 @@ static BasicBlock *build_cfg(const MachFunction *f, int *outCount)
         }
     }
 
-    free(labelIds);
-    free(blockIdx);
     *outCount = count;
     return blocks;
 }
@@ -342,13 +340,13 @@ static void regalloc_function(MachFunction *f)
 
     for (;;) {
         // --- Step 1: build machine-code CFG ---
+        Arena *livArena = arena_create(0);
         int nBlocks;
-        BasicBlock *blocks = build_cfg(f, &nBlocks);
+        BasicBlock *blocks = build_cfg(f, livArena, &nBlocks);
 
         // --- Step 2: backward liveness dataflow ---
         // Produces per-instruction liveAfter[] sets needed by the interference
         // graph builder to add edges between definitions and live-at-def vars.
-        Arena *livArena = arena_create(0);
         LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, livArena);
 
         // --- Step 3: build interference graph ---
@@ -412,10 +410,6 @@ static void regalloc_function(MachFunction *f)
     // Round frame size up to the next 16-byte boundary (ABI requirement).
     f->frameSize = (frameOff + 15) & ~15;
 }
-
-/* =========================================================================
- * Public entry point
- * ========================================================================= */
 
 void regalloc(MachProgram *mp)
 {
