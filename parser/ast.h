@@ -58,13 +58,16 @@ typedef struct ASTNode {
     int offset;                 /**< Memory offset inside frame or storage area */
 } ASTNode;
 
+
+
 /**
  * @brief Constructs a new AST node.
  *
- * Allocates space for the node and duplicates the text into the provided arena.
- * Passing `arena = NULL` or `text = NULL` leaves `text` field initialized to `NULL`.
+ * The node struct itself is allocated from @p arena (bump allocation,
+ * never individually freed) and @p text is duplicated into the same
+ * arena. Passing `text = NULL` leaves the `text` field NULL.
  *
- * @param arena Pointer to the memory arena used to store `text`.
+ * @param arena Memory arena that owns both the node and its text; must not be NULL.
  * @param kind  Node classification.
  * @param text  Lexeme or string literal associated with the node.
  * @return Pointer to the newly allocated ASTNode.
@@ -74,12 +77,19 @@ ASTNode *newNode(Arena *arena, NodeKind kind, const char *text);
 /**
  * @brief Appends a child node to a parent's dynamic children array.
  *
- * Automatically resizes the parent node's children buffer if full.
+ * Grows the children buffer from @p arena when full, doubling capacity.
+ * Arena has no per-allocation free/realloc: on growth a fresh, larger
+ * block is allocated and the live entries copied over; the previous
+ * (smaller) block is simply abandoned inside the arena rather than freed
+ * (bounded, amortised waste — same pattern used for Hash_Table value
+ * buffers in hash_table.c).
  *
+ * @param arena  Arena that owns @p parent's children buffer (the same
+ *               arena the tree is being built from).
  * @param parent Pointer to the parent node.
  * @param child  Pointer to the child node to append.
  */
-void addChild(ASTNode *parent, ASTNode *child);
+void addChild(Arena *arena, ASTNode *parent, ASTNode *child);
 
 /**
  * @brief Recursively prints formatted AST tree hierarchy to stdout.
@@ -90,12 +100,15 @@ void addChild(ASTNode *parent, ASTNode *child);
 void printAST(const ASTNode *node, int depth);
 
 /**
- * @brief Recursively frees dynamically allocated AST structures.
+ * @brief No-op kept for API/call-site compatibility.
  *
- * Frees parent and child node structures and their dynamic `children` array buffers.
- * @note Does NOT free `node->text` memory as it belongs to the caller's arena.
+ * ASTNode structs, their children arrays, and their text are all owned
+ * by the Arena passed to newNode()/addChild(); nothing is individually
+ * malloc'd anymore, so there is nothing to individually free. Real AST
+ * memory is reclaimed in one O(1) step by destroying the owning arena
+ * with arena_destroy(). Safe to call with any node, including NULL.
  *
- * @param node Pointer to the root AST node to deallocate.
+ * @param node Root of the (formerly heap-owned) AST subtree; unused.
  */
 void freeAST(ASTNode *node);
 

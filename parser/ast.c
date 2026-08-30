@@ -6,13 +6,13 @@
 #define INITIAL_CAPACITY 4
 
 ASTNode *newNode(Arena *arena, NodeKind kind, const char *text) {
-    // Allocate node container structure on the heap
-    ASTNode *node = malloc(sizeof(ASTNode));
+    // Node struct now lives in the caller's arena: no per-node malloc/free
+    // bookkeeping, the whole tree is reclaimed in bulk via arena_destroy().
+    ASTNode *node = arena_alloc(arena, sizeof(ASTNode));
 
-    // Duplicate text using memory arena if both are available
     *node = (ASTNode){
         .kind       = kind,
-        .text       = (arena && text) ? arena_strdup(arena, text) : NULL,
+        .text       = text ? arena_strdup(arena, text) : NULL,
         .scopeLevel = -1,
         .offset     = -1,
     };
@@ -20,19 +20,24 @@ ASTNode *newNode(Arena *arena, NodeKind kind, const char *text) {
     return node;
 }
 
-void addChild(ASTNode *parent, ASTNode *child) {
-    // Guard clause against null pointers
+void addChild(Arena *arena, ASTNode *parent, ASTNode *child) {
     if (!parent || !child) return;
 
-    // Expand children buffer capacity when array is full
     if (parent->nchildren == parent->capacity) {
-        parent->capacity = parent->capacity == 0 ? INITIAL_CAPACITY
-                                                  : parent->capacity * 2;
-        parent->children = realloc(parent->children,
-                                   parent->capacity * sizeof(ASTNode *));
+        int newCap = parent->capacity == 0 ? INITIAL_CAPACITY : parent->capacity * 2;
+
+        // No realloc in an arena: allocate a fresh (larger) block and copy
+        // the live entries. The old block is simply abandoned in the arena
+        // (never freed individually) -- total waste bounded by ~final size,
+        // same amortised-doubling tradeoff used elsewhere in this codebase.
+        ASTNode **grown = arena_alloc(arena, (size_t)newCap * sizeof(ASTNode *));
+        if (parent->children)
+            memcpy(grown, parent->children, (size_t)parent->nchildren * sizeof(ASTNode *));
+
+        parent->children = grown;
+        parent->capacity = newCap;
     }
 
-    // Append new child pointer and increment count
     parent->children[parent->nchildren++] = child;
 }
 
@@ -43,11 +48,7 @@ static const char *KIND_NAMES[] = {
 };
 #undef X_STR
 
-/**
- * @brief Internal helper to safely retrieve string representation for a NodeKind.
- */
 static const char *kindName(NodeKind kind) {
-    // Return matching string if within array bounds; fallback to placeholder
     if ((unsigned)kind < sizeof(KIND_NAMES) / sizeof(KIND_NAMES[0]))
         return KIND_NAMES[kind];
     return "?";
@@ -56,30 +57,19 @@ static const char *kindName(NodeKind kind) {
 void printAST(const ASTNode *node, int depth) {
     if (!node) return;
 
-    // Apply tree level indentation spaces
     for (int i = 0; i < depth; i++) printf("  ");
 
-    // Print node type name along with text payload if present
     if (node->text)
         printf("%s (%s)\n", kindName(node->kind), node->text);
     else
         printf("%s\n", kindName(node->kind));
 
-    // Recursively print all child branches with incremented depth
     for (int i = 0; i < node->nchildren; i++)
         printAST(node->children[i], depth + 1);
 }
 
 void freeAST(ASTNode *node) {
-    if (!node) return;
-
-    // Recursively free sub-tree children first
-    for (int i = 0; i < node->nchildren; i++)
-        freeAST(node->children[i]);
-
-    // Free dynamic children pointer array
-    free(node->children);
-
-    // Note: node->text is owned by arena allocator and must not be freed here
-    free(node);
+    // Everything (struct, children[], text) is arena-owned now: nothing to
+    // free here. Kept only so every existing call site keeps compiling.
+    (void)node;
 }

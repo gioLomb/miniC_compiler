@@ -35,9 +35,10 @@ static inline int literalIntEquals(ASTNode *n, long v) {
  * @param node Pointer to the AST node to be shallow-freed.
  */
 static void freeNodeShallow(ASTNode *node) {
-    if (!node) return;
+/*    if (!node) return;
     free(node->children);
-    free(node);
+    free(node);*/
+    (void)node;
 }
 
 // ============================================================================
@@ -291,8 +292,8 @@ static ASTNode *buildBalanced(Arena *arena,
             // Construct balanced binary node pair
             ASTNode *pair = newNode(arena, ND_BINOP,
                                     (char[]){ opChar, '\0' });
-            addChild(pair, sx);
-            addChild(pair, dx);
+            addChild(arena,pair, sx);
+            addChild(arena,pair, dx);
             leaves[writeIdx++] = pair;
         }
         // Carry over odd trailing leaf node to the next height level
@@ -478,28 +479,29 @@ static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
         ASTNode **oldChildren = stmt->children;
         int oldCount = stmt->nchildren;
 
-        stmt->children  = oldCount > 0 ? malloc((size_t)oldCount * sizeof(ASTNode *)) : NULL;
+        // FIX: stmt->children is arena-owned (see ast.c) -- must NOT be
+        // malloc'd/free'd here. Rebuild it from the same arena; the old
+        // buffer is simply abandoned in the arena like any other addChild()
+        // growth (never freed individually).
+        stmt->children  = oldCount > 0 ? arena_alloc(arena, (size_t)oldCount * sizeof(ASTNode *)) : NULL;
         stmt->nchildren = 0;
         stmt->capacity  = oldCount;
 
-        // Optimize statements and flatten nested block structures
         for (int i = 0; i < oldCount; i++) {
             ASTNode *result = rewriteStmt(arena, oldChildren[i]);
             if (!result) continue;
 
             if (result->kind == ND_BLOCK) {
-                // In-place inline unnesting of child block statements
                 for (int j = 0; j < result->nchildren; j++)
-                    addChild(stmt, result->children[j]);
+                    addChild(arena, stmt, result->children[j]);
                 freeNodeShallow(result);
             } else {
-                addChild(stmt, result);
+                addChild(arena, stmt, result);
             }
         }
-        free(oldChildren);
+        // no free(oldChildren): arena-owned, reclaimed by arena_destroy
         return stmt;
     }
-
     case ND_IF: {
         stmt->children[0] = rewriteExpr(arena, stmt->children[0]);
         ASTNode *cond = stmt->children[0];
