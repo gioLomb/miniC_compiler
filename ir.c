@@ -972,3 +972,56 @@ int ir_operand_is_storage(OperandKind kind) {
      * survives as src1 of IR_CALL — both are non-storage descriptors. */
     return kind == OPND_VAR || kind == OPND_TEMP;
 }
+
+/* =========================================================================
+ * Predecessor list construction
+ * =========================================================================
+ * Shared, read-only, backward-direction view of the CFG built from succ[].
+ * Used by cp.c (forward dataflow meet at join points) and loop.c (dominator
+ * computation, natural-loop body collection) to avoid each independently
+ * re-scanning every block's succ[] to find the predecessors of a given
+ * block — an O(nBlocks^2) pattern when repeated inside a fixed-point loop.
+ * ========================================================================= */
+
+PredList ir_build_pred_list(IRFunction *f, Arena *arena) {
+    int n = f->blockCount;
+    PredList pl;
+    pl.predStart = arena_alloc(arena, (size_t)n * sizeof(int));
+    pl.predCount = arena_alloc(arena, (size_t)n * sizeof(int));
+    memset(pl.predCount, 0, (size_t)n * sizeof(int));
+
+    // pass 1: count incoming edges per block. One flat scan over every
+    // succ[] slot of every block — no per-block search, hence O(nBlocks)
+    // rather than the O(nBlocks^2) "for each block, scan all others for a
+    // matching succ[]" pattern this replaces.
+    for (int b = 0; b < n; b++)
+        for (int k = 0; k < 2; k++) {
+            int s = f->blocks[b].bb.succ[k];
+            if (s >= 0 && s < n) pl.predCount[s]++;
+        }
+
+    // prefix sum: predStart[b] = running total of predecessors of all
+    // blocks before b, giving each block a contiguous slice of predData
+    int total = 0;
+    for (int b = 0; b < n; b++) {
+        pl.predStart[b] = total;
+        total += pl.predCount[b];
+    }
+
+    // guard against a zero-size allocation when the function has no edges
+    // at all (e.g. a single-block function with no branches)
+    pl.predData = arena_alloc(arena, (size_t)(total > 0 ? total : 1) * sizeof(int));
+
+    // pass 2: fill predData using a per-block write cursor seeded from
+    // predStart; the cursor is pure scratch, discarded after this loop
+    int *cursor = arena_alloc(arena, (size_t)n * sizeof(int));
+    memcpy(cursor, pl.predStart, (size_t)n * sizeof(int));
+
+    for (int b = 0; b < n; b++)
+        for (int k = 0; k < 2; k++) {
+            int s = f->blocks[b].bb.succ[k];
+            if (s >= 0 && s < n) pl.predData[cursor[s]++] = b;
+        }
+
+    return pl;
+}

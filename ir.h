@@ -274,4 +274,49 @@ int ir_operand_is_storage(OperandKind kind);
  */
 int ir_is_commutative(IROp op);
 
+/* =========================================================================
+ * Predecessor list (CSR-style)
+ * ========================================================================= */
+
+/**
+ * @brief Compressed-sparse-row predecessor list for a function's CFG.
+ *
+ * Built once in O(nBlocks) and shared by every pass that needs to walk a
+ * block's incoming edges repeatedly (loop.c dominator/loop-body computation,
+ * cp.c forward dataflow). Replaces the previous pattern of each pass
+ * independently scanning every block's succ[] to find the predecessors of
+ * a given block, which cost O(nBlocks^2) per fixed-point iteration.
+ *
+ * For block b, its predecessors are:
+ *   predData[predStart[b] .. predStart[b] + predCount[b] - 1]
+ *
+ * @note This is a derived, read-only, single-direction (backward) view of
+ *       succ[]. It must be rebuilt whenever succ[] changes (e.g. after CP's
+ *       CFG pruning or loop_build_pre_header()'s edge rerouting) — it is
+ *       not a substitute for succ[], only a cache of the reverse edges.
+ */
+typedef struct {
+    int *predStart;  /**< predStart[b]: offset into predData for block b. */
+    int *predCount;  /**< predCount[b]: number of predecessors of block b. */
+    int *predData;   /**< Flat array of all predecessor block indices, CSR-packed. */
+} PredList;
+
+/**
+ * @brief Build a CSR predecessor list for every block in @p f.
+ *
+ * Two-pass O(nBlocks) construction: first counts incoming edges per block
+ * (one scan of every succ[] entry), then fills a flat array using running
+ * offsets (prefix sum). No block-pair scan is ever performed, unlike the
+ * O(nBlocks^2) pattern this replaces.
+ *
+ * @pre  @p f->blocks[].bb.succ[] must already be resolved (ir_resolve_cfg()
+ *       has run, or the caller has otherwise populated succ[] manually,
+ *       e.g. loop_build_pre_header()).
+ *
+ * @param f      IR function whose predecessor edges are derived from succ[].
+ * @param arena  Arena for all PredList allocations.
+ * @return       Populated PredList; valid as long as @p arena is alive.
+ */
+PredList ir_build_pred_list(IRFunction *f, Arena *arena);
+
 #endif /* IR_H */

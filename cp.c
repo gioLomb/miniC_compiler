@@ -46,9 +46,17 @@
  *
  * Helper delegation:
  *  cp_transfer              — in-place ConstMap update for one instruction
- *  cp_fold_binary           — int/float binary constant fold with promotion
- *  cp_is_redundant_jump     — detect GOTO/IF_FALSE → immediately next instr
- *  cp_mark_orphan_labels    — find IR_LABEL nodes with no referencing jump
+ *  cp_fold_binary            — int/float binary constant fold with promotion
+ *  cp_is_redundant_jump      — detect GOTO/IF_FALSE → immediately next instr
+ *  cp_mark_orphan_labels     — find IR_LABEL nodes with no referencing jump
+ *
+ * Predecessor lookups
+ * -------------------
+ * cp_run_forward_dataflow's meet step needs, for every block, the set of
+ * blocks whose succ[] targets it. Rather than each fixed-point iteration
+ * re-scanning every block's succ[] to find this (O(nBlocks^2) per pass),
+ * a PredList (ir.h) is built once per cp_optimize() call and reused across
+ * every iteration of the forward-dataflow fixed point.
  */
 
 #include <stdlib.h>
@@ -205,15 +213,23 @@ static void cp_build_varmap(IRFunction *f, VarMap *vm) {
  * while loop repeats until no Out[] set changes — guaranteed to terminate
  * because lattice values only descend (UNKNOWN→CONST→CONFLICT).
  *
+ * Predecessor lookup uses the precomputed @p preds CSR list (ir.h) instead
+ * of scanning every block's succ[] on every fixed-point iteration — the
+ * scan-based approach cost O(nBlocks) per block per iteration, i.e.
+ * O(nBlocks^2) per pass; the CSR list turns it into O(nBlocks + edges)
+ * per pass, with the list itself built once by the caller.
+ *
  * @param f       Function being analysed.
  * @param in      Per-block input ConstMaps (one entry per block, arena-allocated).
  * @param out     Per-block output ConstMaps.
  * @param tmp     Scratch ConstMap (arena-allocated, same size as in[b]).
  * @param numVars Total number of tracked variable ids (== vm->nextId).
  * @param vm      VarMap for operand-to-id translation.
+ * @param preds   Precomputed predecessor list for @p f (see ir_build_pred_list).
  */
 static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
-                                  ConstMap *tmp, int numVars, VarMap *vm) {
+                                  ConstMap *tmp, int numVars, VarMap *vm,
+                                  const PredList *preds) {
     (void)numVars;
     int nBlocks = f->blockCount;
     int changed = 1;
@@ -222,18 +238,15 @@ static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
         changed = 0;
         for (int b = 0; b < nBlocks; b++) {
 
-            // in[b] = meet of all predecessor out[p]
-            int hasPred = 0;
-            for (int p = 0; p < nBlocks; p++) {
-                for (int k = 0; k < 2; k++) {
-                    if (f->blocks[p].bb.succ[k] != b) continue;
-                    if (!hasPred) {
-                        const_map_copy(&in[b], &out[p]); // first predecessor: copy
-                        hasPred = 1;
-                    } else {
-                        const_map_meet(&in[b], &out[p]); // subsequent: meet (join)
-                    }
-                }
+            // in[b] = meet of all predecessor out[p]; walk only b's actual
+            // predecessors via the precomputed CSR list instead of scanning
+            // every block's succ[] on every fixed-point iteration
+            int start = preds->predStart[b];
+            int cnt   = preds->predCount[b];
+            for (int i = 0; i < cnt; i++) {
+                int p = preds->predData[start + i];
+                if (i == 0) const_map_copy(&in[b], &out[p]); // first predecessor: copy
+                else        const_map_meet(&in[b], &out[p]); // subsequent: meet (join)
             }
             // block with no predecessors keeps in[b] = all UNKNOWN (initial value)
 
@@ -517,6 +530,12 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
     cp_build_varmap(f, &vm);
     int numVars = vm.nextId;
 
+    /* Pass 1b: predecessor list. Built once here and reused across every
+     * iteration of the forward-dataflow fixed point in Pass 3 below —
+     * succ[] is only mutated later, by this same call's own CFG-pruning
+     * rewrite (Pass 4), so it is safe to build it once up front. */
+    PredList preds = ir_build_pred_list(f, arenaScratch);
+
     /* Pass 2: allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init */
     ConstMap *in  = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap *out = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
@@ -528,7 +547,7 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
     }
 
     /* Pass 3: forward dataflow */
-    cp_run_forward_dataflow(f, in, out, &tmp, numVars, &vm);
+    cp_run_forward_dataflow(f, in, out, &tmp, numVars, &vm, &preds);
 
     /* Pass 4: rewrite + CFG pruning */
     int modified = 0;

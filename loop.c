@@ -11,6 +11,21 @@
  *  collectBody             — backward BFS to gather loop body blocks.
  *  loop_find               — scan back-edges, call collectBody, record exits.
  *  loop_build_pre_header   — append synthetic block, re-route predecessors.
+ *
+ * Predecessor lookups
+ * --------------------
+ * Both loop_compute_dominators (intersection of predecessor Dom sets at
+ * every fixed-point iteration) and collectBody (reverse BFS from the
+ * back-edge tail, called once per natural loop found) need, for a given
+ * block, the set of blocks whose succ[] targets it. Both now use a shared
+ * PredList (ir.h, built via ir_build_pred_list()) instead of independently
+ * re-scanning every block's succ[] to find this — the old approach cost
+ * O(nBlocks) per lookup, repeated O(nBlocks) times per fixed-point
+ * iteration in loop_compute_dominators (O(nBlocks^2) per pass), and was
+ * additionally capped at a fixed fan-in of 2 predecessors per block in
+ * collectBody's old inline preds[n][2] array — a latent buffer overflow
+ * for any block with more than two incoming edges (e.g. several branches
+ * converging on the same join block). PredList has no such cap.
  */
 
 #include <stdlib.h>
@@ -45,10 +60,18 @@
  *
  * A leftover-bits mask is applied to the last word of the universal sets so
  * that block indices past blockCount are never spuriously set.
+ *
+ * Predecessor sets are looked up via a PredList built once at the start of
+ * this function (see module header) and reused across every iteration of
+ * the fixed-point loop below.
  */
 BitSet *loop_compute_dominators(IRFunction *f, int words, Arena *arena) {
     int n = f->blockCount;
     BitSet *Dom = arena_alloc(arena, (size_t)n * sizeof(BitSet));
+
+    // predecessor list built once, reused across every fixed-point iteration
+    // (succ[] is read-only throughout this function: safe to build up front)
+    PredList preds = ir_build_pred_list(f, arena);
 
     // initialise Dom sets
     for (int b = 0; b < n; b++) {
@@ -74,22 +97,20 @@ BitSet *loop_compute_dominators(IRFunction *f, int words, Arena *arena) {
         changed = 0;
         // skip block 0: its Dom set is fixed to {0}
         for (int b = 1; b < n; b++) {
-            int firstPred = 1;
-            // intersect Dom sets of all predecessors
-            for (int p = 0; p < n; p++) {
-                for (int k = 0; k < 2; k++) {
-                    if (f->blocks[p].bb.succ[k] != b) continue;
-                    if (firstPred) {
-                        bitset_copy(&inter, &Dom[p]); // first pred: copy
-                        firstPred = 0;
-                    } else {
-                        // subsequent preds: AND word by word (intersection)
-                        for (int w = 0; w < words; w++)
-                            inter.bits[w] &= Dom[p].bits[w];
-                    }
-                }
+            int start = preds.predStart[b];
+            int cnt   = preds.predCount[b];
+            if (cnt == 0) continue; // block unreachable: no predecessors found
+
+            // intersect Dom sets of all predecessors, resolved via the
+            // precomputed CSR list instead of re-scanning every block's
+            // succ[] to find them
+            bitset_copy(&inter, &Dom[preds.predData[start]]); // first pred: copy
+            for (int i = 1; i < cnt; i++) {
+                int p = preds.predData[start + i];
+                // subsequent preds: AND word by word (intersection)
+                for (int w = 0; w < words; w++)
+                    inter.bits[w] &= Dom[p].bits[w];
             }
-            if (firstPred) continue; // block unreachable: no predecessors found
 
             // Dom[b] = {b} ∪ inter
             bitset_copy(&tmp, &inter);
@@ -124,34 +145,28 @@ int loop_dominates(BitSet *Dom, int a, int b) {
 /**
  * @brief Collect the loop body for the back-edge tail→header via reverse BFS.
  *
- * Builds a reverse-adjacency list on the fly (preds[][]), then does a BFS
- * from `tail` backwards.  All discovered block indices are written into
- * @p body in BFS order; @p *bodyCount is set to the total count.
+ * Walks predecessor edges via the precomputed @p preds CSR list (built once
+ * by the caller, loop_find(), and shared across every natural loop found —
+ * see module header) rather than reconstructing a reverse-adjacency
+ * structure from scratch on every call. All discovered block indices are
+ * written into @p body in BFS order; @p *bodyCount is set to the total count.
  *
  * @param f          IR function containing the CFG.
  * @param header     Loop-header block index (BFS root; always included).
  * @param tail       Back-edge source block index (BFS seed).
  * @param body       Output array; caller must provide space for n entries.
  * @param bodyCount  Set to the number of entries written into @p body.
+ * @param preds      Precomputed predecessor list for @p f (ir_build_pred_list()).
  * @param arena      Arena for internal BFS auxiliary arrays.
  */
 static void collectBody(IRFunction *f, int header, int tail,
-                        int *body, int *bodyCount, Arena *arena) {
+                        int *body, int *bodyCount, const PredList *preds,
+                        Arena *arena) {
     int n = f->blockCount;
 
-    // build predecessor lists in arena (O(n) scratch)
-    char *inBody    = arena_alloc(arena, (size_t)n);
-    int  *predCount = arena_alloc(arena, (size_t)n * sizeof(int));
-    int (*preds)[2] = arena_alloc(arena, (size_t)n * 2 * sizeof(int));
-    memset(inBody,    0, (size_t)n);
-    memset(predCount, 0, (size_t)n * sizeof(int));
-    memset(preds,    -1, (size_t)n * 2 * sizeof(int));
-
-    for (int b = 0; b < n; b++)
-        for (int k = 0; k < 2; k++) {
-            int s = f->blocks[b].bb.succ[k];
-            if (s >= 0) preds[s][predCount[s]++] = b;
-        }
+    // membership flag for the BFS, arena-scratch, reset per call
+    char *inBody = arena_alloc(arena, (size_t)n);
+    memset(inBody, 0, (size_t)n);
 
     // BFS queue (arena-allocated; at most n entries)
     int *queue = arena_alloc(arena, (size_t)n * sizeof(int));
@@ -163,9 +178,14 @@ static void collectBody(IRFunction *f, int header, int tail,
 
     while (head < tail_q) {
         int b = queue[head++];
-        for (int k = 0; k < predCount[b]; k++) {
-            int p = preds[b][k];
-            if (p >= 0 && !inBody[p]) {
+        // walk b's actual predecessors via the CSR list — unlike the old
+        // fixed-size preds[n][2] array this had no cap on fan-in, so a
+        // join block with more than two incoming edges is handled correctly
+        int start = preds->predStart[b];
+        int cnt   = preds->predCount[b];
+        for (int k = 0; k < cnt; k++) {
+            int p = preds->predData[start + k];
+            if (!inBody[p]) {
                 inBody[p] = 1;
                 queue[tail_q++] = p;
             }
@@ -191,12 +211,21 @@ static void collectBody(IRFunction *f, int header, int tail,
  *   2. Scan body blocks for exit blocks (have a successor outside the body).
  *      Each distinct exit block is recorded at most once in L->exits[].
  *
+ * A single PredList is built once at the top of this function and shared
+ * across every collectBody() call below — succ[] is never mutated while
+ * loop_find() runs, so the list stays valid for all loops discovered in
+ * this call (see module header for the rationale).
+ *
  * Stops early if MAX_LOOPS loops have already been found.
  */
 int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
     int n = f->blockCount, nLoops = 0;
     // reuse a single body scratch buffer across all loops
     int *body = arena_alloc(arena, (size_t)n * sizeof(int));
+
+    // predecessor list built once, reused by every collectBody() call below
+    // instead of each call reconstructing its own reverse-adjacency lists
+    PredList preds = ir_build_pred_list(f, arena);
 
     for (int b = 0; b < n && nLoops < MAX_LOOPS; b++) {
         for (int k = 0; k < 2; k++) {
@@ -211,7 +240,7 @@ int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
 
             // collect body; copy into arena-allocated array owned by Loop
             int bodyCount = 0;
-            collectBody(f, h, b, body, &bodyCount, arena);
+            collectBody(f, h, b, body, &bodyCount, &preds, arena);
             L->body      = arena_alloc(arena, (size_t)bodyCount * sizeof(int));
             L->bodyCount = bodyCount;
             memcpy(L->body, body, (size_t)bodyCount * sizeof(int));
@@ -256,6 +285,16 @@ int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
  * re-routed to the pre-header: their succ[] entry pointing to header is
  * changed to point to the new block.  predCount on both the header and the
  * pre-header is updated accordingly.
+ *
+ * This function mutates succ[] directly (predecessor rerouting), so it
+ * necessarily works on the live succ[] arrays rather than any cached
+ * PredList — any PredList built before this call becomes stale afterwards
+ * and must be rebuilt by the next pass that needs one (both callers,
+ * licm_optimize() and sr_optimize(), only build/use a PredList inside
+ * loop_compute_dominators()/loop_find(), which run once per pass before
+ * any pre-header is created for that pass — no staleness issue in
+ * practice, but any future caller that interleaves pre-header creation
+ * with PredList-based lookups must rebuild the list afterwards).
  *
  * A temporary inBody[] membership array is allocated from the heap (not the
  * arena) because the Loop's arena may have been destroyed by the time this
