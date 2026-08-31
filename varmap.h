@@ -135,7 +135,7 @@ int varmap_operand_id(VarMap *m, Operand op);
  *
  * @param m  VarMap instance to initialise (must not be NULL).
  */
-void varmap_init(VarMap *m);
+VarMap varmap_init();
 
 /**
  * @brief Destroy a VarMap and free its backing hash table.

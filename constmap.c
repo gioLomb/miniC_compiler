@@ -233,70 +233,9 @@ LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm) {
     }
 }
 
-int is_binary_op(IROp op) {
-    switch (op) {
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
-    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
-        return 1;
-    default: return 0;
-    }
-}
 
-int is_comparison_op(IROp op) {
-    switch (op) {
-    case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
-        return 1;
-    default: return 0;
-    }
-}
 
-/**
- * @brief Constant-fold a binary integer operation.
- *
- * Guards division and modulo by zero: returning 0 (not folded) defers
- * execution to runtime, preserving whatever behaviour the target platform
- * defines for integer division by zero.  Folding to an arbitrary value
- * would silently change program semantics.
- */
-int fold_binary_int(IROp op, int a, int b, int *res) {
-    switch (op) {
-    case IR_ADD: *res = a + b;                        return 1;
-    case IR_SUB: *res = a - b;                        return 1;
-    case IR_MUL: *res = a * b;                        return 1;
-    case IR_DIV: if (!b) return 0; *res = a / b;      return 1; // b==0: defer to runtime
-    case IR_MOD: if (!b) return 0; *res = a % b;      return 1; // b==0: defer to runtime
-    case IR_LT:  *res = (a <  b);                     return 1;
-    case IR_LE:  *res = (a <= b);                     return 1;
-    case IR_GT:  *res = (a >  b);                     return 1;
-    case IR_GE:  *res = (a >= b);                     return 1;
-    case IR_EQ:  *res = (a == b);                     return 1;
-    case IR_NE:  *res = (a != b);                     return 1;
-    default:                                           return 0; // unhandled opcode
-    }
-}
 
-/**
- * @brief Constant-fold a binary float operation.
- *
- * Float division by zero is guarded the same way as integer division.
- * Comparison results are stored as float (0.0 or 1.0) and the caller is
- * responsible for converting them to int when is_comparison_op() is true.
- */
-int fold_binary_float(IROp op, float a, float b, float *res) {
-    switch (op) {
-    case IR_ADD: *res = a + b;                                 return 1;
-    case IR_SUB: *res = a - b;                                 return 1;
-    case IR_MUL: *res = a * b;                                 return 1;
-    case IR_DIV: if (b == 0.0f) return 0; *res = a / b;       return 1; // b==0: defer to runtime
-    case IR_LT:  *res = (float)(a <  b);                       return 1;
-    case IR_LE:  *res = (float)(a <= b);                       return 1;
-    case IR_GT:  *res = (float)(a >  b);                       return 1;
-    case IR_GE:  *res = (float)(a >= b);                       return 1;
-    case IR_EQ:  *res = (float)(a == b);                       return 1;
-    case IR_NE:  *res = (float)(a != b);                       return 1;
-    default:                                                    return 0;
-    }
-}
 
 /**
  * @brief Constant-fold a unary operation (NEG or NOT) on a lattice value.

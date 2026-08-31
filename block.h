@@ -11,16 +11,9 @@ typedef struct {
     int end;     /**< index one past the last instruction (exclusive)     */
 } BlockRange;
 
-/*
- * BasicBlock: campi comuni a tutti i blocchi base del compilatore.
- *
- * range e' un campo NOMINATO (non anonimo): ogni accesso a start/end passa
- * per bb.range.start / bb.range.end. succ[] resta un campo diretto di
- * BasicBlock, non dentro range.
- */
 typedef struct {
     BlockRange range;
-    int succ[2];    /* successori nel CFG; -1 = assente */
+    int succ[2];    /* successors in CFG; -1 if absent */
 } BasicBlock;
 
 #endif /* BLOCK_H */

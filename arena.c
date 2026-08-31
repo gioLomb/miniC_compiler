@@ -4,8 +4,6 @@
 #include <stdarg.h>
 #include "arena.h"
 
-#define ARENA_DEFAULT_BLOCK_SIZE 4096
-
 /**
  * @brief Internal linked-list block representation.
  */
@@ -112,7 +110,7 @@ char *arena_sprintf(Arena *arena, const char *fmt, ...) {
     va_start(args, fmt);
     va_copy(argsCopy, args);
 
-    // First pass: calculate required string buffer size without allocating
+    // calculate required string buffer size without allocating
     int needed = vsnprintf(NULL, 0, fmt, argsCopy);
     va_end(argsCopy);
     if (needed < 0) {
@@ -120,7 +118,7 @@ char *arena_sprintf(Arena *arena, const char *fmt, ...) {
         return NULL;
     }
 
-    // Second pass: allocate exact required size in arena and format string
+    // allocate exact required size in arena and format string
     char *buf = arena_alloc(arena, (size_t)needed + 1);
     vsnprintf(buf, (size_t)needed + 1, fmt, args);
     va_end(args);
@@ -130,7 +128,7 @@ char *arena_sprintf(Arena *arena, const char *fmt, ...) {
 
 void arena_reset(Arena *arena) {
     // Reset write pointers to 0 across all existing blocks to allow reuse
-    for (ArenaBlock *b = arena->head; b; b = b->next) {
+    for (ArenaBlock *b = arena->head; b != NULL; b = b->next) {
         b->used = 0;
     }
     // Set write target back to initial head block

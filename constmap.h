@@ -252,55 +252,6 @@ Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm);
  */
 LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm);
 
-/**
- * @brief Return non-zero if @p op is a binary arithmetic or relational opcode.
- *
- * @param op  IR opcode to test.
- * @return    1 if @p op takes two source operands and produces a value.
- */
-int is_binary_op(IROp op);
-
-/**
- * @brief Return non-zero if @p op is a relational comparison opcode.
- *
- * Used to decide whether a folded float result should be stored as int (0/1).
- *
- * @param op  IR opcode to test.
- * @return    1 if @p op is one of LT, LE, GT, GE, EQ, NE.
- */
-int is_comparison_op(IROp op);
-
-/**
- * @brief Constant-fold a binary operation on two integer values.
- *
- * Evaluates @c a op b at compile time and writes the result into @p res.
- * Division and modulo by zero are handled safely by returning 0 (not folded)
- * rather than invoking undefined behaviour; the fold is deferred to runtime.
- *
- * @param op   Binary IR opcode (ADD, SUB, MUL, DIV, MOD, or a comparison).
- * @param a    Left operand integer value.
- * @param b    Right operand integer value.
- * @param res  Receives the folded result when the function returns 1.
- * @return     1 if folding succeeded, 0 if the operation cannot be folded
- *             (unsupported opcode or division/modulo by zero).
- */
-int fold_binary_int(IROp op, int a, int b, int *res);
-
-/**
- * @brief Constant-fold a binary operation on two float values.
- *
- * Analogous to fold_binary_int() but for floating-point operands.
- * Float division by zero is guarded the same way as integer division.
- * Comparison opcodes produce a float result of 0.0 or 1.0; the caller is
- * responsible for converting to int when storing a comparison result.
- *
- * @param op   Binary IR opcode.
- * @param a    Left operand float value.
- * @param b    Right operand float value.
- * @param res  Receives the folded result when the function returns 1.
- * @return     1 if folding succeeded, 0 otherwise.
- */
-int fold_binary_float(IROp op, float a, float b, float *res);
 
 /**
  * @brief Constant-fold a unary operation (NEG or NOT) on a LatVal.

@@ -88,7 +88,7 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
         }
     }
 
-    buckets_free(&buckets);
+    buckets_free();
     return stackLen;
 }
 /* =========================================================================

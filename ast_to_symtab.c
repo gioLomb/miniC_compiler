@@ -2,15 +2,6 @@
  * @file ast_to_symtab.c
  * @brief AST → Symbol Table translation — implementation.
  *
- * See ast_to_symtab.h for the module overview and full API documentation.
- *
- * Internal organisation
- * ---------------------
- *  st_resolve_type             — first-character dispatch, O(1).
- *  st_elaborate_decl           — in-place string split on the arena copy.
- *  st_bind_symbol              — thin wrapper: elaborate → build Symbol → sym_bind.
- *  st_resolve_global_namespace — single linear walk over ND_PROGRAM children.
- *
  * Arena usage
  * -----------
  * st_elaborate_decl allocates all output substrings from the caller's arena
@@ -22,7 +13,7 @@
  * Offset assignment for globals
  * ------------------------------
  * st_resolve_global_namespace assigns sym.offset = global->table->size
- * *before* calling sym_bind, mirroring the sequential insertion order.
+ * before calling sym_bind, mirroring the sequential insertion order.
  * Both ND_VAR_DECL and ND_FUNC_DECL advance the implicit counter so that
  * ir_generate()'s symOffset loop produces the same sequence and OPND_VAR
  * operands correctly identify global variables.
@@ -151,8 +142,11 @@ static int st_process_func_decl(Arena *arena, ASTNode *decl, Symbol *sym, const 
     return errors;
 }
 
-static inline Symbol st_init_var_symbol(int isArray, int arraySize) {
-    return (Symbol){.kind = SYM_VAR, .isArray = isArray, .arraySize = arraySize};
+static inline void st_init_var_symbol(Symbol *sym, int isArray, int arraySize) {
+    sym->kind      = SYM_VAR;
+    sym->isArray   = isArray;
+    sym->arraySize = arraySize;
+    // dataType lasciato intatto: già settato dal chiamante prima dello switch
 }
 
 static inline int st_bind_global_symbol(Scope *global, const char *name, Symbol *sym) {
@@ -169,6 +163,7 @@ static inline int st_bind_global_symbol(Scope *global, const char *name, Symbol 
     }
     return 0;
 }
+
 
 int st_resolve_global_namespace(ASTNode *program, Scope *global) {
     int errors = 0;
@@ -194,7 +189,7 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
 
             case ND_VAR_DECL:
                 // ---- global variable declaration ----
-                sym = st_init_var_symbol(isArray, arraySize);
+                st_init_var_symbol(&sym,isArray, arraySize);
                 break;
 
             default:

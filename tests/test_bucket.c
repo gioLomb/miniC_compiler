@@ -31,7 +31,7 @@ int main(void) {
         n = bucket_pop_any_low(&b, &deg);
         assert(deg == 1 && (n == 2 || n == 7));
         printf("PASS 1 ok: pop_any_low restituisce sempre il grado minimo.\n");
-        buckets_free(&b);
+        buckets_free();
     }
 
     /* PASS 2: rimozione di un nodo intermedio non rompe la lista collegata */
@@ -49,7 +49,7 @@ int main(void) {
         assert(b.next[3] == 1);
         assert(b.prev[1] == 3);
         printf("PASS 2 ok: rimozione nodo intermedio preserva la lista.\n");
-        buckets_free(&b);
+        buckets_free();
     }
 
     /* PASS 3: spostamento di un nodo tra bucket (come fa ra_simplify quando
@@ -69,7 +69,7 @@ int main(void) {
         int n = bucket_pop_any_low(&b, &deg);
         assert(n == 4 && deg == 4);
         printf("PASS 3 ok: transizione di grado sposta correttamente il nodo.\n");
-        buckets_free(&b);
+        buckets_free();
     }
 
     /* PASS 4: pop su struttura vuota ritorna -1, nessun crash */
@@ -79,7 +79,7 @@ int main(void) {
         int n = bucket_pop_any_low(&b, &deg);
         assert(n == -1);
         printf("PASS 4 ok: pop su bucket vuoto ritorna -1.\n");
-        buckets_free(&b);
+        buckets_free();
     }
 
     /* PASS 5: piu' nodi nello stesso bucket, tutti estraibili senza duplicati */
@@ -100,7 +100,7 @@ int main(void) {
         int deg2;
         assert(bucket_pop_any_low(&b, &deg2) == -1);
         printf("PASS 5 ok: tutti i nodi dello stesso bucket estratti senza duplicati.\n");
-        buckets_free(&b);
+        buckets_free();
     }
 
     printf("\nTutti i test bucket sono passati.\n");

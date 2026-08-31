@@ -92,9 +92,8 @@ int varmap_operand_id(VarMap *m, Operand op) {
  * than 32 distinct variables/temporaries, so this avoids over-allocating
  * while the hash table's built-in resize handles larger functions.
  */
-void varmap_init(VarMap *m) {
-    m->table  = ht_create(32, varmap_hash);
-    m->nextId = 0;
+VarMap varmap_init() {
+    return (VarMap){.table = ht_create(32, varmap_hash), .nextId = 0};
 }
 
 /**

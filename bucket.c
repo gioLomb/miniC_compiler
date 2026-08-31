@@ -12,20 +12,11 @@
 #include "arena.h"
 #include <string.h>
 
-/* =========================================================================
- * Module-level arena
- * =========================================================================
- * Owns the memory for head[], next[], prev[], and inBucket[].
- * Only one Buckets instance may be live at a time; buckets_create()
- * enforces this by destroying any leftover arena before creating a new one.
- * ========================================================================= */
+/* Module-level arena */
 static Arena *sArena = NULL;
 
-/* =========================================================================
- * Public API
- * ========================================================================= */
 
-Buckets buckets_create(int nextVreg, int k) {
+Buckets buckets_create(int nextVreg, int nBuckets) {
     // Destroy any leftover arena from a previous (incorrectly unpaired) call.
     if (sArena) {
         arena_destroy(sArena);
@@ -34,13 +25,13 @@ Buckets buckets_create(int nextVreg, int k) {
     sArena = arena_create(0);
 
     Buckets b;
-    b.k        = k;
+    b.nBuckets     = nBuckets;
     b.nonempty = 0;
 
     int nodesNum = (nextVreg > 0) ? nextVreg : 1;   // guard against zero-size allocation
 
-    b.head = arena_alloc(sArena, (size_t)k * sizeof(int));
-    memset(b.head, -1, (size_t)k * sizeof(int));   // -1 = empty sentinel for each bucket
+    b.head = arena_alloc(sArena, (size_t)nBuckets * sizeof(int));
+    memset(b.head, -1, (size_t)nBuckets * sizeof(int));   // -1 = empty sentinel for each bucket
 
     b.next     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
     b.prev     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
@@ -50,8 +41,8 @@ Buckets buckets_create(int nextVreg, int k) {
     return b;
 }
 
-void buckets_free(Buckets *b) {
-    (void)b;   // arrays are owned by sArena; the parameter exists for API symmetry
+void buckets_free() {
+    //(void)b;   // arrays are owned by sArena; the parameter exists for API symmetry
     if (sArena) {
         arena_destroy(sArena);
         sArena = NULL;
@@ -88,7 +79,7 @@ int bucket_pop_any_low(Buckets *b, int *outDegree) {
     if (!b->nonempty) return -1;
 
     // __builtin_ctz finds the lowest set bit in O(1), giving the minimum-degree
-    // non-empty bucket without scanning all k entries.
+    // non-empty bucket without scanning all nBucketsentries.
     *outDegree = __builtin_ctz(b->nonempty);
     return b->head[*outDegree];
 }

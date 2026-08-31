@@ -70,6 +70,24 @@
  * Internal helpers
  * ========================================================================= */
 
+static inline int is_binary_op(IROp op) {
+    switch (op) {
+    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
+    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
+        return 1;
+    default: return 0;
+    }
+}
+
+int is_comparison_op(IROp op) {
+    switch (op) {
+    case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
+        return 1;
+    default: return 0;
+    }
+}
+
+
 /**
  * @brief Structural equality for two Operand values.
  *
@@ -89,6 +107,55 @@ static inline int operand_equal(const Operand *a, const Operand *b) {
     return 1; /* OPND_NONE */
 }
 
+/**
+ * @brief Constant-fold a binary integer operation.
+ *
+ * Guards division and modulo by zero: returning 0 (not folded) defers
+ * execution to runtime, preserving whatever behaviour the target platform
+ * defines for integer division by zero.  Folding to an arbitrary value
+ * would silently change program semantics.
+ */
+static inline int fold_binary_int(IROp op, int a, int b, int *res) {
+    switch (op) {
+    case IR_ADD: *res = a + b;                        return 1;
+    case IR_SUB: *res = a - b;                        return 1;
+    case IR_MUL: *res = a * b;                        return 1;
+    case IR_DIV: if (!b) return 0; *res = a / b;      return 1; // b==0: defer to runtime
+    case IR_MOD: if (!b) return 0; *res = a % b;      return 1; // b==0: defer to runtime
+    case IR_LT:  *res = (a <  b);                     return 1;
+    case IR_LE:  *res = (a <= b);                     return 1;
+    case IR_GT:  *res = (a >  b);                     return 1;
+    case IR_GE:  *res = (a >= b);                     return 1;
+    case IR_EQ:  *res = (a == b);                     return 1;
+    case IR_NE:  *res = (a != b);                     return 1;
+    default:                                           return 0; // unhandled opcode
+    }
+}
+
+/**
+ * @brief Constant-fold a binary float operation.
+ *
+ * Float division by zero is guarded the same way as integer division.
+ * Comparison results are stored as float (0.0 or 1.0) and the caller is
+ * responsible for converting them to int when is_comparison_op() is true.
+ */
+static inline int fold_binary_float(IROp op, float a, float b, float *res) {
+    switch (op) {
+    case IR_ADD: *res = a + b;                                 return 1;
+    case IR_SUB: *res = a - b;                                 return 1;
+    case IR_MUL: *res = a * b;                                 return 1;
+    case IR_DIV: if (b == 0.0f) return 0; *res = a / b;       return 1; // b==0: defer to runtime
+    case IR_LT:  *res = (float)(a <  b);                       return 1;
+    case IR_LE:  *res = (float)(a <= b);                       return 1;
+    case IR_GT:  *res = (float)(a >  b);                       return 1;
+    case IR_GE:  *res = (float)(a >= b);                       return 1;
+    case IR_EQ:  *res = (float)(a == b);                       return 1;
+    case IR_NE:  *res = (float)(a != b);                       return 1;
+    default:                                                    return 0;
+    }
+}
+
+
 /* =========================================================================
  * Transfer function
  * ========================================================================= */
@@ -107,7 +174,6 @@ static inline int operand_equal(const Operand *a, const Operand *b) {
  */
 
  static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
-    /* Le istruzioni che non definiscono un risultato non alterano la mappa */
     if (!ir_defines_dst(in->op))
         return;
 
@@ -141,45 +207,7 @@ static inline int operand_equal(const Operand *a, const Operand *b) {
     map->vals[id] = result;
 }
 
-// static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
-//     int id = varmap_operand_id(vm, in->dst);
-//     if (id < 0 || id >= map->size) return; // dst not a tracked storage location
 
-//     LatVal result = lat_conflict(); // default: assume unknown/conflicting
-
-//     if (in->op == IR_ASSIGN) {
-//         // copy: propagate whatever lattice value src1 currently has
-//         result = lat_get_value_from_operand(map, in->src1, vm);
-
-//     } else if (is_binary_op(in->op)) {
-//         LatVal lhs = lat_get_value_from_operand(map, in->src1, vm);
-//         LatVal rhs = lat_get_value_from_operand(map, in->src2, vm);
-//         // only fold when both operands are known constants
-//         if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
-//             if (!lhs.isFloat && !rhs.isFloat) {
-//                 int r;
-//                 if (fold_binary_int(in->op, lhs.val.ival, rhs.val.ival, &r))
-//                     result = lat_set_const_int(r);
-//             } else if (lhs.isFloat && rhs.isFloat) {
-//                 float r;
-//                 if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
-//                     result = is_comparison_op(in->op)
-//                              ? lat_set_const_int((int)r)   // comparison → int 0/1
-//                              : lat_set_const_float(r);
-//             }
-//             // mixed int/float: leave as LAT_CONFLICT (no implicit promotion here)
-//         }
-
-//     } else if (in->op == IR_NEG || in->op == IR_NOT) {
-//         result = fold_unary(in->op, lat_get_value_from_operand(map, in->src1, vm));
-//     }
-
-//     map->vals[id] = result;
-// }
-
-/* =========================================================================
- * Pass 1: build VarMap
- * ========================================================================= */
 
 /**
  * @brief Scan all instructions and assign a compact int id to every operand.
@@ -187,20 +215,18 @@ static inline int operand_equal(const Operand *a, const Operand *b) {
  * Must be called before any ConstMap operations so that every
  * variable/temporary that appears in the function has a valid id in [0, nextId).
  */
-static void cp_build_varmap(IRFunction *f, VarMap *vm) {
-    varmap_init(vm);
+static VarMap cp_build_varmap(IRFunction *f) {
+    VarMap vm = varmap_init();
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
-        // register dst, src1, src2 — get-or-create semantics
-        varmap_operand_id(vm, in->dst);
-        varmap_operand_id(vm, in->src1);
-        varmap_operand_id(vm, in->src2);
+        // register dst, src1, src: get-or-create semantics
+        varmap_operand_id(&vm, in->dst);
+        varmap_operand_id(&vm, in->src1);
+        varmap_operand_id(&vm, in->src2);
     }
+    return vm;
 }
 
-/* =========================================================================
- * Pass 3: forward dataflow
- * ========================================================================= */
 
 /**
  * @brief Compute in[b] and out[b] for every block to a fixed point.
@@ -351,11 +377,48 @@ static int cp_is_redundant_jump(IRFunction *f, int idx) {
 }
 
 /**
- * @brief Mark IR_LABEL instructions that no jump in the function references.
+ * @brief Scans instructions to find all jump targets (GOTO/IF_FALSE)
+ *        and marks the corresponding target IR_LABEL indices as referenced.
+ */
+static void collect_referenced_labels(const IRFunction *f, char *referenced) {
+    for (int i = 0; i < f->count; i++) {
+        const IRInstr *in = &f->instrs[i];
+        if (in->op != IR_GOTO && in->op != IR_IF_FALSE) {
+            continue;
+        }
+
+        int targetLabelId = in->dst.data.labelId;
+
+        // Find the IR_LABEL instruction with this id and mark it referenced
+        for (int j = 0; j < f->count; j++) {
+            if (f->instrs[j].op == IR_LABEL &&
+                f->instrs[j].dst.data.labelId == targetLabelId) {
+                referenced[j] = 1;
+                break;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Scans for IR_LABEL instructions and marks any label as eliminated
+ *        if it does not appear in the referenced set.
  *
- * An orphan label is safe to delete: it carries no semantic information
- * since no control-flow edge targets it.  This typically arises after
- * constant-folded IF_FALSE instructions are removed.
+ * @return Number of orphan labels marked for elimination.
+ */
+static int mark_unreferenced_labels(const IRFunction *f, const char *referenced, char *eliminate) {
+    int count = 0;
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op == IR_LABEL && !referenced[i]) {
+            eliminate[i] = 1;
+            count++;
+        }
+    }
+    return count;
+}
+
+/**
+ * @brief Mark IR_LABEL instructions that no jump in the function references.
  *
  * @param f         Function to scan.
  * @param eliminate Boolean array (one entry per instruction); entries for
@@ -363,37 +426,15 @@ static int cp_is_redundant_jump(IRFunction *f, int idx) {
  * @return          Number of labels newly marked for elimination.
  */
 static int cp_mark_orphan_labels(IRFunction *f, char *eliminate) {
-    int count = 0;
-    // referenced[j] = 1 if instr j is an IR_LABEL targeted by some jump
     char *referenced = calloc((size_t)f->count, 1);
+    if (!referenced) return 0;
 
-    for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op != IR_GOTO && f->instrs[i].op != IR_IF_FALSE) continue;
-        int labelId = f->instrs[i].dst.data.labelId;
-        // find the IR_LABEL instruction with this id and mark it referenced
-        for (int j = 0; j < f->count; j++) {
-            if (f->instrs[j].op == IR_LABEL &&
-                f->instrs[j].dst.data.labelId == labelId) {
-                referenced[j] = 1;
-                break;
-            }
-        }
-    }
-
-    for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op == IR_LABEL && !referenced[i]) {
-            eliminate[i] = 1;
-            count++;
-        }
-    }
+    collect_referenced_labels(f, referenced);
+    int count = mark_unreferenced_labels(f, referenced, eliminate);
 
     free(referenced);
     return count;
 }
-
-/* =========================================================================
- * Pass 4: rewrite + CFG pruning (one block)
- * ========================================================================= */
 
 /**
  * @brief Rewrite one basic block using the constant information in @p in[b].
@@ -525,9 +566,7 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
     // reused across the CP+DCE fixed-point loop in ir_build_function().
     arena_reset(arenaScratch);
 
-    /* Pass 1: VarMap */
-    VarMap vm;
-    cp_build_varmap(f, &vm);
+    VarMap vm = cp_build_varmap(f);
     int numVars = vm.nextId;
 
     /* Pass 1b: predecessor list. Built once here and reused across every

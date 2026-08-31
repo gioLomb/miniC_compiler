@@ -261,7 +261,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
     // Pre-scan all instructions to assign a compact id to every distinct
     // operand (OPND_VAR or OPND_TEMP).  get-or-create semantics: same operand
     // encountered multiple times always yields the same id.
-    varmap_init(&r.varMap);
+    r.varMap = varmap_init();
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
         varmap_operand_id(&r.varMap, in->dst);

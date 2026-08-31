@@ -41,7 +41,7 @@ typedef struct {
     int     *next;      /**< next[node]: next node in the same bucket as node.        */
     int     *prev;      /**< prev[node]: previous node in the same bucket as node.    */
     int     *inBucket;  /**< inBucket[node]: 1 if node is currently in any bucket.    */
-    int      k;         /**< Number of buckets (= PHYS_ALLOCATABLE).               */
+    int      nBuckets;         /**< Number of buckets (= PHYS_ALLOCATABLE).               */
     uint32_t nonempty;  /**< Bitmask: bit degree is set iff head[degree] != -1.    */
 } Buckets;
 
@@ -53,21 +53,15 @@ typedef struct {
  * be live at a time (the arena is a module-level singleton).
  *
  * @param nextVreg Number of virtual registers (maximum node id + 1).
- * @param k        Number of buckets (should equal PHYS_ALLOCATABLE).
+ * @param nBuckets       Number of buckets (should equal PHYS_ALLOCATABLE).
  * @return         Initialised Buckets value; all buckets are empty.
  */
-Buckets buckets_create(int nextVreg, int k);
+Buckets buckets_create(int nextVreg, int nBuckets);
 
 /**
  * @brief Destroy the Buckets structure and release the internal arena.
- *
- * The @p b parameter is accepted for API symmetry but the arrays it points
- * to are owned by the module-level arena, which is freed here.  @p b itself
- * must not be used after this call.
- *
- * @param b Pointer to the Buckets to destroy.
  */
-void buckets_free(Buckets *b);
+void buckets_free();
 
 /**
  * @brief Insert node @p node into bucket @p degree.

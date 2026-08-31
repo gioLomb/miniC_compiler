@@ -3,6 +3,9 @@
 
 #include <stddef.h>
 
+#define ARENA_DEFAULT_BLOCK_SIZE 4096
+
+
 /**
  * @file arena.h
  * @brief Fast arena (bump/region) memory allocator interface.

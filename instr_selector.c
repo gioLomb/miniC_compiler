@@ -298,8 +298,7 @@ static MachFunction *select_function(const IRFunction *irf,
      * usati nel corpo: se non li registrassimo qui, un eventuale primo
      * uso post-sync (fase 2) creerebbe un id fuori sincronia con
      * f->nextVreg, facendolo collidere con un temporaneo isel-interno. */
-    VarMap vm;
-    varmap_init(&vm);
+    VarMap vm = varmap_init();
     // walk every instruction once just to register every distinct
     // variable/temp with a stable vreg id BEFORE any code is emitted
     for (int i = 0; i < irf->count; i++) {
