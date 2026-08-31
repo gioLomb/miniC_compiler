@@ -8,8 +8,13 @@ int invariant_mix(int a, int b, int c) {
 }
 
 int nested_licm_sr(int n, int m, int base) {
-    int i, j, acc, k, invariant_val, idx4, idx7;
-
+int i;
+int j;
+int acc;
+int k;
+int invariant_val;
+int idx4;
+int idx7;
     acc = 0;
     i = 0;
     while (i < n) {
@@ -39,7 +44,11 @@ int nested_licm_sr(int n, int m, int base) {
 }
 
 int triple_nested(int n) {
-    int i, j, l, acc, stride_mul;
+int i;
+int j;
+int l;
+int acc;
+int stride_mul;
     acc = 0;
     i = 0;
     while (i < n) {
@@ -59,8 +68,10 @@ int triple_nested(int n) {
     return acc;
 }
 
-int main(void) {
-    int r1, r2, total;
+int main() {
+    int r1;
+    int r2;
+    int total;
 
     r1 = nested_licm_sr(80, 80, 3);
     r2 = triple_nested(30);

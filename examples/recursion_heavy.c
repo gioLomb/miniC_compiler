@@ -10,8 +10,11 @@ int fib(int n) {
     return fib(n - 1) + fib(n - 2);
 }
 
-int is_even(int n);
-int is_odd(int n);
+// NOTE: no forward declarations here (miniC's parser always requires a body
+// right after the parameter list, no ';'-terminated prototype form). Not
+// needed anyway: Pass 1 (st_resolve_global_namespace) registers every
+// top-level function signature before any function body is compiled, so
+// mutual recursion between is_even/is_odd resolves without forward decls.
 
 int is_even(int n) {
     // mutual recursion -> stresses call graph / interprocedural regalloc decisions
@@ -50,7 +53,11 @@ int ackermann_like(int m, int n) {
 int recursive_sum_with_locals(int n) {
     // recursion with several locals alive across the recursive call -> forces
     // callee-saved regs or spill around the call site (regalloc + call interplay)
-    int a, b, c, d, result;
+    int a;
+    int b;
+    int c;
+    int d;
+    int result;
     if (n <= 0) {
         return 0;
     }
@@ -62,8 +69,9 @@ int recursive_sum_with_locals(int n) {
     return result + a - b;
 }
 
-int main(void) {
-    int i, total;
+int main() {
+    int i;
+    int total;
 
     total = 0;
     i = 0;

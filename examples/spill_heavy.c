@@ -12,11 +12,47 @@ int combine6(int p0, int p1, int p2, int p3, int p4, int p5) {
 
 int spill_kernel(int seed) {
     // 40 live ints forcing spill on most targets (regs << 40)
-    int v0, v1, v2, v3, v4, v5, v6, v7, v8, v9;
-    int v10, v11, v12, v13, v14, v15, v16, v17, v18, v19;
-    int v20, v21, v22, v23, v24, v25, v26, v27, v28, v29;
-    int v30, v31, v32, v33, v34, v35, v36, v37, v38, v39;
-    int acc;
+int v0;
+int v1;
+int v2;
+int v3;
+int v4;
+int v5;
+int v6;
+int v7;
+int v8;
+int v9;
+int v10;
+int v11;
+int v12;
+int v13;
+int v14;
+int v15;
+int v16;
+int v17;
+int v18;
+int v19;
+int v20;
+int v21;
+int v22;
+int v23;
+int v24;
+int v25;
+int v26;
+int v27;
+int v28;
+int v29;
+int v30;
+int v31;
+int v32;
+int v33;
+int v34;
+int v35;
+int v36;
+int v37;
+int v38;
+int v39;
+int acc;
 
     v0 = seed + 1;
     v1 = seed + 2;
@@ -72,9 +108,27 @@ int spill_kernel(int seed) {
 
 float spill_kernel_f(float seed) {
     // float version -> stresses fp register file / spill separately
-    float f0, f1, f2, f3, f4, f5, f6, f7, f8, f9;
-    float f10, f11, f12, f13, f14, f15, f16, f17, f18, f19;
-    float acc;
+float f0;
+float f1;
+float f2;
+float f3;
+float f4;
+float f5;
+float f6;
+float f7;
+float f8;
+float f9;
+float f10;
+float f11;
+float f12;
+float f13;
+float f14;
+float f15;
+float f16;
+float f17;
+float f18;
+float f19;
+float acc;
 
     f0 = seed + 1.5;
     f1 = seed + 2.5;
@@ -102,8 +156,9 @@ float spill_kernel_f(float seed) {
     return acc;
 }
 
-int main(void) {
-    int i, total;
+int main() {
+    int i;
+    int total;
     float ftotal;
 
     total = 0;

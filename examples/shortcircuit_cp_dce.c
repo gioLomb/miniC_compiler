@@ -28,8 +28,13 @@ int shortcircuit_or(int a, int b) {
 }
 
 int const_prop_chain(int unused_param) {
-    int c1, c2, c3, c4, result, dead1, dead2;
-
+int c1;
+int c2;
+int c3;
+int c4;
+int result;
+int dead1;
+int dead2;
     // pure constant chain -> should fold entirely to a single constant (CP)
     c1 = 5;
     c2 = c1 + 3;
@@ -51,7 +56,10 @@ int const_prop_chain(int unused_param) {
 }
 
 int mixed_cp_dce_svn(int x) {
-    int a, b, e, dead;
+    int a;
+    int b;
+    int e;
+    int dead;
 
     a = x * 2 + 1;
     b = x * 2 + 1;
@@ -68,7 +76,7 @@ int mixed_cp_dce_svn(int x) {
     return e;
 }
 
-int main(void) {
+int main() {
     int r;
 
     side_effect_counter = 0;
