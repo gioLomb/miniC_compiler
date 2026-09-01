@@ -151,9 +151,10 @@ int main(void) {
     /* ---- PASS 9: PHYS_AL normalizzato a PHYS_RAX nelle letture esplicite ---- */
     {
         MachInstr push = { .op = MACH_PUSH, .dst = phys(PHYS_AL), .src1 = mo_none(), .src2 = mo_none() };
-        instr_uses(&push, 100, buf, &n);
-        assert(contains(buf, n, PHYS_RAX) && "PHYS_AL deve essere normalizzato a PHYS_RAX");
-        assert(!contains(buf, n, PHYS_AL));
+        int nextVreg = 100;
+        instr_uses(&push, nextVreg, buf, &n);
+        assert(contains(buf, n, nextVreg + PHYS_RAX) && "PHYS_AL deve essere normalizzato a PHYS_RAX (offset da nextVreg)");
+        assert(!contains(buf, n, nextVreg + PHYS_AL));
         printf("PASS 9 ok: PHYS_AL normalizzato a PHYS_RAX.\n");
     }
 

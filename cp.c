@@ -354,58 +354,71 @@ static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
  *
  * A GOTO or IF_FALSE whose label resolves to the immediately following
  * instruction is a no-op jump: it can be deleted, and the corresponding
- * CFG edge removed.  We detect this by checking whether the instruction
- * at idx+1 is an IR_LABEL with the same labelId as the jump target.
+ * CFG edge removed.
  */
 static int cp_is_redundant_jump(IRFunction *f, int idx) {
-    if (idx + 1 >= f->count) return 0;
     IRInstr *in = &f->instrs[idx];
     if (in->op != IR_GOTO && in->op != IR_IF_FALSE) return 0;
-    int labelId = in->dst.data.labelId;
-    // scan blocks to confirm idx+1 is inside a block and starts with the label
-    for (int b = 0; b < f->blockCount; b++) {
-        int start = f->blocks[b].bb.range.start;
-        int end   = f->blocks[b].bb.range.end;
-        if (start <= idx + 1 && idx + 1 < end) {
-            if (f->instrs[idx + 1].op == IR_LABEL &&
-                f->instrs[idx + 1].dst.data.labelId == labelId) {
-                return 1;
-            }
-        }
-    }
-    return 0;
+    if (idx + 1 >= f->count) return 0;
+
+    // blocks partition [0, f->count) contiguously with no gaps, so idx+1
+    // (already known valid) belongs to exactly one block: no need to find
+    // which one, just inspect the instruction directly
+    IRInstr *next = &f->instrs[idx + 1];
+    return next->op == IR_LABEL && next->dst.data.labelId == in->dst.data.labelId;
 }
+
+/**
+ * @brief Build a labelId -> instruction-index lookup for @p f.
+ *
+ * Every label id is globally unique (see nextLabel counter in ir.c), so
+ * this map has no collisions. Sized to f->count: a function can never
+ * contain more labels than instructions, so any idx computed from a label
+ * belonging to this function is guaranteed < f->count.
+ *
+ * @param outCap Set to the map's element count (== f->count, or 1 if empty).
+ * @return       Arena-allocated map; entries default to -1 ("no label with
+ *               this id found in this function").
+ */
+static int *build_label_to_instr(const IRFunction *f, Arena *arena, int *outCap) {
+    int cap = f->count > 0 ? f->count : 1;
+    int *map = arena_alloc(arena, (size_t)cap * sizeof(int));
+    memset(map, -1, (size_t)cap * sizeof(int));
+
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op != IR_LABEL) continue;
+        int idx = f->instrs[i].dst.data.labelId - f->labelBase;
+        map[idx] = i;
+    }
+
+    *outCap = cap;
+    return map;
+}
+
 
 /**
  * @brief Scans instructions to find all jump targets (GOTO/IF_FALSE)
  *        and marks the corresponding target IR_LABEL indices as referenced.
- */
-static void collect_referenced_labels(const IRFunction *f, char *referenced) {
+ *
+ * O(n) via the precomputed labelId -> instruction-index map, replacing the
+ * previous O(n) inner scan per jump (O(n^2) overall on functions with many
+ * branches, e.g. the scFn
+ * */
+static void collect_referenced_labels(const IRFunction *f,
+                                       const int *labelToInstr, int mapCap,
+                                       char *referenced) {
     for (int i = 0; i < f->count; i++) {
         const IRInstr *in = &f->instrs[i];
-        if (in->op != IR_GOTO && in->op != IR_IF_FALSE) {
-            continue;
-        }
+        if (in->op != IR_GOTO && in->op != IR_IF_FALSE) continue;
 
-        int targetLabelId = in->dst.data.labelId;
+        int idx = in->dst.data.labelId - f->labelBase;
+        if (idx < 0 || idx >= mapCap) continue; // defensive: not found -> no-op
 
-        // Find the IR_LABEL instruction with this id and mark it referenced
-        for (int j = 0; j < f->count; j++) {
-            if (f->instrs[j].op == IR_LABEL &&
-                f->instrs[j].dst.data.labelId == targetLabelId) {
-                referenced[j] = 1;
-                break;
-            }
-        }
+        int j = labelToInstr[idx];
+        if (j >= 0) referenced[j] = 1;
     }
 }
 
-/**
- * @brief Scans for IR_LABEL instructions and marks any label as eliminated
- *        if it does not appear in the referenced set.
- *
- * @return Number of orphan labels marked for elimination.
- */
 static int mark_unreferenced_labels(const IRFunction *f, const char *referenced, char *eliminate) {
     int count = 0;
     for (int i = 0; i < f->count; i++) {
@@ -420,21 +433,131 @@ static int mark_unreferenced_labels(const IRFunction *f, const char *referenced,
 /**
  * @brief Mark IR_LABEL instructions that no jump in the function references.
  *
- * @param f         Function to scan.
+ * @param f      Function to scan.
  * @param eliminate Boolean array (one entry per instruction); entries for
  *                  orphan labels are set to 1.
- * @return          Number of labels newly marked for elimination.
+ * @param arena  Scratch arena for the referenced[] flags and labelToInstr map
+ *               (caller-owned, reset by cp_optimize() at the start of each call).
+ * @return       Number of labels newly marked for elimination.
  */
-static int cp_mark_orphan_labels(IRFunction *f, char *eliminate) {
-    char *referenced = calloc((size_t)f->count, 1);
-    if (!referenced) return 0;
+static int cp_mark_orphan_labels(IRFunction *f, char *eliminate, Arena *arena) {
+    char *referenced = arena_alloc(arena, (size_t)f->count);
+    memset(referenced, 0, (size_t)f->count);
 
-    collect_referenced_labels(f, referenced);
-    int count = mark_unreferenced_labels(f, referenced, eliminate);
+    int mapCap;
+    int *labelToInstr = build_label_to_instr(f, arena, &mapCap);
 
-    free(referenced);
-    return count;
+    collect_referenced_labels(f, labelToInstr, mapCap, referenced);
+    return mark_unreferenced_labels(f, referenced, eliminate);
 }
+
+/**
+ * @brief Eliminate a GOTO/IF_FALSE that unconditionally jumps to the next instruction.
+ *
+ * The jump contributes no reachable CFG edge (fall-through already goes there),
+ * so it is marked for deletion and the corresponding predCount is decremented.
+ * Caller guarantees cp_is_redundant_jump(f, i) already returned true.
+ *
+ * @return Always 1 (the instruction is always eliminated).
+ */
+static int try_eliminate_redundant_jump(IRFunction *f, int b, int i, char *eliminate) {
+    IRInstr *in = &f->instrs[i];
+
+    // taken edge: succ[0] for GOTO (its only edge), succ[1] for IF_FALSE
+    int s = (in->op == IR_GOTO) ? f->blocks[b].bb.succ[0]
+                                 : f->blocks[b].bb.succ[1];
+    if (s >= 0) f->blocks[s].predCount--;
+
+    if (in->op == IR_GOTO) {
+        // GOTO had only one successor; nothing left after removing it
+        f->blocks[b].bb.succ[0] = f->blocks[b].bb.succ[1];
+        f->blocks[b].bb.succ[1] = -1;
+    } else {
+        // IF_FALSE: fall-through (succ[0]) stays, only the taken edge is dropped
+        f->blocks[b].bb.succ[1] = -1;
+    }
+
+    eliminate[i] = 1;
+    return 1;
+}
+
+/**
+ * @brief Fold an IR_IF_FALSE whose condition is (now) known at compile time,
+ *        pruning the corresponding CFG edge; otherwise substitute the
+ *        condition operand if it simplified without becoming constant.
+ *
+ * @param f    Function being rewritten (succ[]/predCount updated in place).
+ * @param b    Index of the block containing the instruction.
+ * @param i    Instruction index (must be IR_IF_FALSE).
+ * @param live Current local constant-propagation state (read-only here).
+ * @param vm   VarMap for operand resolution.
+ * @return     1 if the instruction was modified, 0 otherwise.
+ */
+static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, VarMap *vm) {
+    IRInstr *in  = &f->instrs[i];
+    Operand  cond = const_map_try_fold(in->src1, live, vm);
+
+    if (cond.kind != OPND_CONST_INT && cond.kind != OPND_CONST_FLOAT) {
+        // not fully constant: keep only if the substitution actually changed something
+        if (operand_equal(&cond, &in->src1)) return 0;
+        in->src1 = cond;
+        return 1;
+    }
+
+    int isZero = (cond.kind == OPND_CONST_INT) ? (cond.data.intVal   == 0)
+                                                : (cond.data.floatVal == 0.0f);
+    int taken = isZero; // IF_FALSE jumps when condition is false (0)
+    int s0 = f->blocks[b].bb.succ[0]; // fall-through
+    int s1 = f->blocks[b].bb.succ[1]; // taken (jump target)
+
+    if (taken) {
+        // condition always false -> branch always taken: becomes unconditional GOTO
+        in->op   = IR_GOTO;
+        in->src1 = in->src2 = (Operand){ .kind = OPND_NONE };
+        f->blocks[b].bb.succ[0] = s1;
+        f->blocks[b].bb.succ[1] = -1;
+        if (s0 >= 0) f->blocks[s0].predCount--;
+    } else {
+        // condition always true -> branch never taken: caller marks eliminate[i]
+        f->blocks[b].bb.succ[1] = -1;
+        if (s1 >= 0) f->blocks[s1].predCount--;
+    }
+    return 1;
+}
+
+/**
+ * @brief Substitute known-constant operands and fold a binary op if both
+ *        source operands became constant.
+ *
+ * Does NOT touch control-flow opcodes (IR_IF_FALSE handled separately by
+ * the caller; IR_GOTO/IR_LABEL/IR_RETURN carry no foldable src1/src2 pair).
+ *
+ * @return 1 if the instruction was modified (substitution and/or fold), 0 otherwise.
+ */
+static int try_fold_generic_instr(IRInstr *in, ConstMap *live, VarMap *vm) {
+    int modified = 0;
+
+    Operand ns1 = const_map_try_fold(in->src1, live, vm);
+    Operand ns2 = const_map_try_fold(in->src2, live, vm);
+    if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
+    if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
+
+    // only binary arithmetic/relational opcodes are foldable here
+    int isBinaryFoldable =
+        in->op == IR_ADD || in->op == IR_SUB || in->op == IR_MUL ||
+        in->op == IR_DIV || in->op == IR_MOD ||
+        in->op == IR_LT  || in->op == IR_LE  || in->op == IR_GT  ||
+        in->op == IR_GE  || in->op == IR_EQ  || in->op == IR_NE;
+
+    if (isBinaryFoldable &&
+        (ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
+        (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
+        modified |= cp_fold_binary(in, &ns1, &ns2);
+    }
+
+    return modified;
+}
+
 
 /**
  * @brief Rewrite one basic block using the constant information in @p in[b].
@@ -460,98 +583,25 @@ static int cp_mark_orphan_labels(IRFunction *f, char *eliminate) {
  */
 static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
                              char *eliminate, VarMap *vm, Arena *arena) {
-    int numVars  = vm->nextId;
-    int modified = 0;
-
-    // local copy of inMap[b]: tracks values as we advance through the block
     ConstMap live;
-    const_map_init(&live, numVars, arena);
+    const_map_init(&live, vm->nextId, arena);
     const_map_copy(&live, &inMap[b]);
 
+    int modified = 0;
     for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++) {
         IRInstr *in = &f->instrs[i];
 
-        /* ---- 1. Jump-to-next elimination ---- */
-        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && cp_is_redundant_jump(f, i)) {
-            // the jumped-to block loses this predecessor
-            int s = (in->op == IR_GOTO)
-                    ? f->blocks[b].bb.succ[0]
-                    : f->blocks[b].bb.succ[1]; // taken edge of IF_FALSE
-            if (s >= 0) f->blocks[s].predCount--;
-
-            if (in->op == IR_GOTO) {
-                // GOTO deleted: only successor was succ[0], now none
-                f->blocks[b].bb.succ[0] = f->blocks[b].bb.succ[1];
-                f->blocks[b].bb.succ[1] = -1;
-            } else {
-                // IF_FALSE deleted: taken edge (succ[1]) removed; fall-through stays
-                f->blocks[b].bb.succ[1] = -1;
-            }
-            eliminate[i] = 1;
-            modified = 1;
-            cp_transfer(in, &live, vm); // still advance the map
-            continue;
+        if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) &&
+            cp_is_redundant_jump(f, i)) {
+            modified |= try_eliminate_redundant_jump(f, b, i, eliminate);
+        } else if (in->op == IR_IF_FALSE) {
+            modified |= try_fold_if_false(f, b, i, &live, vm);
+        } else {
+            modified |= try_fold_generic_instr(in, &live, vm);
         }
 
-        /* ---- 2. IF_FALSE constant folding and CFG pruning ---- */
-        if (in->op == IR_IF_FALSE) {
-            Operand cond = const_map_try_fold(in->src1, &live, vm);
-            if (cond.kind == OPND_CONST_INT || cond.kind == OPND_CONST_FLOAT) {
-                int isZero = (cond.kind == OPND_CONST_INT)
-                             ? (cond.data.intVal   == 0)
-                             : (cond.data.floatVal == 0.0f);
-                int taken = isZero; // IF_FALSE jumps when condition is 0 (false)
-                int s0 = f->blocks[b].bb.succ[0]; // fall-through
-                int s1 = f->blocks[b].bb.succ[1]; // taken (jump target)
-
-                if (taken) {
-                    // condition is always false → branch always taken
-                    in->op   = IR_GOTO;
-                    in->src1 = in->src2 = (Operand){ .kind = OPND_NONE };
-                    f->blocks[b].bb.succ[0] = s1;
-                    f->blocks[b].bb.succ[1] = -1;
-                    if (s0 >= 0) f->blocks[s0].predCount--; // fall-through no longer reachable
-                } else {
-                    // condition is always true → branch never taken, delete IF_FALSE
-                    eliminate[i] = 1;
-                    f->blocks[b].bb.succ[1] = -1;
-                    if (s1 >= 0) f->blocks[s1].predCount--; // target no longer reachable
-                }
-                modified = 1;
-            } else if (!operand_equal(&cond, &in->src1)) {
-                // condition not constant but simplified (e.g. propagated a copy)
-                in->src1 = cond;
-                modified = 1;
-            }
-            cp_transfer(in, &live, vm);
-            continue;
-        }
-
-        /* ---- 3. Constant substitution + binary folding ---- */
-
-        // try to replace src1/src2 with known constants
-        Operand ns1 = const_map_try_fold(in->src1, &live, vm);
-        Operand ns2 = const_map_try_fold(in->src2, &live, vm);
-        if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
-        if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
-
-        // if both operands are now constants, try to fold the binary operation
-        if (in->op != IR_IF_FALSE && in->op != IR_LABEL &&
-            in->op != IR_GOTO     && in->op != IR_RETURN &&
-            (in->op == IR_ADD || in->op == IR_SUB || in->op == IR_MUL ||
-             in->op == IR_DIV || in->op == IR_MOD ||
-             in->op == IR_LT  || in->op == IR_LE  || in->op == IR_GT  ||
-             in->op == IR_GE  || in->op == IR_EQ  || in->op == IR_NE)) {
-
-            if ((ns1.kind == OPND_CONST_INT || ns1.kind == OPND_CONST_FLOAT) &&
-                (ns2.kind == OPND_CONST_INT || ns2.kind == OPND_CONST_FLOAT)) {
-                modified |= cp_fold_binary(in, &ns1, &ns2);
-            }
-        }
-
-        cp_transfer(in, &live, vm); // advance local map past this instruction
+        cp_transfer(in, &live, vm);  
     }
-
     return modified;
 }
 
@@ -568,14 +618,9 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
 
     VarMap vm = cp_build_varmap(f);
     int numVars = vm.nextId;
-
-    /* Pass 1b: predecessor list. Built once here and reused across every
-     * iteration of the forward-dataflow fixed point in Pass 3 below —
-     * succ[] is only mutated later, by this same call's own CFG-pruning
-     * rewrite (Pass 4), so it is safe to build it once up front. */
     PredList preds = ir_build_pred_list(f, arenaScratch);
 
-    /* Pass 2: allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init */
+    //allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init
     ConstMap *in  = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap *out = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap  tmp;
@@ -585,10 +630,9 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
         const_map_init(&out[b], numVars, arenaScratch);
     }
 
-    /* Pass 3: forward dataflow */
     cp_run_forward_dataflow(f, in, out, &tmp, numVars, &vm, &preds);
 
-    /* Pass 4: rewrite + CFG pruning */
+    // rewrite + CFG pruning 
     int modified = 0;
     // eliminate[] is a boolean per-instruction: 1 = delete in sweep
     char *eliminate = arena_alloc(arenaScratch, (size_t)f->count * sizeof(char));
@@ -598,11 +642,9 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
         modified |= cp_rewrite_block(f, b, in, eliminate, &vm, arenaScratch);
 
     // orphan labels left after CFG pruning can be removed safely
-    modified |= (cp_mark_orphan_labels(f, eliminate) > 0);
-
-    /* Pass 5: sweep — only if something was marked for elimination */
-    if (modified)
-        modified = ir_sweep(f, eliminate, nBlocks);
+    modified |= (cp_mark_orphan_labels(f, eliminate, arenaScratch) > 0);
+    // sweep — only if something was marked for elimination 
+    if (modified)  modified = ir_sweep(f, eliminate, nBlocks);
 
     varmap_destroy(&vm);
     return modified;
