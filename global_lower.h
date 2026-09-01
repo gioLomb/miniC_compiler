@@ -4,7 +4,7 @@
 #include "ir.h"
 #include "arena.h"
 
-#define IR_MAX_EXPANSION_FACTOR       3
+#define IR_MAX_EXPANSION_FACTOR 7
 
 /**
  * @file global_lower.h

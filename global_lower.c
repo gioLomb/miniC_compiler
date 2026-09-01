@@ -23,6 +23,16 @@ typedef struct {
     int      cap;   /**< Current capacity of buf, in instructions. */
 } Emitter;
 
+/**
+ * @brief Descriptor for a STORE_ARR that must be emitted right after the
+ *        current instruction (scalar global written as dst).
+ */
+typedef struct {
+    Operand addr;     /**< Address temp holding the global's location. */
+    Operand val;      /**< Temp holding the value to store. */
+    int     present;  /**< 1 if a deferred store is pending, 0 otherwise. */
+} DeferredStore;
+
 
 /**
  * @brief Compute the lowest temp id not yet used in @p f.
@@ -116,6 +126,156 @@ static int emit_global_addr(int symOff, int *nextTemp,
     return t;
 }
 
+/* =========================================================================
+ * Per-operand lowering helpers
+ * =========================================================================
+ * Each helper handles ONE operand slot (src1, src2 or dst) of ONE original
+ * instruction. Splitting them out keeps the three near-identical GLOBAL
+ * handling paths (address materialisation + array-base vs. scalar
+ * load/store) each in their own place instead of interleaved inside one
+ * long loop body.
+ * ========================================================================= */
+
+/**
+ * @brief Lower @p src1 if it is an OPND_GLOBAL, otherwise return it unchanged.
+ *
+ * Two cases, mirroring the position src1 occupies in the original
+ * instruction:
+ *   - Array base (src1 of IR_LOAD_ARR): only the address needs to be
+ *     materialised; the instruction itself still performs the indexed
+ *     access, so no extra LOAD_ARR is emitted here.
+ *   - Scalar read (any other opcode): the address is materialised AND
+ *     immediately loaded into a fresh temp, since the value itself is
+ *     what the instruction needs.
+ *
+ * @param src1       Original src1 operand.
+ * @param isArrBase  1 if src1 is the array base of an IR_LOAD_ARR.
+ * @param nextTemp   In/out temp-id counter.
+ * @param e          Emitter new instructions are appended to.
+ * @param loopDepth  Loop depth stamped on any emitted instruction.
+ * @return           Replacement operand for src1 (unchanged if not GLOBAL).
+ */
+static Operand lower_src1_operand(Operand src1, int isArrBase,
+                                   int *nextTemp, Emitter *e, int loopDepth) {
+    if (src1.kind != OPND_GLOBAL) return src1;
+
+    int addr = emit_global_addr(src1.data.globalOffset, nextTemp, e, loopDepth);
+    if (isArrBase)
+        return (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
+
+    int val = (*nextTemp)++;
+    emitter_push(e, IR_LOAD_ARR,
+                 (Operand){ .kind = OPND_TEMP, .data.tempId = val },
+                 (Operand){ .kind = OPND_TEMP, .data.tempId = addr },
+                 (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, loopDepth);
+    return (Operand){ .kind = OPND_TEMP, .data.tempId = val };
+}
+
+/**
+ * @brief Lower @p src2 if it is an OPND_GLOBAL, otherwise return it unchanged.
+ *
+ * src2 is never an array-base position in this IR (that role is always
+ * src1 for LOAD_ARR / dst for STORE_ARR), so this is always the scalar
+ * read case: address materialisation followed by a LOAD_ARR of index 0.
+ *
+ * @param src2       Original src2 operand.
+ * @param nextTemp   In/out temp-id counter.
+ * @param e          Emitter new instructions are appended to.
+ * @param loopDepth  Loop depth stamped on any emitted instruction.
+ * @return           Replacement operand for src2 (unchanged if not GLOBAL).
+ */
+static Operand lower_src2_operand(Operand src2, int *nextTemp,
+                                   Emitter *e, int loopDepth) {
+    if (src2.kind != OPND_GLOBAL) return src2;
+
+    int addr = emit_global_addr(src2.data.globalOffset, nextTemp, e, loopDepth);
+    int val  = (*nextTemp)++;
+    emitter_push(e, IR_LOAD_ARR,
+                 (Operand){ .kind = OPND_TEMP, .data.tempId = val },
+                 (Operand){ .kind = OPND_TEMP, .data.tempId = addr },
+                 (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, loopDepth);
+    return (Operand){ .kind = OPND_TEMP, .data.tempId = val };
+}
+
+/**
+ * @brief Lower @p dst if it is an OPND_GLOBAL, otherwise return it unchanged.
+ *
+ * Two cases, mirroring the position dst occupies in the original instruction:
+ *   - Array base (dst of IR_STORE_ARR): only the address needs to be
+ *     materialised; the instruction itself still performs the store.
+ *   - Scalar write (any other defining opcode): the instruction must write
+ *     to a fresh temp instead (a global has no local storage slot), and a
+ *     STORE_ARR writing that temp back to the global is deferred to
+ *     @p out — the caller emits it right after the original instruction.
+ *
+ * @param dst        Original dst operand.
+ * @param isArrBase  1 if dst is the array base of an IR_STORE_ARR.
+ * @param nextTemp   In/out temp-id counter.
+ * @param e          Emitter new instructions are appended to.
+ * @param loopDepth  Loop depth stamped on any emitted instruction.
+ * @param out        Set to describe a pending STORE_ARR (out->present = 1)
+ *                    when dst was a scalar global; left with present = 0
+ *                    otherwise. Caller must zero-init before calling.
+ * @return           Replacement operand for dst (unchanged if not GLOBAL).
+ */
+static Operand lower_dst_operand(Operand dst, int isArrBase, int *nextTemp,
+                                  Emitter *e, int loopDepth, DeferredStore *out) {
+    if (dst.kind != OPND_GLOBAL) return dst;
+
+    int addr = emit_global_addr(dst.data.globalOffset, nextTemp, e, loopDepth);
+    if (isArrBase)
+        return (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
+
+    // scalar write: redirect to a fresh temp now, store it back after the
+    // instruction is emitted (handled by the caller)
+    int tmpDst = (*nextTemp)++;
+    out->addr    = (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
+    out->val     = (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
+    out->present = 1;
+    return (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
+}
+
+/* =========================================================================
+ * Block-range realignment
+ * ========================================================================= */
+
+/**
+ * @brief Realign every block's [start, end) range onto the rebuilt
+ *        instruction numbering produced by the expansion loop.
+ *
+ * For each block, its new range spans from the first to the last surviving
+ * new-index mapping among its original instructions. A block that becomes
+ * empty (no old instruction mapped, e.g. one that only ever held a global
+ * store fully absorbed elsewhere — not expected in practice but handled
+ * defensively) collapses to an empty range pointing past the rebuilt array.
+ *
+ * @param f        Function whose f->blocks[] ranges are rewritten in place.
+ * @param newStart newStart[oldIdx]: first rebuilt-array index for old
+ *                 instruction oldIdx.
+ * @param newEnd   newEnd[oldIdx]: one past the last rebuilt-array index
+ *                 for old instruction oldIdx.
+ * @param newTotal Total instruction count after rebuilding (used as the
+ *                 "past the end" sentinel for empty blocks).
+ */
+static void remap_block_ranges(IRFunction *f, const int *newStart,
+                                const int *newEnd, int newTotal) {
+    for (int b = 0; b < f->blockCount; b++) {
+        int oldS = f->blocks[b].bb.range.start;
+        int oldE = f->blocks[b].bb.range.end;
+        if (oldE > oldS) {
+            f->blocks[b].bb.range.start = newStart[oldS];
+            f->blocks[b].bb.range.end   = newEnd[oldE - 1];
+        } else {
+            // empty block: point past the end
+            f->blocks[b].bb.range.start = f->blocks[b].bb.range.end = newTotal;
+        }
+    }
+    f->curBlockStart = 0;
+}
+
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
 
 void ir_lower_globals(IRFunction *f, Arena *arena) {
     // nothing to do: empty function, or no OPND_GLOBAL operand anywhere
@@ -142,66 +302,26 @@ void ir_lower_globals(IRFunction *f, Arena *arena) {
         int ld = in.loopDepth;
         newStart[i] = e.count;
 
-        // Distinguishes the two "array base" positions where OPND_GLOBAL is
-        // expanded into an address only (the instruction itself performs the
-        // load/store):
+        // "array base" positions expand into an address only (the
+        // instruction itself still performs the indexed load/store):
         //   - src1 of IR_LOAD_ARR  is the base
         //   - dst  of IR_STORE_ARR is the base
         int isArrBaseSrc1 = (in.op == IR_LOAD_ARR);
         int isArrBaseDst  = (in.op == IR_STORE_ARR);
 
-        /* ---- src1 ---- */
-        if (in.src1.kind == OPND_GLOBAL) {
-            int addr = emit_global_addr(in.src1.data.globalOffset, &nextTemp, &e, ld);
-            if (isArrBaseSrc1) {
-                // array base: replace with the address temp only, the
-                // instruction itself still performs the indexed access
-                in.src1 = (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
-            } else {
-                // scalar read: load the value before it can be used
-                int val = nextTemp++;
-                emitter_push(&e, IR_LOAD_ARR, (Operand){ .kind = OPND_TEMP, .data.tempId = val }, (Operand){ .kind = OPND_TEMP, .data.tempId = addr }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, ld);
-                in.src1 = (Operand){ .kind = OPND_TEMP, .data.tempId = val };
-            }
-        }
+        in.src1 = lower_src1_operand(in.src1, isArrBaseSrc1, &nextTemp, &e, ld);
+        in.src2 = lower_src2_operand(in.src2, &nextTemp, &e, ld);
 
-        /* ---- src2 (never in an "array base" position) ---- */
-        if (in.src2.kind == OPND_GLOBAL) {
-            int addr = emit_global_addr(in.src2.data.globalOffset, &nextTemp, &e, ld);
-            int val  = nextTemp++;
-            emitter_push(&e, IR_LOAD_ARR, (Operand){ .kind = OPND_TEMP, .data.tempId = val }, (Operand){ .kind = OPND_TEMP, .data.tempId = addr }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, ld);
-            in.src2 = (Operand){ .kind = OPND_TEMP, .data.tempId = val };
-        }
-
-        /* ---- dst ----
-         * If the destination is a scalar global, redirect the write to a
-         * fresh temp and append a STORE_ARR right after the instruction. */
-        Operand deferredStoreAddr = (Operand){.kind = OPND_NONE};
-        Operand deferredStoreVal  = (Operand){.kind = OPND_NONE};
-        int     hasDeferredStore  = 0;
-
-        if (in.dst.kind == OPND_GLOBAL) {
-            int addr = emit_global_addr(in.dst.data.globalOffset, &nextTemp, &e, ld);
-            if (isArrBaseDst) {
-                // array base for STORE_ARR: replace with the address temp
-                in.dst = (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
-            } else {
-                // scalar write: write to a temp now, store it after
-                int tmpDst          = nextTemp++;
-                deferredStoreAddr   = (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
-                deferredStoreVal    = (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
-                hasDeferredStore    = 1;
-                in.dst              = (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
-            }
-        }
+        DeferredStore ds = {0};
+        in.dst = lower_dst_operand(in.dst, isArrBaseDst, &nextTemp, &e, ld, &ds);
 
         // emit the instruction itself, now with substituted operands
         emitter_push(&e, in.op, in.dst, in.src1, in.src2, ld);
 
         // emit the deferred store for a scalar global written by this instruction
-        if (hasDeferredStore)
+        if (ds.present)
             emitter_push(&e, IR_STORE_ARR,
-                         deferredStoreAddr, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, deferredStoreVal, ld);
+                         ds.addr, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, ds.val, ld);
 
         newEnd[i] = e.count;
     }
@@ -212,17 +332,5 @@ void ir_lower_globals(IRFunction *f, Arena *arena) {
     f->count    = e.count;
     f->capacity = e.cap;
 
-    // realign every block's [start, end) range onto the new numbering
-    for (int b = 0; b < f->blockCount; b++) {
-        int oldS = f->blocks[b].bb.range.start;
-        int oldE = f->blocks[b].bb.range.end;
-        if (oldE > oldS) {
-            f->blocks[b].bb.range.start = newStart[oldS];
-            f->blocks[b].bb.range.end   = newEnd[oldE - 1];
-        } else {
-            // empty block: point past the end
-            f->blocks[b].bb.range.start = f->blocks[b].bb.range.end = e.count;
-        }
-    }
-    f->curBlockStart = 0;
+    remap_block_ranges(f, newStart, newEnd, e.count);
 }
