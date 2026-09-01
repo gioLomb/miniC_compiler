@@ -320,7 +320,7 @@ static int applyStrengthReduction(IRFunction *f, Loop *L,
                 derived[d].dst,
                 (Operand){ .kind = OPND_TEMP,
                            .data.tempId = derived[d].srTempId },
-                no_operand(),
+                (Operand){.kind = OPND_NONE},
                 in->loopDepth);
             isDerived = 1;
             break;

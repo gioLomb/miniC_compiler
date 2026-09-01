@@ -221,12 +221,12 @@ int ir_is_pure(IROp op);
  */
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks);
 
-/**
- * @brief Construct the canonical "no operand" value (OPND_NONE).
- *
- * @return An Operand with kind == OPND_NONE.
- */
-Operand no_operand(void);
+// /**
+//  * @brief Construct the canonical "no operand" value (OPND_NONE).
+//  *
+//  * @return An Operand with kind == OPND_NONE.
+//  */
+// Operand no_operand(void);
 
 /**
  * @brief Print a human-readable dump of @p prog (globals + per-function instructions) to stdout.

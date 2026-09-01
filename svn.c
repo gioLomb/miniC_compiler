@@ -312,7 +312,7 @@ static void svn_lookupOrInsertExpr(IRInstr *in, const ExprKey *ek,
         // Redundant computation: replace with a copy from the leader.
         in->op   = IR_ASSIGN;
         in->src1 = leader;
-        in->src2 = no_operand();
+        in->src2 = (Operand){.kind = OPND_NONE};
         svn_defineValue(&in->dst, exprVN, scope);
     }else{
         // New expression: record its VN for future de-duplication.

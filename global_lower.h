@@ -4,6 +4,8 @@
 #include "ir.h"
 #include "arena.h"
 
+#define IR_MAX_EXPANSION_FACTOR       3
+
 /**
  * @file global_lower.h
  * @brief Lowering OPND_GLOBAL -> IR_GLOBAL_ADDR + IR_LOAD_ARR/IR_STORE_ARR.

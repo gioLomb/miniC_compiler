@@ -58,14 +58,6 @@ static int currentLoopDepth;
  * Operand constructors
  * ========================================================================= */
 
-static inline Operand mk_temp(void) {
-    return (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
-}
-
-static inline Operand mk_label(void) {
-    return (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
-}
-
 /**
  * mk_var: distinguishes local variables (scopeLevel > 0) from globals
  * (scopeLevel == 0). Globals are emitted as OPND_GLOBAL and later expanded
@@ -83,21 +75,9 @@ static inline Operand mk_var(const ASTNode *node) {
                       .data.sourceName = node->text };
 }
 
-static inline Operand mk_const_int(int v) {
-    return (Operand){ .kind = OPND_CONST_INT, .data.intVal = v };
-}
-
-static inline Operand mk_const_float(float v) {
-    return (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = v };
-}
-
-static inline Operand mk_func(const char *name) {
-    return (Operand){ .kind = OPND_FUNC, .data.funcName = name };
-}
-
-Operand no_operand(void) {
-    return (Operand){ .kind = OPND_NONE };
-}
+// Operand no_operand(void) {
+//     return (Operand){ .kind = OPND_NONE };
+// }
 
 /* =========================================================================
  * CFG helpers
@@ -224,13 +204,13 @@ static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Ope
 }
 
 static inline void ir_emit_goto(IRFunction *f, Operand label) {
-    ir_emit_instr(f, IR_GOTO, label, no_operand(), no_operand());
+    ir_emit_instr(f, IR_GOTO, label, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
 }
 static inline void ir_emit_if_false(IRFunction *f, Operand cond, Operand label) {
-    ir_emit_instr(f, IR_IF_FALSE, label, cond, no_operand());
+    ir_emit_instr(f, IR_IF_FALSE, label, cond, (Operand){.kind = OPND_NONE});
 }
 static inline void ir_emit_label(IRFunction *f, Operand label) {
-    ir_emit_instr(f, IR_LABEL, label, no_operand(), no_operand());
+    ir_emit_instr(f, IR_LABEL, label, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
 }
 
 /* =========================================================================
@@ -336,7 +316,7 @@ static void ir_emit_jump_if_false(ASTNode *cond, IRFunction *out, Operand falseL
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_OR) {
         // a || b is false only if BOTH sides are false: if lhs is true skip
         // the rhs check entirely (it can't change the outcome)
-        Operand skipLbl = mk_label();
+        Operand skipLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         ir_emit_jump_if_true(cond->children[0], out, skipLbl);
         ir_emit_jump_if_false(cond->children[1], out, falseLbl);
         ir_emit_label(out, skipLbl);
@@ -359,7 +339,7 @@ static void ir_emit_jump_if_false(ASTNode *cond, IRFunction *out, Operand falseL
 static void ir_emit_jump_if_true(ASTNode *cond, IRFunction *out, Operand trueLbl) {
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_AND) {
         // a && b is true only if BOTH sides are true
-        Operand skipLbl = mk_label();
+        Operand skipLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         ir_emit_jump_if_false(cond->children[0], out, skipLbl);
         ir_emit_jump_if_true(cond->children[1], out, trueLbl);
         ir_emit_label(out, skipLbl);
@@ -379,7 +359,7 @@ static void ir_emit_jump_if_true(ASTNode *cond, IRFunction *out, Operand trueLbl
     // (IR_IF_FALSE only jumps on false, so a "jump on true" needs an
     // explicit skip-over-the-goto pattern)
     Operand v       = ir_emit_expr(cond, out);
-    Operand skipLbl = mk_label();
+    Operand skipLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
     ir_emit_if_false(out, v, skipLbl);
     ir_emit_goto(out, trueLbl);
     ir_emit_label(out, skipLbl);
@@ -389,20 +369,20 @@ static void ir_emit_jump_if_true(ASTNode *cond, IRFunction *out, Operand trueLbl
  * @brief Materialise a boolean expression (possibly &&/||/!) into @p dest as 0 or 1.
  */
 static Operand ir_emit_short_circuit_into(ASTNode *expr, IRFunction *out, Operand dest) {
-    Operand endLbl   = mk_label();
-    Operand falseLbl = mk_label();
+    Operand endLbl   = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
+    Operand falseLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
     ir_emit_jump_if_false(expr, out, falseLbl);
     // reached only if expr was true
-    ir_emit_instr(out, IR_ASSIGN, dest, mk_const_int(1), no_operand());
+    ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 1 }, (Operand){.kind = OPND_NONE});
     ir_emit_goto(out, endLbl);
     ir_emit_label(out, falseLbl);
-    ir_emit_instr(out, IR_ASSIGN, dest, mk_const_int(0), no_operand());
+    ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, (Operand){.kind = OPND_NONE});
     ir_emit_label(out, endLbl);
     return dest;
 }
 
 static Operand ir_emit_short_circuit(ASTNode *expr, IRFunction *out) {
-    return ir_emit_short_circuit_into(expr, out, mk_temp());
+    return ir_emit_short_circuit_into(expr, out, (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ });
 }
 
 /* =========================================================================
@@ -427,10 +407,10 @@ static Operand ir_emit_call(ASTNode *expr, IRFunction *out) {
     // each argument is pushed via a dedicated IR_PARAM right before the call
     for (int i = 0; i < expr->nchildren; i++) {
         Operand arg = ir_emit_expr(expr->children[i], out);
-        ir_emit_instr(out, IR_PARAM, no_operand(), arg, no_operand());
+        ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, arg, (Operand){.kind = OPND_NONE});
     }
-    Operand result = mk_temp();
-    ir_emit_instr(out, IR_CALL, result, mk_func(expr->text), mk_const_int(expr->nchildren));
+    Operand result = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
+    ir_emit_instr(out, IR_CALL, result, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
     return result;
 }
 
@@ -440,22 +420,22 @@ static Operand ir_emit_call(ASTNode *expr, IRFunction *out) {
 
 static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {
-    case ND_NUM_INT:   return mk_const_int(atoi(expr->text));
-    case ND_NUM_FLOAT: return mk_const_float((float)atof(expr->text));
+    case ND_NUM_INT:   return (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) };
+    case ND_NUM_FLOAT: return (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = (float)atof(expr->text) };
     case ND_ID:        return mk_var(expr);
 
     case ND_ARRAY_ACCESS: {
         Operand idx  = ir_emit_expr(expr->children[0], out);
         Operand base = mk_var(expr);
-        Operand t    = mk_temp();
+        Operand t    = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
         ir_emit_instr(out, IR_LOAD_ARR, t, base, idx);
         return t;
     }
 
     case ND_UNARY: {
         Operand v = ir_emit_expr(expr->children[0], out);
-        Operand t = mk_temp();
-        ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, no_operand());
+        Operand t = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
+        ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, (Operand){.kind = OPND_NONE});
         return t;
     }
 
@@ -466,14 +446,14 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
             return ir_emit_short_circuit(expr, out);
         Operand lhs = ir_emit_expr(expr->children[0], out);
         Operand rhs = ir_emit_expr(expr->children[1], out);
-        Operand t   = mk_temp();
+        Operand t   = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
         ir_emit_instr(out, ir_binop_to_irop(expr->text), t, lhs, rhs);
         return t;
     }
 
     case ND_ASSIGN: return ir_emit_assign(expr, out);
     case ND_CALL:   return ir_emit_call(expr, out);
-    default:        return no_operand(); // ND_ERROR or unexpected node
+    default:        return (Operand){.kind = OPND_NONE}; // ND_ERROR or unexpected node
     }
 }
 
@@ -488,13 +468,13 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
 static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
     switch (expr->kind) {
     case ND_NUM_INT:
-        ir_emit_instr(out, IR_ASSIGN, dest, mk_const_int(atoi(expr->text)), no_operand());
+        ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) }, (Operand){.kind = OPND_NONE});
         return dest;
     case ND_NUM_FLOAT:
-        ir_emit_instr(out, IR_ASSIGN, dest, mk_const_float((float)atof(expr->text)), no_operand());
+        ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = (float)atof(expr->text) }, (Operand){.kind = OPND_NONE});
         return dest;
     case ND_ID:
-        ir_emit_instr(out, IR_ASSIGN, dest, mk_var(expr), no_operand());
+        ir_emit_instr(out, IR_ASSIGN, dest, mk_var(expr), (Operand){.kind = OPND_NONE});
         return dest;
 
     case ND_ARRAY_ACCESS: {
@@ -506,7 +486,7 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
 
     case ND_UNARY: {
         Operand v = ir_emit_expr(expr->children[0], out);
-        ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, dest, v, no_operand());
+        ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, dest, v, (Operand){.kind = OPND_NONE});
         return dest;
     }
 
@@ -523,10 +503,10 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
     case ND_CALL: {
         for (int i = 0; i < expr->nchildren; i++) {
             Operand arg = ir_emit_expr(expr->children[i], out);
-            ir_emit_instr(out, IR_PARAM, no_operand(), arg, no_operand());
+            ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, arg, (Operand){.kind = OPND_NONE});
         }
         // unlike ir_emit_call, the CALL result is written straight into dest
-        ir_emit_instr(out, IR_CALL, dest, mk_func(expr->text), mk_const_int(expr->nchildren));
+        ir_emit_instr(out, IR_CALL, dest, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
         return dest;
     }
 
@@ -534,11 +514,11 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
         // "x = (y = z)": inner assignment computes its own target, then the
         // resulting value is additionally copied into dest for this context
         Operand inner = ir_emit_assign(expr, out);
-        ir_emit_instr(out, IR_ASSIGN, dest, inner, no_operand());
+        ir_emit_instr(out, IR_ASSIGN, dest, inner, (Operand){.kind = OPND_NONE});
         return dest;
     }
 
-    default: return no_operand();
+    default: return (Operand){.kind = OPND_NONE};
     }
 }
 
@@ -563,7 +543,7 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
             // array initializer list: one STORE_ARR per element, index = position
             for (int i = 0; i < stmt->nchildren; i++) {
                 Operand v = ir_emit_expr(stmt->children[i], out);
-                ir_emit_instr(out, IR_STORE_ARR, mk_var(stmt), mk_const_int(i), v);
+                ir_emit_instr(out, IR_STORE_ARR, mk_var(stmt), (Operand){ .kind = OPND_CONST_INT, .data.intVal = i }, v);
             }
         }
         break;
@@ -573,12 +553,12 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
         break;
 
     case ND_IF: {
-        Operand elseLbl = mk_label();
+        Operand elseLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         ir_emit_jump_if_false(stmt->children[0], out, elseLbl);
         ir_emit_stmt(stmt->children[1], out); // then-branch
         if (stmt->nchildren > 2) {
             // has an else-branch: then-branch must skip over it
-            Operand endLbl = mk_label();
+            Operand endLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
             ir_emit_goto(out, endLbl);
             ir_emit_label(out, elseLbl);
             ir_emit_stmt(stmt->children[2], out);
@@ -591,8 +571,8 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
     }
 
     case ND_WHILE: {
-        Operand startLbl = mk_label();
-        Operand endLbl   = mk_label();
+        Operand startLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
+        Operand endLbl   = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         ir_emit_label(out, startLbl);
         ir_emit_jump_if_false(stmt->children[0], out, endLbl);
         currentLoopDepth++;   // body instructions are nested one level deeper
@@ -605,7 +585,7 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
 
     case ND_RETURN: {
         Operand v = ir_emit_expr(stmt->children[0], out);
-        ir_emit_instr(out, IR_RETURN, no_operand(), v, no_operand());
+        ir_emit_instr(out, IR_RETURN, (Operand){.kind = OPND_NONE}, v, (Operand){.kind = OPND_NONE});
         break;
     }
 
