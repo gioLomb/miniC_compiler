@@ -74,7 +74,7 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack);
  *                 coloring proceeds without any hints.
  * @return         Number of entries written into @p spilled.
  */
-int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
+int ra_select_colors(IGraph *g, int *stack, int stackLen,
                      int *spilled, const PartnerList *pl);
 
 #endif /* RA_COLOR_H */

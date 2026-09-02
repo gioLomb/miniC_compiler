@@ -8,7 +8,7 @@
  */
 #define SPILL_MAX_EXPANSION_PER_INSTR 7
 #define SPILL_EXTRA_MARGIN            4
-
+#define BYTES_PER_QUADWORD 8
 /**
  * @file ra_spill.h
  * @brief Spill code insertion: rewrites spilled virtual registers as

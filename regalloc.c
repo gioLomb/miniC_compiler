@@ -30,14 +30,6 @@
  *        else             → ra_spill_insert(), free temporaries, continue
  *   save_restore_callee   — insert push/pop in prologue/epilogue for used callee-saved regs
  * ```
- *
- * ### Known limitations
- * - No copy coalescing (EaC §13.4.3): move-related vregs get a *biased coloring
- *   hint* (ra_coalesce.h) rather than full node merging.  Correct, occasionally
- *   leaves a redundant MOV that finalize() removes only when src == dst.
- * - Stack parameters (>6 arguments) not modelled: MO_STACK offsets are always
- *   negative from %rbp (spill slots); caller-stack arguments would need positive
- *   offsets.
  */
 
 #include <stdlib.h>
@@ -52,66 +44,29 @@
 #include "regalloc_utils.h"
 #include "arena.h"
 
-/* =========================================================================
- * CFG construction for machine code
- * =========================================================================
- * The machine-code CFG is built from scratch on each iteration of the
- * regalloc loop because ra_spill_insert() may add new instructions (reload
- * temporaries, stack loads/stores) that change block boundaries.
- *
- * Block boundaries are detected the same way as in sched.c: a MACH_LABEL
- * instruction that is not at position 0 opens a new block.  Successor edges
- * are derived from the last instruction of each block.
- * ========================================================================= */
 
-// Linear scan of the label→block mapping to resolve a jump target.
-// Called only during CFG construction; the array is small (one entry per block).
 static int find_label_block(const int *labelIds, const int *blockIdx,
                              int n, int labelId)
 {
-    for (int i = 0; i < n; i++)
-        if (labelIds[i] == labelId) return blockIdx[i];
-    return -1; // label not found (should not happen in well-formed code)
+    for (int i = 0; i < n; i++) {
+        if (labelIds[i] == labelId) {
+            return blockIdx[i];
+        }
+    }
+    return -1; // Label not found
 }
 
 /**
- * @brief Build the machine-code CFG for @p f.
- *
- * Partitions f->instrs[] into basic blocks (split at MACH_LABEL after index 0),
- * then wires succ[] edges by examining each block's last instruction:
- *   - MACH_JMP  → single successor (the jump target).
- *   - Jcc       → two successors: fall-through (block + 1) and jump target.
- *   - MACH_RET  → no successors.
- *   - anything else → implicit fall-through to the next block.
- *
- * @param f        Machine function to analyse.
- * @param outCount Set to the number of BasicBlock entries returned.
- * @return         Heap-allocated BasicBlock array; caller must free.
+ * Builds the lookup table mapping label IDs to block indices.
  */
-static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
+static int build_label_map(const MachFunction *f, const BasicBlock *blocks, int count,
+                           Arena *arena, int **outLabelIds, int **outBlockIdx)
 {
-    int cap = 8, count = 0;
-    BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
-    int start = 0;
-
-    // Scan for MACH_LABEL instructions to detect block boundaries.
-    for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op == MACH_LABEL && i > start) {
-            if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
-            blocks[count++] = (BasicBlock){ start, i, {-1, -1} };
-            start = i; // new block starts at the label
-        }
-    }
-    // Close the last (or only) block.
-    if (start < f->count) {
-        if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
-        blocks[count++] = (BasicBlock){ start, f->count, {-1, -1} };
-    }
-
-    // Build a label-id → block-index lookup table for jump-target resolution.
-    int *labelIds = arena_alloc(arena, (size_t)(count > 0 ? count : 1) * sizeof(int));
-    int *blockIdx = arena_alloc(arena, (size_t)(count > 0 ? count : 1) * sizeof(int));
+    int allocSize = (count > 0) ? count : 1;
+    int *labelIds = arena_alloc(arena, (size_t)allocSize * sizeof(int));
+    int *blockIdx = arena_alloc(arena, (size_t)allocSize * sizeof(int));
     int nLabels = 0;
+
     for (int b = 0; b < count; b++) {
         if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
             labelIds[nLabels] = f->instrs[blocks[b].range.start].dst.labelId;
@@ -120,60 +75,88 @@ static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
         }
     }
 
-    // Wire CFG edges from each block's last instruction.
+    *outLabelIds = labelIds;
+    *outBlockIdx = blockIdx;
+    return nLabels;
+}
+
+/**
+ * Connects control flow graph edges based on block boundary instructions.
+ */
+static void wire_block_successors(BasicBlock *blocks, int count, const MachFunction *f,
+                                 const int *labelIds, const int *blockIdx, int nLabels)
+{
     for (int b = 0; b < count; b++) {
         int last = blocks[b].range.end - 1;
         switch (f->instrs[last].op) {
         case MACH_JMP:
-            // Unconditional jump: single successor = jump target.
             blocks[b].succ[0] = find_label_block(labelIds, blockIdx, nLabels,
                                                   f->instrs[last].dst.labelId);
             break;
         case MACH_JE: case MACH_JNE: case MACH_JL:
         case MACH_JLE: case MACH_JG: case MACH_JGE:
-            // Conditional branch: succ[0] = fall-through, succ[1] = taken.
             blocks[b].succ[0] = (b + 1 < count) ? b + 1 : -1;
             blocks[b].succ[1] = find_label_block(labelIds, blockIdx, nLabels,
                                                   f->instrs[last].dst.labelId);
             break;
         case MACH_RET:
-            // Return: no successors (succ remain -1).
             break;
         default:
-            // Implicit fall-through to the next block.
             blocks[b].succ[0] = (b + 1 < count) ? b + 1 : -1;
+            break;
         }
     }
+}
+
+/**
+ * @brief Build the machine-code CFG for @p f.
+ */
+static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
+{
+    int cap = INITIAL_BLOCK_CAPACITY;
+    int count = 0;
+    BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
+    int start = 0;
+
+    // Partition instructions into basic blocks
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op == MACH_LABEL && i > start) {
+            if (count == cap) {
+                cap *= 2;
+                blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
+            }
+            blocks[count++] = (BasicBlock){ start, i, {-1, -1} };
+            start = i;
+        }
+    }
+
+    if (start < f->count) {
+        if (count == cap) {
+            cap *= 2;
+            blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
+        }
+        blocks[count++] = (BasicBlock){ start, f->count, {-1, -1} };
+    }
+
+    // Build label lookup table and wire CFG edges (Refactoring: Extract Function)
+    int *labelIds = NULL;
+    int *blockIdx = NULL;
+    int nLabels = build_label_map(f, blocks, count, arena, &labelIds, &blockIdx);
+
+    wire_block_successors(blocks, count, f, labelIds, blockIdx, nLabels);
 
     *outCount = count;
     return blocks;
 }
 
-/* =========================================================================
- * Finalisation: vreg → phys, identity-MOV removal
- * =========================================================================
- * After a successful coloring, rewrite_phys() replaces every MO_VREG
- * operand with the physical register assigned by ra_select_colors().
- * rewrite_mem() handles the two register fields inside MO_MEM addressing
- * modes (base and index).
- *
- * After substitution, any MOV that turns out to be reg→same-reg (e.g.
- * because biased coloring assigned the same color to MOV source and dest)
- * is removed by finalize() in a single compaction pass.
- * ========================================================================= */
-
-// Replace a single MO_VREG operand with its assigned MO_PHYS color.
 static inline void rewrite_phys(MachOperand *o, const int *color)
 {
     if (o->kind == MO_VREG) {
         o->kind    = MO_PHYS;
-        o->physReg = color[o->vregId]; // color[v] = physical register index
+        o->physReg = color[o->vregId];
     }
 }
 
-// Rewrite base and index vregs inside an MO_MEM operand.
-// base/index fields store the vreg id directly (not a MachOperand), so they
-// are updated in-place without going through rewrite_phys().
 static inline void rewrite_mem(MachOperand *o, const int *color)
 {
     if (o->kind != MO_MEM) return;
@@ -181,120 +164,128 @@ static inline void rewrite_mem(MachOperand *o, const int *color)
     if (o->mem.indexVreg >= 0) o->mem.indexVreg = color[o->mem.indexVreg];
 }
 
-// Rewrite all operands of every instruction and compact out identity MOVs.
+/**
+ * Predicate checking if an instruction is a redundant self-move operation.
+ */
+static inline int is_identity_mov(const MachInstr *in)
+{
+    return (in->op == MACH_MOV &&
+            in->dst.kind == MO_PHYS &&
+            in->src1.kind == MO_PHYS &&
+            in->dst.physReg == in->src1.physReg);
+}
+
 static void finalize(MachFunction *f, const int *color)
 {
     int newCount = 0;
     for (int i = 0; i < f->count; i++) {
         MachInstr *in = &f->instrs[i];
 
-        // Substitute vreg operands with their physical registers.
         rewrite_phys(&in->dst,  color);
         rewrite_phys(&in->src1, color);
         rewrite_phys(&in->src2, color);
 
-        // Substitute vreg fields inside memory addressing modes.
         rewrite_mem(&in->dst,  color);
         rewrite_mem(&in->src1, color);
 
-        // Discard MOV physReg → same physReg (identity move, no-op).
-        // These arise when biased coloring successfully assigns the same
-        // physical register to both sides of a copy.
-        if (in->op == MACH_MOV
-            && in->dst.kind  == MO_PHYS
-            && in->src1.kind == MO_PHYS
-            && in->dst.physReg == in->src1.physReg)
-            continue; // skip: do not copy to newCount
+        if (is_identity_mov(in)) {
+            continue;
+        }
 
         f->instrs[newCount++] = *in;
     }
     f->count = newCount;
 }
 
-/* =========================================================================
- * Prologue / epilogue: callee-saved register save and restore
- * =========================================================================
- * The System V AMD64 ABI requires that RBX, R12-R15 (PHYS_RBX … PHYS_R15)
- * be preserved across calls.  After coloring, we scan the instruction stream
- * to find which of those registers were actually assigned and emit PUSH
- * instructions immediately after MACH_FUNC_BEGIN and POP instructions
- * immediately before each MACH_RET.
- *
- * This is done after finalize() so that only registers that actually ended up
- * in the output (after identity-MOV removal) are considered.
- * ========================================================================= */
 
-// Returns true if physReg is in the callee-saved range (RBX, R12-R15).
 static inline int is_callee_saved(int physReg)
 {
     return physReg >= PHYS_RBX && physReg <= PHYS_R15;
 }
 
 /**
+ * Scans instructions to identify which callee-saved physical registers were written.
+ */
+static uint32_t collect_used_callee_saved(const MachFunction *f, int *outRetCount)
+{
+    uint32_t usedMask = 0;
+    int retCount = 0;
+
+    for (int i = 0; i < f->count; i++) {
+        const MachInstr *in = &f->instrs[i];
+        if (in->dst.kind == MO_PHYS && is_callee_saved(in->dst.physReg)) {
+            usedMask |= (1u << in->dst.physReg);
+        }
+        if (in->op == MACH_RET) {
+            retCount++;
+        }
+    }
+
+    *outRetCount = retCount;
+    return usedMask;
+}
+
+/**
+ * Finds the index of the MACH_FUNC_BEGIN instruction.
+ */
+static int find_func_begin_index(const MachFunction *f)
+{
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op == MACH_FUNC_BEGIN) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
  * @brief Insert PUSH/POP pairs in the prologue/epilogue for used callee-saved regs.
- *
- * Scans f->instrs[] to build a bitmask of all callee-saved physical registers
- * that appear as destinations (written), then inserts:
- *   - A PUSH for each used register immediately after MACH_FUNC_BEGIN.
- *   - A POP for each used register (in reverse order) immediately before
- *     each MACH_RET.
- *
- * A new instruction array is heap-allocated (old array is freed).
- *
- * @param f  Machine function to patch (modified in place).
  */
 static void save_restore_callee(MachFunction *f)
 {
-    uint32_t usedMask = 0; // bitmask of callee-saved physRegs actually written
-    int retCount      = 0; // number of RET instructions (need a POP set before each)
+    int retCount = 0;
+    uint32_t usedMask = collect_used_callee_saved(f, &retCount);
 
-    // First pass: find used callee-saved registers and count RETs.
-    for (int i = 0; i < f->count; i++) {
-        MachInstr *in = &f->instrs[i];
-        if (in->dst.kind == MO_PHYS && is_callee_saved(in->dst.physReg))
-            usedMask |= (1u << in->dst.physReg);
-        if (in->op == MACH_RET) retCount++;
+    if (usedMask == 0) return; // Guard clause: No registers to save
+
+    int used[PHYS_CALLEE_SAVED_COUNT];
+    int usedCount = 0;
+
+    for (int p = PHYS_RBX; p <= PHYS_R15; p++) {
+        if ((usedMask >> p) & 1u) {
+            used[usedCount++] = p;
+        }
     }
 
-    if (usedMask == 0) return; // no callee-saved registers used — nothing to do
+    int funcBeginIdx = find_func_begin_index(f);
 
-    // Collect the used callee-saved registers in ascending order.
-    int used[PHYS_CALLEE_SAVED_COUNT], usedCount = 0;
-    for (int p = PHYS_RBX; p <= PHYS_R15; p++)
-        if ((usedMask >> p) & 1u) used[usedCount++] = p;
-
-    // Find MACH_FUNC_BEGIN (always present; inserted by isel_select).
-    int funcBeginIdx = -1;
-    for (int i = 0; i < f->count; i++)
-        if (f->instrs[i].op == MACH_FUNC_BEGIN) { funcBeginIdx = i; break; }
-
-    // Allocate a new instruction array large enough for the extra PUSH/POP.
-    // Worst case: usedCount PUSHes + usedCount POPs per RET.
-    MachInstr *newInstrs = malloc(
-        (size_t)(f->count + usedCount + (size_t)usedCount * retCount) * sizeof(MachInstr));
+    size_t allocCapacity = (size_t)(f->count + usedCount + (size_t)usedCount * retCount);
+    MachInstr *newInstrs = malloc(allocCapacity * sizeof(MachInstr));
     int newCount = 0;
 
-    // Second pass: copy instructions, inserting PUSHes after FUNC_BEGIN and
-    // POPs before each RET.
     for (int i = 0; i < f->count; i++) {
         if (i == funcBeginIdx) {
-            // Emit FUNC_BEGIN first, then one PUSH per callee-saved register.
             newInstrs[newCount++] = f->instrs[i];
             for (int k = 0; k < usedCount; k++) {
                 MachInstr ps = {0};
-                ps.op = MACH_PUSH; ps.dst.kind = MO_PHYS; ps.dst.physReg = used[k];
+                ps.op = MACH_PUSH;
+                ps.dst.kind = MO_PHYS;
+                ps.dst.physReg = used[k];
                 newInstrs[newCount++] = ps;
             }
             continue;
         }
+
         if (f->instrs[i].op == MACH_RET) {
-            // Emit POPs in reverse order before each RET (LIFO stack discipline).
             for (int k = usedCount - 1; k >= 0; k--) {
                 MachInstr po = {0};
-                po.op = MACH_POP; po.dst.kind = MO_PHYS; po.dst.physReg = used[k];
+                po.op = MACH_POP;
+                po.dst.kind = MO_PHYS;
+                po.dst.physReg = used[k];
                 newInstrs[newCount++] = po;
             }
         }
+
         newInstrs[newCount++] = f->instrs[i];
     }
 
@@ -306,114 +297,93 @@ static void save_restore_callee(MachFunction *f)
 /* =========================================================================
  * Main allocation loop for a single function
  * =========================================================================
- * The loop retries as long as spills occur.  Each iteration may introduce
- * new temporaries (reload/spill temps from ra_spill_insert), which change
- * the interference graph and may require another round of coloring.
- *
- * BUG FIX (PartnerList lifetime):
- *   The PartnerList must be released on BOTH the success path (nSpilled == 0)
- *   and the spill path (nSpilled > 0).  The previous code called
- *   partnerlist_free() only in the break branch, leaking `pl` on every
- *   iteration that required spilling.  Fixed by calling partnerlist_free()
- *   unconditionally before either breaking or continuing.
- *
- * FIX (optimistic-spill thrashing on reload temps):
- *   firstSpillVreg is snapshotted ONCE, before the loop starts, from the
- *   vreg id boundary handed out by instruction selection.  Every vreg id at
- *   or above this boundary — in every round, including temps introduced by
- *   ra_spill_insert() in round 1, 2, 3, ... — is a reload/spill temp, never
- *   a genuine IR-level variable.  Passing this fixed boundary to ig_build()
- *   on every round lets ra_simplify() recognise and de-prioritise these
- *   short-lived temps as optimistic-spill candidates (see interference.h),
- *   instead of repeatedly respilling the "cheapest-looking" temp while the
- *   real long-lived value causing register pressure is never addressed.
+ * REFACTOR (Extract Function + Slide Statements, regalloc_try_round):
+ *   The per-round body used to live inline in the for(;;) loop below, with
+ *   an IDENTICAL 5-line cleanup block (free/free/ig_free/arena_destroy/free)
+ *   duplicated in both the success (nSpilled == 0) and spill (nSpilled > 0)
+ *   branches. Duplicated cleanup is a latent leak: adding a new per-round
+ *   resource later and freeing it in only one branch would silently leak on
+ *   the other path. Extracted into regalloc_try_round(), with the cleanup
+ *   slid out of the if/else so it runs exactly once per round regardless of
+ *   outcome.
  * ========================================================================= */
+
+/**
+ * @brief Run a single build->liveness->interference->color round.
+ *
+ * On success (no spills), applies the coloring via finalize() and returns 1.
+ * On failure, inserts spill/reload code via ra_spill_insert() (which the
+ * caller must re-analyse in a subsequent round) and returns 0.
+ *
+ * @param f              Machine function being allocated (modified in place).
+ * @param firstSpillVreg  Fixed boundary: vreg ids at or above this value are
+ *                        reload/spill temps from a previous round, never a
+ *                        genuine IR-level variable (see interference.h).
+ * @param frameOff       Running stack frame offset; grows by 8 per spilled
+ *                        vreg inserted this round.
+ * @return               1 if coloring succeeded (caller should stop looping),
+ *                        0 if a spill round was performed (caller must retry).
+ */
+static int regalloc_try_round(MachFunction *f, int firstSpillVreg, int *frameOff){
+
+    Arena *livArena = arena_create(0);
+    int nBlocks;
+    BasicBlock *blocks = build_cfg(f, livArena, &nBlocks);
+
+    // Backward liveness analysis
+    LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, livArena);
+    IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter,
+                        firstSpillVreg, livArena);
+
+    //  Collect MOV-related vreg pairs for biased coloring
+    PartnerList pl = ra_collect_partners(f, &g, f->nextVreg);
+
+    // Simplification phase
+    int *stack = NULL;
+    int stackLen = ra_simplify(&g, f->nextVreg, &stack);
+
+    int *spilled = malloc((size_t)(f->nextVreg > 0 ? f->nextVreg : 1) * sizeof(int));
+    int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, &pl);
+
+    partnerlist_free(&pl);
+
+    // coloring succeeded, or spilling required
+    int done = (nSpilled == 0);
+    if (done) {
+        finalize(f, g.color);
+    } else {
+        // Spill handling — insert load/store instructions for next round
+        ra_spill_insert(f, spilled, nSpilled, frameOff);
+    }
+
+
+    free(stack);
+    free(spilled);
+    ig_free(&g);
+    arena_destroy(livArena);
+    free(blocks);
+
+    return done;
+}
 
 static void regalloc_function(MachFunction *f)
 {
-    int frameOff = 0; // running stack frame offset; grows by 8 per spilled vreg
-
-    // Fixed boundary: any vreg id >= firstSpillVreg, in any round of the
-    // loop below, was introduced by ra_spill_insert() and is therefore a
-    // reload/spill temp rather than a real IR-level variable/temporary.
+    int frameOff = 0;
     int firstSpillVreg = f->nextVreg;
 
-    for (;;) {
-        // --- Step 1: build machine-code CFG ---
-        Arena *livArena = arena_create(0);
-        int nBlocks;
-        BasicBlock *blocks = build_cfg(f, livArena, &nBlocks);
+    // Retry rounds until one colors without spilling.
+    while (!regalloc_try_round(f, firstSpillVreg, &frameOff));
 
-        // --- Step 2: backward liveness dataflow ---
-        // Produces per-instruction liveAfter[] sets needed by the interference
-        // graph builder to add edges between definitions and live-at-def vars.
-        LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, livArena);
-
-        // --- Step 3: build interference graph ---
-        // Allocates a triangular bit matrix + adjacency lists.
-        // Physical registers are pre-coloured nodes; excl[] masks and
-        // crossesCall[] flags are set for vregs live across CALL/IDIV/SETcc.
-        // firstSpillVreg flags every reload/spill temp so ra_simplify() can
-        // avoid respilling them ahead of genuinely long-lived values.
-        IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter,
-                            firstSpillVreg, livArena);
-
-        // --- Step 4: collect MOV-related vreg pairs for biased coloring ---
-        // Must happen AFTER ig_build (needs g.matrix for non-interference check)
-        // and BEFORE ra_simplify (which deactivates nodes, making g.matrix stale).
-        PartnerList pl = ra_collect_partners(f, &g, f->nextVreg);
-
-        // --- Step 5: Briggs-optimistic simplification ---
-        // Removes nodes from the graph in bucket-by-degree order.
-        // Nodes with degree < k are trivially colorable; the rest are
-        // potential spill candidates selected by lowest spillCost/degree,
-        // preferring non-reload-temp nodes first (see interference.h).
-        int *stack    = NULL;
-        int  stackLen = ra_simplify(&g, f->nextVreg, &stack);
-
-        // --- Step 6: color assignment ---
-        // Pops the stack and assigns a physical register to each node.
-        // Priority: biased hint from partner → callee-saved if crossesCall → lowest available.
-        // Nodes with no available color are recorded in spilled[].
-        int *spilled  = malloc((size_t)(f->nextVreg > 0 ? f->nextVreg : 1) * sizeof(int));
-        int  nSpilled = ra_select_colors(&g, f->nextVreg, stack, stackLen, spilled, &pl);
-
-        // Release the partner list unconditionally — it is consumed by select_colors
-        // and must be freed regardless of whether spilling occurred.
-        partnerlist_free(&pl);
-
-        if (nSpilled == 0) {
-            // --- Step 7a: coloring succeeded ---
-            // Substitute all vreg operands with their assigned physical registers
-            // and remove any MOV that became a no-op (same src and dst).
-            finalize(f, g.color);
-            free(stack); free(spilled); ig_free(&g);
-            arena_destroy(livArena); free(blocks);
-            break; // done — exit the allocation loop
-        }
-
-        // --- Step 7b: spilling required ---
-        // Insert load/store code around each spilled vreg; the resulting new
-        // temporaries will be handled in the next iteration (and correctly
-        // flagged isReloadTemp on all subsequent rounds, since
-        // firstSpillVreg was captured once before this loop started).
-        ra_spill_insert(f, spilled, nSpilled, &frameOff);
-        free(stack); free(spilled); ig_free(&g);
-        arena_destroy(livArena); free(blocks);
-        // Loop continues: the rewritten instruction stream is re-analysed
-        // from scratch (new vregs from spill code may interfere differently).
-    }
-
-    // Insert callee-saved register saves/restores in the prologue/epilogue.
+    // Save/restore callee-saved registers in prologue/epilogue
     save_restore_callee(f);
 
-    // Round frame size up to the next 16-byte boundary (ABI requirement).
-    f->frameSize = (frameOff + 15) & ~15;
+    // Align frame size to 16-byte boundary (Refactoring: Replace Magic Literal / Explaining Variable)
+    f->frameSize = (frameOff + (STACK_ALIGNMENT_BYTES - 1)) & ~(STACK_ALIGNMENT_BYTES - 1);
 }
 
 void regalloc(MachProgram *mp)
 {
-    // Allocate registers independently for each function in the program.
-    for (int i = 0; i < mp->count; i++)
+    for (int i = 0; i < mp->count; i++) {
         regalloc_function(mp->functions[i]);
+    }
 }

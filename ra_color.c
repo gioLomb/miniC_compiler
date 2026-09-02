@@ -1,185 +1,204 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <float.h>
 #include "ra_color.h"
 #include "ra_coalesce.h"
 #include "instr_selector.h"   /* PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, PHYS_RBX..R15 */
 
+/* =========================================================================
+ * Helper Functions — Simplification Phase (Refactoring: Extract Function)
+ * ========================================================================= */
+
+/**
+ * Scans active, non-bucketed nodes to find the best optimistic spill candidate.
+ * Strictly prefers real IR variables over reload temporaries.
+ */
+static int select_spill_candidate(const IGraph *g, int nextVreg, const Buckets *buckets) {
+    double bestRealRatio = DBL_MAX, bestReloadRatio = DBL_MAX;
+    int bestReal = -1, bestReload = -1;
+
+    for (int v = 0; v < nextVreg; v++) {
+        if (!g->active[v] || buckets->inBucket[v]) continue;
+
+        double ratio = (g->degree[v] > 0)
+                       ? (double)g->spillCost[v] / g->degree[v]
+                       : 0.0;
+
+        if (g->isReloadTemp[v]) {
+            if (ratio < bestReloadRatio) { 
+                bestReloadRatio = ratio; 
+                bestReload = v; 
+            }
+        } else {
+            if (ratio < bestRealRatio) { 
+                bestRealRatio = ratio; 
+                bestReal = v; 
+            }
+        }
+    }
+
+    // Prefer a real candidate; fall back to reload temp to guarantee progress
+    return (bestReal >= 0) ? bestReal : bestReload;
+}
+
+/**
+ * Decrements the degrees of active neighbors after removing a node,
+ * adjusting their bucket status accordingly.
+ */
+static inline void update_neighbor_degrees(IGraph *g, int chosen, int nextVreg, int k, Buckets *buckets) {
+    for (int idx = 0; idx < g->adj[chosen].len; idx++) {
+        int w = g->adj[chosen].data[idx];
+        if (w >= nextVreg || !g->active[w]) continue;
+
+        int oldDeg = g->degree[w];
+        g->degree[w]--;
+
+        if (oldDeg < k) {
+            bucket_remove(buckets, w, oldDeg);
+            bucket_insert(buckets, w, oldDeg - 1);
+        } else if (oldDeg == k) {
+            bucket_insert(buckets, w, k - 1);
+        }
+    }
+}
 
 /* =========================================================================
  * ra_simplify — Briggs-optimistic simplification.
  * ========================================================================= */
 int ra_simplify(IGraph *g, int nextVreg, int **outStack)
 {
-    *outStack = malloc((size_t)(nextVreg > 0 ? nextVreg : 1) * sizeof(int));
-    int stackLen  = 0;
-    int k         = PHYS_ALLOCATABLE;
-    Buckets buckets = buckets_create(nextVreg, k);
-    int remaining   = nextVreg;
+    int stackCap = (nextVreg > 0) ? nextVreg : 1;
+    *outStack = malloc((size_t)stackCap * sizeof(int));
 
-    for (int v = 0; v < nextVreg; v++)
-        if (g->degree[v] < k)
+    int stackLen   = 0;
+    const int k    = PHYS_ALLOCATABLE;
+    Buckets buckets = buckets_create(nextVreg, k);
+    int remaining  = nextVreg;
+
+    for (int v = 0; v < nextVreg; v++) {
+        if (g->degree[v] < k) {
             bucket_insert(&buckets, v, g->degree[v]);
+        }
+    }
 
     while (remaining > 0) {
-        int d;
-        int chosen = bucket_pop_any_low(&buckets, &d);
-        int fromBucket = (chosen >= 0);   /* FIX: traccia provenienza */
+        int degree;
+        int chosen = bucket_pop_any_low(&buckets, &degree);
+        int fromBucket = (chosen >= 0);
 
-        if (chosen < 0) {
-            // No node has degree < k: must pick an optimistic spill
-            // candidate by lowest spillCost/degree ratio. Single pass over
-            // all active, non-bucketed nodes, tracking the best candidate
-            // in each of two categories simultaneously:
-            //   bestReal    — genuine IR-level variables/temporaries
-            //   bestReload  — reload/spill temps from a previous round
-            //                 (isReloadTemp[v] == 1, see interference.h)
-            // Real candidates are strictly preferred: reload temps have a
-            // naturally tiny spillCost (2-3 def/use sites) that makes them
-            // look "cheapest" by the ratio metric even though respilling
-            // them never relieves the actual register pressure. The reload
-            // candidate is kept only as a fallback for the rare case where
-            // nothing but reload temps remains active (tracked in one pass
-            // instead of two full scans for efficiency).
-            double bestRealRatio = 1e18, bestReloadRatio = 1e18;
-            int    bestReal = -1,        bestReload = -1;
+        if (!fromBucket) {
+            // No node has degree < k: select optimistic spill candidate
+            chosen = select_spill_candidate(g, nextVreg, &buckets);
+            if (chosen < 0) break; // Impossible to proceed
 
-            for (int v = 0; v < nextVreg; v++) {
-                if (!g->active[v] || buckets.inBucket[v]) continue;
-                double ratio = g->degree[v] > 0
-                               ? (double)g->spillCost[v] / g->degree[v]
-                               : 0.0;
-                if (g->isReloadTemp[v]) {
-                    if (ratio < bestReloadRatio) { bestReloadRatio = ratio; bestReload = v; }
-                } else {
-                    if (ratio < bestRealRatio) { bestRealRatio = ratio; bestReal = v; }
-                }
-            }
-
-            // prefer a real candidate; fall back to a reload temp only if
-            // no real candidate remains active (guarantees progress)
-            chosen = (bestReal >= 0) ? bestReal : bestReload;
-
-            if (chosen < 0) break;
-            d = g->degree[chosen] < k ? g->degree[chosen] : k - 1;
-            /* fromBucket resta 0: questo nodo non e' mai stato bucketizzato */
+            degree = (g->degree[chosen] < k) ? g->degree[chosen] : (k - 1);
+        } else {
+            bucket_remove(&buckets, chosen, degree);
         }
-
-        /* FIX: bucket_remove() SOLO se chosen viene realmente da un bucket.
-         * Il candidato spill scelto sopra non e' mai stato inserito. */
-        if (fromBucket)
-            bucket_remove(&buckets, chosen, d);
 
         g->active[chosen] = 0;
         remaining--;
         (*outStack)[stackLen++] = chosen;
 
-        for (int idx = 0; idx < g->adj[chosen].len; idx++) {
-            int w = g->adj[chosen].data[idx];
-            if (w >= nextVreg || !g->active[w]) continue;
-            int oldDeg = g->degree[w];
-            g->degree[w]--;
-            if (oldDeg < k) {
-                bucket_remove(&buckets, w, oldDeg);
-                bucket_insert(&buckets, w, oldDeg - 1);
-            } else if (oldDeg == k) {
-                bucket_insert(&buckets, w, k - 1);
-            }
-        }
+        update_neighbor_degrees(g, chosen, nextVreg, k, &buckets);
     }
 
     buckets_free();
     return stackLen;
 }
+
 /* =========================================================================
- * hint_color — look up a preferred color from the partner list.
- *
- * Scans all pairs in @p pl: if the current node @p v has a partner that
- * already holds a valid color and that color is still within @p available,
- * return it as the biased-coloring hint.  Returns -1 if no applicable hint.
+ * Helper Functions — Selection Phase (Refactoring: Extract Function)
  * ========================================================================= */
+
+/**
+ * Returns the partner ID for node @p v in the pair, or -1 if @p v is not part of it.
+ */
+static inline int get_partner_id(const PartnerPair *pair, int v) {
+    if (pair->u == v) return pair->v;
+    if (pair->v == v) return pair->u;
+    return -1;
+}
+
+/**
+ * Look up a preferred color from the partner list (Biased Coloring).
+ */
 static int hint_color(int v, uint32_t available,
-                      const IGraph *g, int nextVreg,
-                      const PartnerList *pl)
-{
+                      const IGraph *g,const PartnerList *pl){
     if (!pl || pl->count == 0) return -1;
 
     for (int i = 0; i < pl->count; i++) {
-        int u = pl->pairs[i].u;
-        int w = pl->pairs[i].v;
-        // determine v's partner in this pair; skip if v is neither side
-        int partner = (u == v) ? w : (w == v) ? u : -1;
+        int partner = get_partner_id(&pl->pairs[i], v);
         if (partner < 0) continue;
 
-        // fetch the partner's already-assigned color
         int pc = g->color[partner];
-        if (pc < 0) continue;                           // not colored yet
-        if ((unsigned)pc >= PHYS_ALLOCATABLE) continue; // out of valid range
+        if (pc < 0 || (unsigned)pc >= PHYS_ALLOCATABLE) continue;
 
-        // the hint is only usable when the partner's color is still available
-        // (already satisfies interference + excl + crossesCall for this node)
-        if ((available >> pc) & 1u) return pc;
+        // Check if partner's color is available for v
+        if ((available >> pc) & 1u) {
+            return pc;
+        }
     }
     return -1;
 }
 
-/* =========================================================================
- * ra_select_colors — assign colors in reverse simplification order.
- *
- * Biased coloring: if a partner already has an available color, prefer it
- * to eliminate the redundant MOV without touching the graph.  Fallback
- * logic (callee-saved preference, lowest-color) is identical to the
- * non-coalescing baseline.
- * ========================================================================= */
-int ra_select_colors(IGraph *g, int nextVreg, int *stack, int stackLen,
-                     int *spilled, const PartnerList *pl)
-{
-    (void)nextVreg;
-    int nSpilled = 0;
+/**
+ * Computes the mask of forbidden physical colors for node @p v.
+ */
+static inline uint32_t compute_forbidden_colors(const IGraph *g, int v) {
+    uint32_t forbidden = g->excl[v];
+    for (int k = 0; k < g->adj[v].len; k++) {
+        int w = g->adj[v].data[k];
+        if (g->color[w] >= 0) {
+            forbidden |= (1u << g->color[w]);
+        }
+    }
+    return forbidden;
+}
 
-    // reinsert nodes in reverse removal order: by the time a node is
-    // reinserted, all its neighbours removed *after* it (processed earlier
-    // in this loop) are already colored
+
+static inline int choose_color(int v, uint32_t available,
+                               const IGraph *g,const PartnerList *pl){
+    // Priority 1: biased hint from a move-related partner
+    int hint = hint_color(v, available, g, pl);
+    if (hint >= 0) return hint;
+
+    // Priority 2: live across CALL — prefer callee-saved registers
+    if (g->crossesCall[v]) {
+        uint32_t callee = available >> PHYS_CALLER_SAVED_COUNT;
+        if (callee) {
+            return PHYS_CALLER_SAVED_COUNT + __builtin_ctz(callee);
+        }
+    }
+
+    // Priority 3: fallback to lowest available color
+    if (available) {
+        return __builtin_ctz(available);
+    }
+
+    return -1; // Needs spill
+}
+
+
+int ra_select_colors(IGraph *g, int *stack, int stackLen,
+                     int *spilled, const PartnerList *pl){
+    int nSpilled = 0;
+    const uint32_t valid_mask = (1u << PHYS_ALLOCATABLE) - 1u;
+
     for (int si = stackLen - 1; si >= 0; si--) {
         int v = stack[si];
         g->active[v] = 1;
 
-        // forbidden colors: this node's own exclusions plus every color
-        // already taken by an active, colored neighbour
-        uint32_t forbidden = g->excl[v];
-        for (int k = 0; k < g->adj[v].len; k++) {
-            int w = g->adj[v].data[k];
-            if (g->color[w] >= 0)
-                forbidden |= (1u << g->color[w]);
-        }
-
-        const uint32_t valid_mask = (1u << PHYS_ALLOCATABLE) - 1u;
+        uint32_t forbidden = compute_forbidden_colors(g, v);
         uint32_t available = (~forbidden) & valid_mask;
 
-        int chosen = -1;
+        int chosen = choose_color(v, available, g, pl);
 
-        /* Priority 1: biased hint from a move-related partner */
-        int hint = hint_color(v, available, g, nextVreg, pl);
-        if (hint >= 0) {
-            chosen = hint;
-        } else if (g->crossesCall[v]) {
-            /* Priority 2: vreg live across a CALL — prefer callee-saved colors
-             * to avoid caller-saved clobbering and reduce push/pop overhead */
-            uint32_t callee = available >> PHYS_CALLER_SAVED_COUNT;
-            if (callee)
-                chosen = PHYS_CALLER_SAVED_COUNT + __builtin_ctz(callee);
-            else if (available)
-                chosen = __builtin_ctz(available);
-        } else {
-            /* Priority 3: no special preference — lowest available color */
-            if (available)
-                chosen = __builtin_ctz(available);
-        }
-
-        if (chosen >= 0)
+        if (chosen >= 0) {
             g->color[v] = chosen;
-        else {
-            g->color[v]         = -2;   // marked as spilled: no color fits
+        } else {
+            g->color[v] = -2; // Marked as spilled
             spilled[nSpilled++] = v;
         }
     }

@@ -11,27 +11,67 @@
  * Canonical form enforced: larger id becomes the row (i > j after swap).
  */
 static inline long tri_idx(int i, int j) {
-    if (i < j) { int t = i; i = j; j = t; }
-    // standard lower-triangular formula: row i starts at i*(i-1)/2
+    if (i < j) { 
+        int t = i; 
+        i = j; 
+        j = t; 
+    }
+    // Standard lower-triangular formula: row i starts at i*(i-1)/2
     return (long)i * (i - 1) / 2 + j;
 }
 
-/** Return non-zero if an interference edge exists between nodes @p i and @p j. */
+/** 
+ * Return non-zero if an interference edge exists between nodes @p i and @p j. 
+ */
 static inline int edge_exists(const IGraph *g, int i, int j) {
-    // reject degenerate or self-pairs before touching the bit matrix
+    // Reject degenerate or self-pairs before touching the bit matrix
     if (i < 0 || j < 0 || i == j) return 0;
+    
     long idx = tri_idx(i, j);
-    // word index (idx >> 6) selects the uint64_t, (idx & 63) the bit within it
+    // Word index (idx >> 6) selects the uint64_t, (idx & 63) the bit within it
     return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
 }
 
-/* =========================================================================
- * PartnerList helpers
- * ========================================================================= */
+
+/**
+ * Resolves a Machine Operand to its internal register node ID.
+ * Returns -1 if the operand is not a valid register representation.
+ */
+static inline int resolve_operand_id(const MachOperand *op, int next_vreg) {
+    if (op->kind == MO_VREG) {
+        return op->vregId;
+    }
+    if (op->kind == MO_PHYS) {
+        return next_vreg + op->physReg;
+    }
+    return -1;
+}
+
+/**
+ * Validates whether a pair (u, v) is eligible for register coalescing.
+ * Applies domain rules and interference checks.
+ * (Refactoring: Replace Nested Conditional with Guard Clauses)
+ */
+static inline int is_valid_coalesce_candidate(const IGraph *g, int u, int v, int max_node_id, int next_vreg) {
+    // Both operands must resolve to valid node ids
+    if (u < 0 || v < 0) return 0;
+
+    // Guard against out-of-range ids (beyond allocatable limits)
+    if (u >= max_node_id || v >= max_node_id) return 0;
+
+    // Phys <-> phys MOVs are never touched by the register allocator
+    if (u >= next_vreg && v >= next_vreg) return 0;
+
+    // Only record pairs that do NOT already interfere
+    if (edge_exists(g, u, v)) return 0;
+
+    return 1;
+}
+
 
 /** Append the pair (u, v) to @p pl, doubling capacity when needed. */
 static void pl_push(PartnerList *pl, int u, int v) {
-    // start at 16 to amortise early reallocations on small functions
+    // Start at 16 to amortise early reallocations on small functions
     if (pl->count == pl->cap) {
         pl->cap   = pl->cap ? pl->cap * 2 : 16;
         pl->pairs = realloc(pl->pairs, (size_t)pl->cap * sizeof(PartnerPair));
@@ -39,49 +79,36 @@ static void pl_push(PartnerList *pl, int u, int v) {
     pl->pairs[pl->count++] = (PartnerPair){ u, v };
 }
 
-/* =========================================================================
- * Public API
- * ========================================================================= */
 
-PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g, int nextVreg)
-{
+PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g, int nextVreg) {
     PartnerList pl = { NULL, 0, 0 };
+    
+    // Refactoring: Extract Variable & Slide Statements outside hot loop
+    const int max_node_id = nextVreg + PHYS_ALLOCATABLE;
 
     for (int i = 0; i < f->count; i++) {
         const MachInstr *in = &f->instrs[i];
         if (in->op != MACH_MOV) continue;
 
-        // resolve numeric node ids for the destination and source operands
-        int u = -1, v = -1;
+        // Refactoring: Extract Function calls replacing duplicated if-else trees
+        int u = resolve_operand_id(&in->dst, nextVreg);
+        int v = resolve_operand_id(&in->src1, nextVreg);
 
-        if      (in->dst.kind  == MO_VREG) u = in->dst.vregId;
-        else if (in->dst.kind  == MO_PHYS) u = nextVreg + in->dst.physReg;
-
-        if      (in->src1.kind == MO_VREG) v = in->src1.vregId;
-        else if (in->src1.kind == MO_PHYS) v = nextVreg + in->src1.physReg;
-
-        // both operands must resolve to valid node ids
-        if (u < 0 || v < 0) continue;
-
-        // guard against out-of-range ids (e.g. PHYS_AL which is beyond PHYS_ALLOCATABLE)
-        if (u >= nextVreg + PHYS_ALLOCATABLE || v >= nextVreg + PHYS_ALLOCATABLE) continue;
-
-        // phys↔phys MOVs are never touched by the register allocator
-        if (u >= nextVreg && v >= nextVreg) continue;
-
-        // only record pairs that do NOT already interfere: interfering nodes can
-        // never share a color, so a hint for them would be silently ignored anyway
-        if (edge_exists(g, u, v)) continue;
-
-        pl_push(&pl, u, v);
+        // Refactoring: Replace Nested Conditional with Guard Clauses
+        if (is_valid_coalesce_candidate(g, u, v, max_node_id, nextVreg)) {
+            pl_push(&pl, u, v);
+        }
     }
 
     return pl;
 }
 
 void partnerlist_free(PartnerList *pl) {
+    if (!pl) return;
+    
     free(pl->pairs);
-    // reset all fields so a double-free attempt produces a clean no-op
+    // Reset all fields so a double-free attempt produces a clean no-op
     pl->pairs = NULL;
-    pl->count = pl->cap = 0;
+    pl->count = 0;
+    pl->cap   = 0;
 }

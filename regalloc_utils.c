@@ -18,25 +18,32 @@ int regalloc_spill_weight(int loopDepth) {
     return weights[loopDepth];
 }
 
-/* regalloc_utils.c */
-
-// FIX: manca offset nextVreg per MO_PHYS (bug id-space, vedi header)
 static inline int regalloc_operand_reg(const MachOperand *o, int nextVreg) {
     switch (o->kind) {
     case MO_VREG: return o->vregId;
-    // stesso schema id di sched_reg() (sched_utils.h) e di instr_implicit_uses/defs:
-    // fisico P -> id (nextVreg + P), cosi' fisici e virtuali non collidono nel bitset
+    // same id scheme as sched_reg() (sched_utils.h): physical reg P -> id
+    // (nextVreg + P), so physical and virtual ids never collide in the bitset
     case MO_PHYS: return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
     case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
     default:      return -1;
     }
 }
 
-// invariata: baseVreg/indexVreg in MO_MEM sono sempre id di vreg puri, mai fisici
+// baseVreg/indexVreg in MO_MEM are always plain vreg ids, never physical
 static inline int regalloc_operand_reg2(const MachOperand *o) {
     if (o->kind == MO_MEM && o->mem.indexVreg >= 0)
         return o->mem.indexVreg;
     return -1;
+}
+
+static inline void push_reg_id(int out[], int *n, int id) {
+    if (id >= 0) out[(*n)++] = id;
+}
+
+// second id only present for MO_MEM (index register)
+static inline void push_operand_regs(int out[], int *n, const MachOperand *o, int nextVreg) {
+    push_reg_id(out, n, regalloc_operand_reg(o, nextVreg));
+    push_reg_id(out, n, regalloc_operand_reg2(o));
 }
 
 int instr_def(const MachInstr *in, int nextVreg) {
@@ -50,50 +57,48 @@ int instr_def(const MachInstr *in, int nextVreg) {
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
         return -1;
     default:
-        return regalloc_operand_reg(&in->dst, nextVreg);   // FIX: passa nextVreg
+        return regalloc_operand_reg(&in->dst, nextVreg);
     }
 }
 
 void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
-    int r;
-    r = regalloc_operand_reg(&in->src1, nextVreg);  if (r >= 0) out[(*n)++] = r;  // FIX
-    r = regalloc_operand_reg2(&in->src1);           if (r >= 0) out[(*n)++] = r;
-    r = regalloc_operand_reg(&in->src2, nextVreg);  if (r >= 0) out[(*n)++] = r;  // FIX
-    r = regalloc_operand_reg2(&in->src2);           if (r >= 0) out[(*n)++] = r;
+    push_operand_regs(out, n, &in->src1, nextVreg);
+    push_operand_regs(out, n, &in->src2, nextVreg);
     switch (in->op) {
     case MACH_STORE:
-        r = regalloc_operand_reg(&in->dst, nextVreg);  if (r >= 0) out[(*n)++] = r; // FIX
-        r = regalloc_operand_reg2(&in->dst);           if (r >= 0) out[(*n)++] = r;
+        push_operand_regs(out, n, &in->dst, nextVreg);
         break;
     case MACH_PUSH:
     case MACH_IDIV:
     case MACH_CQO:
-        r = regalloc_operand_reg(&in->dst, nextVreg); if (r >= 0) out[(*n)++] = r;  // FIX
+        push_reg_id(out, n, regalloc_operand_reg(&in->dst, nextVreg));
         break;
     default:
         if (regalloc_is_rmw(in->op)) {
-            r = regalloc_operand_reg(&in->dst, nextVreg); if (r >= 0) out[(*n)++] = r; // FIX
+            push_reg_id(out, n, regalloc_operand_reg(&in->dst, nextVreg));
         }
         break;
     }
 }
-/* =========================================================================
- * instr_implicit_uses / instr_implicit_defs
- * =========================================================================
- * ABI-mandated implicit reads and writes not visible in the explicit
- * operands. These are added to the interference graph as if they were
- * explicit uses/defs so that the allocator reserves the correct physical
- * registers at call sites and around IDIV/CQO.
- * ========================================================================= */
+
+
+static inline void append_caller_saved(int out[], int *n, int nextVreg) {
+    for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++)
+        out[(*n)++] = nextVreg + p;
+}
+
+static inline void append_rax_rdx(int out[], int *n, int nextVreg) {
+    out[(*n)++] = nextVreg + PHYS_RAX;
+    out[(*n)++] = nextVreg + PHYS_RDX;
+}
 
 void instr_implicit_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
     switch (in->op) {
     case MACH_IDIV:
         /* IDIV reads RDX:RAX as the dividend */
-        out[(*n)++] = nextVreg + PHYS_RAX;
-        out[(*n)++] = nextVreg + PHYS_RDX;
+        append_rax_rdx(out, n, nextVreg);
         break;
     case MACH_CQO:
         /* CQO sign-extends RAX into RDX:RAX; reads RAX */
@@ -104,8 +109,7 @@ void instr_implicit_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
         // modelled conservatively as reads too: the callee may read them
         // as incoming arguments, so they must be excluded from reuse
         // across the call regardless of direction
-        for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++)
-            out[(*n)++] = nextVreg + p;
+        append_caller_saved(out, n, nextVreg);
         break;
     case MACH_RET:
         /* RET reads the return value from RAX */
@@ -120,8 +124,7 @@ void instr_implicit_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
     switch (in->op) {
     case MACH_IDIV:
         /* IDIV writes quotient -> RAX, remainder -> RDX */
-        out[(*n)++] = nextVreg + PHYS_RAX;
-        out[(*n)++] = nextVreg + PHYS_RDX;
+        append_rax_rdx(out, n, nextVreg);
         break;
     case MACH_CQO:
         /* CQO writes the sign-extension into RDX */
@@ -129,16 +132,12 @@ void instr_implicit_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
         break;
     case MACH_CALL:
         /* CALL clobbers all caller-saved registers */
-        for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++)
-            out[(*n)++] = nextVreg + p;
+        append_caller_saved(out, n, nextVreg);
         break;
     default: break;
     }
 }
 
-/* =========================================================================
- * instr_defs — explicit register writes (wrapper around instr_def)
- * ========================================================================= */
 
 void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
@@ -147,17 +146,7 @@ void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
     if (id >= 0) out[(*n)++] = id;
 }
 
-/* =========================================================================
- * Instruction predicates for the register allocator
- * ========================================================================= */
 
-/**
- * @brief Return non-zero if @p op is a read-modify-write operation.
- *
- * RMW instructions read their `dst` operand before writing it (e.g.
- * `addq %rcx, %rax` reads and then writes RAX). The spill inserter uses
- * this to decide whether it must reload `dst` before emitting the instruction.
- */
 int regalloc_is_rmw(MachOpCode op) {
     switch (op) {
     // two-operand ALU ops where dst is both an input and the output
@@ -168,13 +157,6 @@ int regalloc_is_rmw(MachOpCode op) {
     }
 }
 
-/**
- * @brief Return non-zero if @p op is a SETcc instruction.
- *
- * SETcc writes into %al (PHYS_AL), which is an alias of RAX. The
- * interference-graph builder adds a constraint excluding RAX from any
- * vreg live across a SETcc to avoid aliasing conflicts.
- */
 int regalloc_is_setcc(MachOpCode op) {
     switch (op) {
     case MACH_SETE: case MACH_SETNE: case MACH_SETL:
@@ -184,13 +166,6 @@ int regalloc_is_setcc(MachOpCode op) {
     }
 }
 
-/**
- * @brief Return non-zero if @p op is a control-transfer instruction.
- *
- * Used by the spill inserter to invalidate the reload cache at basic-block
- * boundaries: after a jump or call, execution may have come from a different
- * predecessor, so cached reload temporaries from the current block are stale.
- */
 int regalloc_is_ctrl_transfer(MachOpCode op) {
     switch (op) {
     // any instruction that can transfer control away from the next
