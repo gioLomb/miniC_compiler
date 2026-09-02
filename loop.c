@@ -129,18 +129,6 @@ int loop_dominates(BitSet *Dom, int a, int b) {
     return bitset_test(&Dom[b], a);
 }
 
-/* =========================================================================
- * Loop body collection
- * =========================================================================
- *
- * Given a back-edge tail→header, the loop body is the set of all blocks
- * that can reach `tail` going backwards through the CFG without passing
- * through `header` (which is the only entry point of the loop).
- *
- * Algorithm: reverse-BFS starting from `tail`, treating `header` as already
- * visited so the BFS never crosses it.  Both `header` and `tail` are always
- * included in the body (header is the entry; tail is the back-edge source).
- * ========================================================================= */
 
 /**
  * @brief Collect the loop body for the back-edge tail→header via reverse BFS.

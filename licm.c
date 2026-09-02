@@ -124,13 +124,42 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
     return defCount;
 }
 
-/* =========================================================================
- * Phase 2 helpers — operand invariance queries
- * =========================================================================
- * Two predicates used by find_invariants to decide whether a source operand
- * is already known-invariant before the worklist processes the instruction
- * that defines it.
- * ========================================================================= */
+
+/**
+ * @brief Scan a single block's instruction range for a definition of @p op,
+ *        updating *foundIdx with the (last) matching definition's index.
+ *
+ * @param f          Function whose instrs[] is scanned.
+ * @param b          Block index to scan.
+ * @param op         Operand whose definition(s) we're looking for.
+ * @param invariant  Per-instruction "is this def loop-invariant" flags.
+ * @param foundIdx   In/out: updated to j for every matching definition found
+ *                   in this block (last match wins, consistent with the
+ *                   original single loop's behaviour).
+ * @return 0 to keep scanning the remaining blocks, or -1 if a matching
+ *         definition was found that is NOT marked invariant — the caller
+ *         must abort the whole search immediately in that case.
+ */
+static int scan_block_for_def(IRFunction *f, int b, Operand op,
+                               const char *invariant, int *foundIdx) {
+    for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
+        IRInstr *in = &f->instrs[j];
+        if (!ir_defines_dst(in->op)) continue;
+        if (in->dst.kind != op.kind) continue;
+
+        // match by kind-specific identity fields
+        if (op.kind == OPND_VAR &&
+            (in->dst.data.varLevel  != op.data.varLevel ||
+             in->dst.data.varOffset != op.data.varOffset)) continue;
+        if (op.kind == OPND_TEMP && in->dst.data.tempId != op.data.tempId) continue;
+
+        // definition found — it must itself be marked invariant
+        if (!invariant[j]) return -1;
+        *foundIdx = j;
+    }
+    return 0;
+}
+
 
 /**
  * @brief If @p op is defined exactly once in @p L, return that instruction
@@ -154,21 +183,7 @@ static int single_loop_def_invariant(IRFunction *f, Loop *L, Operand op,
     int found = -1;
     for (int i = 0; i < L->bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
-            IRInstr *in = &f->instrs[j];
-            if (!ir_defines_dst(in->op)) continue;
-            if (in->dst.kind != op.kind) continue;
-
-            // match by kind-specific identity fields
-            if (op.kind == OPND_VAR &&
-                (in->dst.data.varLevel  != op.data.varLevel ||
-                 in->dst.data.varOffset != op.data.varOffset)) continue;
-            if (op.kind == OPND_TEMP && in->dst.data.tempId != op.data.tempId) continue;
-
-            // definition found — it must itself be marked invariant
-            if (!invariant[j]) return -1;
-            found = j;
-        }
+        if (scan_block_for_def(f, b, op, invariant, &found) < 0) return -1;
     }
 
     return found;
@@ -211,22 +226,10 @@ static int src_is_invariant(IRFunction *f, Loop *L, Operand src,
     return 0;
 }
 
-/* =========================================================================
- * Phase 2 — Invariant detection via worklist
- * =========================================================================
- * Propagates invariance transitively through data-flow chains.
+/*
+ * Invariant detection via worklist
  *
- * Initial seed: every pure instruction in the loop body whose sources are
- * immediately invariant (constants or operands with defCount == 0) is
- * added to the worklist.  We also build a reverse map usedBy[id] = list of
- * instruction indices that use the operand with that id, so that when an
- * instruction is marked invariant we can quickly find all instructions that
- * may now become invariant too.
- *
- * Propagation: when instruction j is popped from the worklist and its
- * sources are all invariant, it is marked invariant and its destination's
- * usedBy list is added to the worklist for re-evaluation.
- * ========================================================================= */
+*/
 
 /** Historical name preserved: UsedByList is now just an IntVector. */
 typedef IntVector UsedByList;
@@ -237,6 +240,136 @@ typedef IntVector UsedByList;
 static void free_used_by(UsedByList *usedBy, int numVars) {
     for (int i = 0; i < numVars; i++)
         int_vector_free(&usedBy[i]);
+}
+
+/**
+ * @brief Allocate and zero-initialize a usedBy[] array of length numVars.
+ *
+ * usedBy[id] = list of instruction indices (in the loop) that read operand id.
+ */
+static UsedByList *alloc_used_by(int numVars) {
+    UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
+    if (!usedBy) abort();
+    for (int id = 0; id < numVars; id++) int_vector_init(&usedBy[id], 0);
+    return usedBy;
+}
+
+/**
+ * @brief Register instruction j as a user of both its source operands.
+ *
+ * For each source operand that resolves to a tracked var id, push
+ * instruction index j into usedBy[id], so propagate_worklist can later
+ * find and re-check this instruction once that id becomes invariant.
+ *
+ * @param vm      VarMap for id resolution.
+ * @param usedBy  Reverse-use map to update.
+ * @param in      Instruction being registered.
+ * @param j       Index of in inside f->instrs.
+ */
+static void register_src_uses(VarMap *vm, UsedByList *usedBy, IRInstr *in, int j) {
+    Operand srcs[2] = { in->src1, in->src2 };
+    for (int s = 0; s < 2; s++) {
+        int id = varmap_operand_id(vm, srcs[s]);
+        if (id >= 0) int_vector_push(&usedBy[id], j);
+    }
+}
+
+/**
+ * @brief Scan the loop body for pure, storage-defining instructions:
+ *        register each as a user of its source operands in usedBy[], and
+ *        enqueue it into worklist as a seed candidate (its sources may
+ *        already be invariant).
+ *
+ * @param f        IR function.
+ * @param L        Loop being analysed.
+ * @param vm       VarMap for id resolution.
+ * @param usedBy   Reverse-use map to populate (must already be allocated).
+ * @param worklist Output worklist, sized f->count by the caller.
+ * @return Number of instructions seeded into worklist (the new wTail).
+ */
+static int seed_worklist(IRFunction *f, Loop *L, VarMap *vm,
+                          UsedByList *usedBy, int *worklist) {
+    int wTail = 0;
+
+    for (int i = 0; i < L->bodyCount; i++) {
+        int b = L->body[i];
+        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
+            IRInstr *in = &f->instrs[j];
+
+            // only pure instructions that write a storage dst are candidates
+            if (!ir_is_pure(in->op) || !ir_defines_dst(in->op) ||
+                !ir_operand_is_storage(in->dst.kind)) continue;
+
+            // register this instruction as a user of its source operands
+            register_src_uses(vm, usedBy, in, j);
+
+            // immediately enqueue: sources may already be invariant
+            worklist[wTail++] = j;
+        }
+    }
+
+    return wTail;
+}
+
+/**
+ * @brief Push into worklist every not-yet-invariant instruction that uses
+ *        dstId, so it gets re-checked now that dstId is invariant.
+ *
+ * No-op if dstId is negative (operand not tracked).
+ *
+ * @param usedBy    Reverse-use map.
+ * @param dstId     Var id that just became invariant (-1 if none).
+ * @param worklist  Worklist array, grown in place.
+ * @param wTail     In/out cursor: current worklist length, advanced by
+ *                  the number of dependents pushed.
+ * @param invariant invariant[] flags, used to skip already-marked instrs.
+ */
+static void enqueue_dependents(const UsedByList *usedBy, int dstId,
+                                int *worklist, int *wTail, const char *invariant) {
+    if (dstId < 0) return;
+    for (int k = 0; k < usedBy[dstId].len; k++) {
+        int dep = usedBy[dstId].data[k];
+        if (!invariant[dep])
+            worklist[(*wTail)++] = dep;
+    }
+}
+
+/**
+ * @brief Propagate invariance to a fixed point: pop an instruction, check
+ *        that both its sources are invariant, mark it invariant, and
+ *        enqueue every instruction that uses its dst (they may now become
+ *        invariant too).
+ *
+ * @param usedBy   Reverse-use map built by seed_worklist.
+ * @param worklist Worklist array, sized f->count by the caller; grows in
+ *                 place as new dependents are pushed.
+ * @param wTail    Number of entries already seeded into worklist.
+ * @param invariant Output array of length f->count; invariant[j] is set
+ *                 to 1 for every loop-invariant instruction.
+ */
+static void propagate_worklist(IRFunction *f, Loop *L, VarMap *vm,
+                                const int *defCount, UsedByList *usedBy,
+                                int *worklist, int wTail, char *invariant) {
+    int wHead = 0;
+
+    while (wHead < wTail) {
+        int j = worklist[wHead++];
+        IRInstr *in = &f->instrs[j];
+
+        // both sources must be invariant for the instruction to be invariant
+        if (!src_is_invariant(f, L, in->src1, defCount, vm, invariant)) continue;
+        if (!src_is_invariant(f, L, in->src2, defCount, vm, invariant)) continue;
+
+        // already marked: nothing new to propagate
+        if (invariant[j]) continue;
+
+        invariant[j] = 1;
+
+        // notify all instructions that use this instruction's destination —
+        // they may now become invariant too
+        int dstId = varmap_operand_id(vm, in->dst);
+        enqueue_dependents(usedBy, dstId, worklist, &wTail, invariant);
+    }
 }
 
 /**
@@ -260,74 +393,18 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
                             char *invariant, Arena *arena) {
     int n = f->count;
 
-    // usedBy[id] = list of instruction indices (in the loop) that read operand id
-    UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
-    if (!usedBy) abort();
-    for (int id = 0; id < numVars; id++)
-        int_vector_init(&usedBy[id],0);
+    UsedByList *usedBy = alloc_used_by(numVars);
 
     /* worklist: dimensione massima nota, quindi arena */
     int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
-    int wHead = 0, wTail = 0;
 
-    // seed: scan the loop body for pure instructions and build usedBy
-    for (int i = 0; i < L->bodyCount; i++) {
-        int b = L->body[i];
-        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
-            IRInstr *in = &f->instrs[j];
-
-            // only pure instructions that write a storage dst are candidates
-            if (!ir_is_pure(in->op) || !ir_defines_dst(in->op) ||
-                !ir_operand_is_storage(in->dst.kind)) continue;
-
-            // register this instruction as a user of its source operands
-            Operand srcs[2] = { in->src1, in->src2 };
-            for (int s = 0; s < 2; s++) {
-                int id = varmap_operand_id(vm, srcs[s]);
-                if (id >= 0) int_vector_push(&usedBy[id], j);
-            }
-
-            // immediately enqueue: sources may already be invariant
-            worklist[wTail++] = j;
-        }
-    }
-
-    // propagate: pop an instruction, check sources, mark and propagate if invariant
-    while (wHead < wTail) {
-        int j = worklist[wHead++];
-        IRInstr *in = &f->instrs[j];
-
-        // both sources must be invariant for the instruction to be invariant
-        if (!src_is_invariant(f, L, in->src1, defCount, vm, invariant)) continue;
-        if (!src_is_invariant(f, L, in->src2, defCount, vm, invariant)) continue;
-
-        // already marked: nothing new to propagate
-        if (invariant[j]) continue;
-
-        invariant[j] = 1;
-
-        // notify all instructions that use this instruction's destination —
-        // they may now become invariant too
-        int dstId = varmap_operand_id(vm, in->dst);
-        if (dstId >= 0) {
-            for (int k = 0; k < usedBy[dstId].len; k++) {
-                int dep = usedBy[dstId].data[k];
-                if (!invariant[dep])
-                    worklist[wTail++] = dep;
-            }
-        }
-    }
+    int wTail = seed_worklist(f, L, vm, usedBy, worklist);
+    propagate_worklist(f, L, vm, defCount, usedBy, worklist, wTail, invariant);
 
     free_used_by(usedBy, numVars);
     free(usedBy);
 }
 
-/* =========================================================================
- * Phase 3 helpers — safety predicates
- * =========================================================================
- * An invariant instruction is safe to hoist only if moving it cannot change
- * the program's observable behaviour.  Two conditions must be verified.
- * ========================================================================= */
 
 /**
  * @brief Return non-zero if block @p blk dominates all exit blocks of @p L.
@@ -379,6 +456,158 @@ static inline int instr_block(IRFunction *f, int j) {
  * ========================================================================= */
 
 /**
+ * @brief Determine which loop-invariant instructions are safe to hoist.
+ *
+ * An invariant instruction j is safe when:
+ *   1. its containing block dominates all loop exits, and
+ *   2. its destination has exactly one definition in the loop and is not
+ *      live-in at the loop header.
+ *
+ * @param f         IR function.
+ * @param L         Loop being analysed.
+ * @param Dom       Dominator sets.
+ * @param invariant Per-instruction invariance flags.
+ * @param defCount  Per-id definition counts.
+ * @param vm        VarMap for id resolution.
+ * @param liv       Liveness result, queried for live-in at the header.
+ * @param header    Loop header block index.
+ * @param inBody    inBody[b] = 1 if block b belongs to the loop body (pre-filled by caller).
+ * @param doMove    Output: doMove[j] set to 1 for every instruction safe to hoist.
+ * @return          Number of instructions marked safe to hoist.
+ */
+static int mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
+                           const char *invariant, const int *defCount,
+                           VarMap *vm, LivenessResult *liv, int header,
+                           const char *inBody, char *doMove) {
+    int moved = 0;
+
+    for (int j = 0; j < f->count; j++) {
+        if (!invariant[j]) continue;
+
+        int blk = instr_block(f, j);
+        if (!inBody[blk]) continue;
+
+        // containing block must dominate all loop exits
+        if (!dominates_all_exits(L, Dom, blk)) continue;
+
+        // exactly one definition of the destination in the loop
+        int dstId = varmap_operand_id(vm, f->instrs[j].dst);
+        if (dstId < 0 || defCount[dstId] != 1) continue;
+
+        // destination must not be live-in at the header
+        // (otherwise an external predecessor of the header uses the old value)
+        if (bitset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
+
+        doMove[j] = 1;
+        moved++;
+    }
+
+    return moved;
+}
+
+/** @brief Result of compacting instrs into [prefix | hoisted | rest] layout. */
+typedef struct {
+    IRInstr *instrs;       // newly allocated, compacted instruction array
+    int      count;        // number of instructions in instrs
+    int      preHeaderMovedStart; // first index of the hoisted block (new pre-header body)
+    int      preHeaderMovedEnd;   // one-past-last index of the hoisted block
+} HoistLayout;
+
+/**
+ * @brief Rebuild the instruction array with hoisted instructions moved
+ *        right before the loop header, and fill oldToNew for remapping.
+ *
+ * Layout of the new array: [0, insertAt) unchanged prefix, then every
+ * instruction with doMove[j] set (this becomes the pre-header body), then
+ * every remaining instruction from [insertAt, nInstrs) in original order.
+ *
+ * @param f         IR function (source instrs, not yet modified).
+ * @param doMove    doMove[j] = 1 if instruction j must be hoisted.
+ * @param moved     Number of instructions with doMove[j] set (== count of 1s).
+ * @param insertAt  First instruction index of the loop header block.
+ * @param oldToNew  Output map, length f->count. Filled for EVERY j with
+ *                  doMove[j] == 0 (both the unchanged prefix and the
+ *                  surviving suffix); left untouched for hoisted j — callers
+ *                  must gate access on doMove[j], not on a sentinel value.
+ * @return Layout describing the new array and where the hoisted block sits.
+ */
+static HoistLayout compact_and_hoist(IRFunction *f, const char *doMove, int moved,
+                                      int insertAt, int *oldToNew) {
+    int nInstrs = f->count;
+    HoistLayout out;
+    out.instrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
+    out.count  = 0;
+
+    // --- part a: instructions before the loop header (unchanged position) ---
+    // FIX: oldToNew must be filled here too (identity map), not left at -1,
+    // otherwise remap_block_ranges mistakes "never written" for "hoisted".
+    for (int j = 0; j < insertAt; j++) {
+        oldToNew[j] = j;
+        out.instrs[out.count++] = f->instrs[j];
+    }
+
+    //  hoisted instructions that will form the pre-header body 
+    out.preHeaderMovedStart = out.count;
+    for (int j = 0; j < nInstrs; j++) {
+        if (doMove[j]) out.instrs[out.count++] = f->instrs[j];
+    }
+    out.preHeaderMovedEnd = out.count;
+
+    // remaining loop instructions (skipping moved ones) ---
+    for (int j = insertAt; j < nInstrs; j++) {
+        if (doMove[j]) continue; // already placed in part b
+        oldToNew[j] = out.count;
+        out.instrs[out.count++] = f->instrs[j];
+    }
+
+    return out;
+}
+
+/**
+ * @brief Rewrite block.start/end ranges to match the compacted instruction
+ *        array produced by compact_and_hoist.
+ *
+ * The pre-header block is special-cased: it now contains exactly the
+ * hoisted instructions ([preHeaderMovedStart, preHeaderMovedEnd)). Every other block's
+ * range is derived by mapping its old instructions through oldToNew and
+ * skipping the ones that were hoisted out of it; a block left with no
+ * surviving instructions becomes the empty range {0, 0}.
+ *
+ * @param f            IR function whose blocks[] are rewritten in place.
+ * @param oldToNew     Map from compact_and_hoist, valid for every j with
+ *                      doMove[j] == 0.
+ * @param doMove       doMove[j] = 1 if instruction j was hoisted.
+ * @param phIdx        Index of the pre-header block.
+ * @param preHeaderMovedStart First index of the hoisted block in the new array.
+ * @param preHeaderMovedEnd   One-past-last index of the hoisted block.
+ */
+static void remap_block_ranges(IRFunction *f, const int *oldToNew, const char *doMove,
+                                int phIdx, int preHeaderMovedStart, int preHeaderMovedEnd) {
+    for (int b = 0; b < f->blockCount; b++) {
+        if (b == phIdx) {
+            // pre-header now contains exactly the hoisted instructions
+            f->blocks[b].bb.range.start = preHeaderMovedStart;
+            f->blocks[b].bb.range.end   = preHeaderMovedEnd;
+            continue;
+        }
+
+        int oldS = f->blocks[b].bb.range.start, oldE = f->blocks[b].bb.range.end;
+        int newS = -1, newE = -1;
+
+        for (int j = oldS; j < oldE; j++) {
+            // FIX: gate on doMove (ground truth), not on oldToNew's sentinel —
+            // oldToNew is now fully populated for non-hoisted j anyway.
+            if (doMove[j]) continue; // this instruction was hoisted out of b
+            if (newS == -1) newS = oldToNew[j];
+            newE = oldToNew[j] + 1;
+        }
+
+        f->blocks[b].bb.range.start = (newS == -1) ? 0 : newS;
+        f->blocks[b].bb.range.end   = (newE == -1) ? 0 : newE;
+    }
+}
+
+/**
  * @brief Move safe loop-invariant instructions from the loop body to the
  *        pre-header.
  *
@@ -405,7 +634,6 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
                            VarMap *vm, LivenessResult *liv) {
     int nInstrs = f->count, nBlocks = f->blockCount;
     int header  = L->header, phIdx = L->preHeader;
-    int moved   = 0;
 
     Arena *localArena = arena_create(0);
 
@@ -418,85 +646,24 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     for (int i = 0; i < L->bodyCount; i++) inBody[L->body[i]] = 1;
 
-    // determine which invariant instructions are safe to hoist
-    for (int j = 0; j < nInstrs; j++) {
-        if (!invariant[j]) continue;
-
-        int blk = instr_block(f, j);
-        if (!inBody[blk]) continue;
-
-        // condition 1: containing block must dominate all loop exits
-        if (!dominates_all_exits(L, Dom, blk)) continue;
-
-        // condition 2a: exactly one definition of the destination in the loop
-        int dstId = varmap_operand_id(vm, f->instrs[j].dst);
-        if (dstId < 0 || defCount[dstId] != 1) continue;
-
-        // condition 2b: destination must not be live-in at the header
-        // (otherwise an external predecessor of the header uses the old value)
-        if (bitset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
-
-        doMove[j] = 1;
-        moved++;
-    }
-
+    int moved = mark_hoistable(f, L, Dom, invariant, defCount, vm, liv,
+                                header, inBody, doMove);
     if (!moved) { arena_destroy(localArena); return 0; }
 
     // insertAt: first instruction index of the loop header block —
     // hoisted instructions are placed in the pre-header just before it
     int insertAt = f->blocks[header].bb.range.start;
 
-    IRInstr *newInstrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
-    int newCount = 0;
-
-    // --- part a: instructions before the loop header (unchanged) ---
-    for (int j = 0; j < insertAt; j++)
-        newInstrs[newCount++] = f->instrs[j];
-
-    // --- part b: hoisted instructions → they will form the pre-header body ---
-    int phMovedStart = newCount;
-    for (int j = 0; j < nInstrs; j++) {
-        if (doMove[j]) newInstrs[newCount++] = f->instrs[j];
-    }
-    int phNewEnd = newCount;
-
-    // --- part c: remaining loop instructions (skipping moved ones) ---
-    // build oldToNew to remap block start/end indices after compaction
     int *oldToNew = arena_alloc(localArena, (size_t)nInstrs * sizeof(int));
-    memset(oldToNew, -1, nInstrs * sizeof(oldToNew[0]));
 
-    for (int j = insertAt; j < nInstrs; j++) {
-        if (doMove[j]) continue; // already placed in part b
-        oldToNew[j] = newCount;
-        newInstrs[newCount++] = f->instrs[j];
-    }
+    HoistLayout layout = compact_and_hoist(f, doMove, moved, insertAt, oldToNew);
 
     free(f->instrs);
-    f->instrs   = newInstrs;
-    f->count    = newCount;
-    f->capacity = newCount;
+    f->instrs   = layout.instrs;
+    f->count    = layout.count;
+    f->capacity = layout.count;
 
-    // rewrite block start/end for every block
-    for (int b = 0; b < nBlocks; b++) {
-        if (b == phIdx) {
-            // pre-header now contains exactly the hoisted instructions
-            f->blocks[b].bb.range.start = phMovedStart;
-            f->blocks[b].bb.range.end   = phNewEnd;
-            continue;
-        }
-
-        int oldS = f->blocks[b].bb.range.start, oldE = f->blocks[b].bb.range.end;
-        int newS = -1, newE = -1;
-
-        for (int j = oldS; j < oldE; j++) {
-            if (oldToNew[j] == -1) continue; // this instruction was hoisted
-            if (newS == -1) newS = oldToNew[j];
-            newE = oldToNew[j] + 1;
-        }
-
-        f->blocks[b].bb.range.start = (newS == -1) ? 0 : newS;
-        f->blocks[b].bb.range.end   = (newE == -1) ? 0 : newE;
-    }
+    remap_block_ranges(f, oldToNew, doMove, phIdx, layout.preHeaderMovedStart, layout.preHeaderMovedEnd);
 
     f->curBlockStart = 0;
     arena_destroy(localArena);
