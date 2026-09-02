@@ -13,9 +13,11 @@
 
 #define IR_INITIAL_CAPACITY 64  /**< Initial instrs[] capacity for a fresh IRFunction. */
 
-/* =========================================================================
- * Instruction opcodes
- * ========================================================================= */
+// packs up to 2 operator characters into one 16-bit key for O(1) switch
+// dispatch instead of strcmp chains
+#define KEY_AND 0x2626
+#define KEY_OR  0x7C7C
+#define KEY_NOT 0x2100
 
 /**
  * @brief Three-address IR opcode set.
@@ -47,9 +49,6 @@ typedef enum {
     IR_GOTO, IR_IF_FALSE, IR_LABEL,
 } IROp;
 
-/* =========================================================================
- * Operand kinds
- * ========================================================================= */
 
 /**
  * @brief Discriminant for the Operand union.
@@ -67,9 +66,6 @@ typedef enum {
     OPND_FUNC
 } OperandKind;
 
-/* =========================================================================
- * Operand
- * ========================================================================= */
 
 /**
  * @brief Tagged union representing one IR value: variable, temp, constant,
@@ -92,9 +88,6 @@ typedef struct {
     } data;
 } Operand;
 
-/* =========================================================================
- * Instruction
- * ========================================================================= */
 
 /**
  * @brief One three-address IR instruction.
@@ -105,9 +98,6 @@ typedef struct {
     int     loopDepth;  /**< Static loop nesting depth at the point this instruction was emitted. */
 } IRInstr;
 
-/* =========================================================================
- * Basic block (IR level)
- * ========================================================================= */
 
 /**
  * @brief IR-level basic block: generic BasicBlock range plus predecessor count.
@@ -117,9 +107,6 @@ typedef struct {
     int        predCount;  /**< Number of CFG edges targeting this block. */
 } IRBlock;
 
-/* =========================================================================
- * Function
- * ========================================================================= */
 
 /**
  * @brief One compiled IR function: flat instruction array, block list, and
@@ -140,18 +127,10 @@ typedef struct {
     int *labelToBlock;       /**< labelToBlock[labelId - labelBase] = block index containing that label; -1 if unresolved. */
     int  labelToBlockCap;    /**< Allocated capacity of labelToBlock. */
 
-    /* Formal-parameter operands (OPND_VAR), in declaration order.
-     * Populated by ir_buildFunction() so instr_selector.c can emit, right
-     * after the prologue, the MOVs binding ABI registers (rdi/rsi/...) to
-     * the matching vregs — otherwise parameters would never receive their
-     * value on function entry. */
-    Operand *params;
-    int      paramCount;
+    Operand *params;    /**< Formal-parameter operands (OPND_VAR), in declaration order. Populated by ir_buildFunction() for the ABI-register binding MOVs emitted right after the prologue. */
+    int      paramCount; /**< Number of entries in params. */
 } IRFunction;
 
-/* =========================================================================
- * Global variable descriptor
- * ========================================================================= */
 
 /**
  * @brief Descriptor for one global variable or array emitted to .data/.bss.
@@ -166,9 +145,6 @@ typedef struct {
     int      initCount;   /**< Number of entries in initVals (0 = goes to .bss). */
 } IRGlobalVar;
 
-/* =========================================================================
- * Program
- * ========================================================================= */
 
 /**
  * @brief Top-level compiled program: all functions plus all global variables.
@@ -183,9 +159,30 @@ typedef struct {
     int          globalCap;
 } IRProgram;
 
-/* =========================================================================
- * Public API
- * ========================================================================= */
+
+/**
+ * @brief Compressed-sparse-row predecessor list for a function's CFG.
+ *
+ * Built once in O(nBlocks) and shared by every pass that needs to walk a
+ * block's incoming edges repeatedly (loop.c dominator/loop-body computation,
+ * cp.c forward dataflow). Replaces the previous pattern of each pass
+ * independently scanning every block's succ[] to find the predecessors of
+ * a given block, which cost O(nBlocks^2) per fixed-point iteration.
+ *
+ * For block b, its predecessors are:
+ *   predData[predStart[b] .. predStart[b] + predCount[b] - 1]
+ *
+ * @note This is a derived, read-only, single-direction (backward) view of
+ *       succ[]. It must be rebuilt whenever succ[] changes (e.g. after CP's
+ *       CFG pruning or loop_build_pre_header()'s edge rerouting) — it is
+ *       not a substitute for succ[], only a cache of the reverse edges.
+ */
+typedef struct {
+    int *predStart;  /**< predStart[b]: offset into predData for block b. */
+    int *predCount;  /**< predCount[b]: number of predecessors of block b. */
+    int *predData;   /**< Flat array of all predecessor block indices, CSR-packed. */
+} PredList;
+
 
 /**
  * @brief Translate a full AST program into an IRProgram.
@@ -221,12 +218,7 @@ int ir_is_pure(IROp op);
  */
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks);
 
-// /**
-//  * @brief Construct the canonical "no operand" value (OPND_NONE).
-//  *
-//  * @return An Operand with kind == OPND_NONE.
-//  */
-// Operand no_operand(void);
+
 
 /**
  * @brief Print a human-readable dump of @p prog (globals + per-function instructions) to stdout.
@@ -274,32 +266,6 @@ int ir_operand_is_storage(OperandKind kind);
  */
 int ir_is_commutative(IROp op);
 
-/* =========================================================================
- * Predecessor list (CSR-style)
- * ========================================================================= */
-
-/**
- * @brief Compressed-sparse-row predecessor list for a function's CFG.
- *
- * Built once in O(nBlocks) and shared by every pass that needs to walk a
- * block's incoming edges repeatedly (loop.c dominator/loop-body computation,
- * cp.c forward dataflow). Replaces the previous pattern of each pass
- * independently scanning every block's succ[] to find the predecessors of
- * a given block, which cost O(nBlocks^2) per fixed-point iteration.
- *
- * For block b, its predecessors are:
- *   predData[predStart[b] .. predStart[b] + predCount[b] - 1]
- *
- * @note This is a derived, read-only, single-direction (backward) view of
- *       succ[]. It must be rebuilt whenever succ[] changes (e.g. after CP's
- *       CFG pruning or loop_build_pre_header()'s edge rerouting) — it is
- *       not a substitute for succ[], only a cache of the reverse edges.
- */
-typedef struct {
-    int *predStart;  /**< predStart[b]: offset into predData for block b. */
-    int *predCount;  /**< predCount[b]: number of predecessors of block b. */
-    int *predData;   /**< Flat array of all predecessor block indices, CSR-packed. */
-} PredList;
 
 /**
  * @brief Build a CSR predecessor list for every block in @p f.

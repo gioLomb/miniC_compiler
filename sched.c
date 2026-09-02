@@ -154,7 +154,7 @@ static int emit_pinned_headers(const MachInstr *src, int instrCount,
                                 DAGNode *nodes, MachInstr *result) {
     int rCount = 0;
     for (int i = 0; i < instrCount; i++) {
-        MachOp op = src[i].op;
+        MachOpCode op = src[i].op;
         if (op != MACH_LABEL && op != MACH_FUNC_BEGIN) continue;
         result[rCount++]   = src[i];
         nodes[i].scheduled = 1;

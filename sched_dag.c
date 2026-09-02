@@ -164,7 +164,7 @@ static void track_write(RenameTracker *rt, DAGNode *nodes, Arena *arena, int j, 
 static void dag_init_nodes(const MachFunction *f, BlockRange blk,
                             DAGNode *nodes, int n) {
     for (int i = 0; i < n; i++) {
-        MachOp op  = f->instrs[blk.start + i].op;
+        MachOpCode op  = f->instrs[blk.start + i].op;
         int    lat = sched_latency_of(op);
         nodes[i] = (DAGNode){ .instrIdx = blk.start + i, .latency = lat, .height = lat };
     }

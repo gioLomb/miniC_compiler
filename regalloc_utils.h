@@ -151,7 +151,7 @@ void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n);
  * @param op  Machine opcode to test.
  * @return    1 if the destination is both read and written, 0 otherwise.
  */
-int regalloc_is_rmw(MachOp op);
+int regalloc_is_rmw(MachOpCode op);
 
 /**
  * @brief Return non-zero if @p op is a SETcc opcode.
@@ -164,7 +164,7 @@ int regalloc_is_rmw(MachOp op);
  * @param op  Machine opcode to test.
  * @return    1 if @p op is one of SETE/SETNE/SETL/SETLE/SETG/SETGE, 0 otherwise.
  */
-int regalloc_is_setcc(MachOp op);
+int regalloc_is_setcc(MachOpCode op);
 
 /**
  * @brief Return non-zero if @p op transfers control flow.
@@ -177,6 +177,6 @@ int regalloc_is_setcc(MachOp op);
  * @return    1 if @p op is a conditional branch, unconditional jump, call, or
  *            return; 0 otherwise.
  */
-int regalloc_is_ctrl_transfer(MachOp op);
+int regalloc_is_ctrl_transfer(MachOpCode op);
 
 #endif /* REGALLOC_UTILS_H */

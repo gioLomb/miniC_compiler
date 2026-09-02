@@ -4,13 +4,6 @@
 #include "interference.h"
 #include "regalloc_utils.h"
 
-/* =========================================================================
- * Triangular matrix helpers
- * =========================================================================
- * The interference matrix stores one bit per unordered pair {i, j} with i≠j.
- * Pairs are mapped to a flat index using the lower-triangular formula so only
- * n*(n-1)/2 bits are needed instead of the full n*n square matrix.
- * ========================================================================= */
 
 /**
  * @brief Map the unordered pair (i, j) to its flat lower-triangular index.
@@ -72,74 +65,165 @@ void ig_free(IGraph *g) {
     if (!g || !g->adj) return;
     // only the IntVector backing arrays are heap-allocated; fixed-size arrays
     // are in the caller's arena and must not be freed individually
-    for (int i = 0; i < g->n; i++)
-        int_vector_free(&g->adj[i]);
+    for (int i = 0; i < g->n; i++) int_vector_free(&g->adj[i]);
+}
+
+
+/* =========================================================================
+ * ig_build — helpers (allocation, precoloring, per-instruction processing)
+ * ========================================================================= */
+
+/**
+ * @brief Allocate and default-initialise every parallel array of @p g.
+ *
+ * Sets g->n and allocates matrix/adj/degree/color/active/excl/spillCost/
+ * crossesCall/isReloadTemp from @p arena, applying the same defaults
+ * ig_build() used inline before this refactor (color = -1, active = true,
+ * everything else zeroed).
+ */
+static void ig_alloc_storage(IGraph *g, int totalNodes, Arena *arena) {
+    g->n = totalNodes;
+
+    // triangular bit matrix: n*(n-1)/2 bits, +1 word safety margin
+    long   nbits       = (long)totalNodes * (totalNodes - 1) / 2;
+    size_t matrixWords = (size_t)((nbits + 63) / 64 + 1);
+    g->matrix = arena_alloc(arena, matrixWords * sizeof(uint64_t));
+    memset(g->matrix, 0, matrixWords * sizeof(uint64_t));
+
+    // adjacency list headers (arena); backing arrays heap-allocated by IntVector
+    g->adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
+    for (int i = 0; i < totalNodes; i++)
+        int_vector_init(&g->adj[i], IG_ADJ_INITIAL_CAPACITY);
+
+    // parallel metadata arrays
+    g->degree       = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g->color        = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g->active       = arena_alloc(arena, (size_t)totalNodes * sizeof(bool));
+    g->excl         = arena_alloc(arena, (size_t)totalNodes * sizeof(uint32_t));
+    g->spillCost    = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
+    g->crossesCall  = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
+    g->isReloadTemp = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
+
+    memset(g->degree,       0, (size_t)totalNodes * sizeof(int));
+    memset(g->excl,         0, (size_t)totalNodes * sizeof(uint32_t));
+    memset(g->spillCost,    0, (size_t)totalNodes * sizeof(int));
+    memset(g->crossesCall,  0, (size_t)totalNodes * sizeof(char));
+    memset(g->isReloadTemp, 0, (size_t)totalNodes * sizeof(char));
+
+    // color = -1 (uncoloured): 0xFF fills every byte, which is -1 in two's complement
+    memset(g->color,  0xFF, (size_t)totalNodes * sizeof(int));
+    // active = true: sizeof(bool)==1, so memset with 1 is correct
+    memset(g->active, 1,    (size_t)totalNodes * sizeof(bool));
+}
+
+/**
+ * @brief Flag every vreg in [firstSpillVreg, nextVreg) as a reload/spill temp.
+ *
+ * Clamps firstSpillVreg defensively so a caller passing a negative or
+ * stale value never corrupts the loop bounds (see interference.h doc).
+ */
+static void ig_mark_reload_temps(IGraph *g, int firstSpillVreg, int nextVreg) {
+    if (firstSpillVreg >= nextVreg) return;
+    int from = firstSpillVreg < 0 ? 0 : firstSpillVreg;
+    for (int v = from; v < nextVreg; v++) g->isReloadTemp[v] = 1;
+}
+
+/**
+ * @brief Pre-colour every physical-register node: color[nextVreg+p] = p.
+ */
+static void ig_precolor_physicals(IGraph *g, int nextVreg) {
+    for (int p = 0; p < PHYS_ALLOCATABLE; p++)
+        g->color[nextVreg + p] = p;
+}
+
+/**
+ * @brief Add @p in's loop-depth-weighted spill cost to every vreg it uses or defines.
+ *
+ * @param tmpArr Scratch array (capacity LIVENESS_MAX_IDS), reused by the caller
+ *               across instructions to avoid a stack allocation per call.
+ */
+static void ig_accumulate_spill_cost(IGraph *g, const MachInstr *in,
+                                      int nextVreg, int *tmpArr) {
+    int w = regalloc_spill_weight(in->loopDepth);
+    int n;
+
+    instr_uses(in, nextVreg, tmpArr, &n);
+    for (int k = 0; k < n; k++)
+        if (tmpArr[k] < nextVreg) g->spillCost[tmpArr[k]] += w;
+
+    instr_defs(in, nextVreg, tmpArr, &n);
+    for (int k = 0; k < n; k++)
+        if (tmpArr[k] < nextVreg) g->spillCost[tmpArr[k]] += w;
+}
+
+/**
+ * @brief Add interference edges between every register @p in defines
+ *        (explicit + implicit) and every register live after @p in.
+ *
+ * Liveness rule: a register defined at instruction i interferes with
+ * every register live immediately after i, since both must occupy
+ * distinct physical locations at the moment i commits its result.
+ */
+static void ig_add_definition_edges(IGraph *g, const MachInstr *in,
+                                     int nextVreg, const LiveSet *liveAfterInstr) {
+    int defs[MAX_EXPLICIT_DEFS], nd, idefs[LIVENESS_MAX_IDS], nid;
+    instr_defs(in, nextVreg, defs, &nd);
+    instr_implicit_defs(in, nextVreg, idefs, &nid);   // e.g. CALL clobbers RAX
+
+    int id;
+    for (int d = 0; d < nd; d++)
+        for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
+            ig_add_edge(g, defs[d], id);
+
+    for (int d = 0; d < nid; d++)
+        for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
+            ig_add_edge(g, idefs[d], id);
+}
+
+/**
+ * @brief Apply excl[]/crossesCall[] constraints implied by @p in's opcode.
+ *
+ * Covers the three sources of forbidden colours beyond plain interference
+ * edges: CALL (all caller-saved forbidden + crossesCall flag), IDIV/CQO
+ * (RAX/RDX forbidden), SETcc (RAX forbidden — writes %al).
+ */
+static void ig_apply_constraint_masks(IGraph *g, const MachInstr *in,
+                                       int nextVreg, const LiveSet *liveAfterInstr) {
+    int id;
+
+    if (in->op == MACH_CALL) {
+        for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); ) {
+            if (id < nextVreg) {
+                g->excl[id] |= ((1U << PHYS_CALLER_SAVED_COUNT) - 1);
+                g->crossesCall[id] = 1;
+            }
+        }
+    } else if (in->op == MACH_IDIV || in->op == MACH_CQO) {
+        uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
+        for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
+            if (id < nextVreg) g->excl[id] |= mask;
+    } else if (regalloc_is_setcc(in->op)) {
+        uint32_t mask = (1U << PHYS_RAX);
+        for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
+            if (id < nextVreg) g->excl[id] |= mask;
+    }
 }
 
 /* =========================================================================
- * ig_build — main graph construction
+ * ig_build — main graph construction (orchestration only)
  * ========================================================================= */
 
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
                 int nextVreg, const LiveSet *liveAfter, int firstSpillVreg,
                 Arena *arena) {
 
-    // total node count: virtual registers + one node per allocatable physical reg
     int totalNodes = nextVreg + PHYS_ALLOCATABLE;
 
     IGraph g;
-    g.n = totalNodes;
+    ig_alloc_storage(&g, totalNodes, arena);
+    ig_precolor_physicals(&g, nextVreg);
+    ig_mark_reload_temps(&g, firstSpillVreg, nextVreg);
 
-    /* --- Triangular bit matrix ------------------------------------------ */
-    // need n*(n-1)/2 bits for all unordered pairs with i>j; +1 word safety margin
-    long   nbits       = (long)totalNodes * (totalNodes - 1) / 2;
-    size_t matrixWords = (size_t)((nbits + 63) / 64 + 1);
-    g.matrix = arena_alloc(arena, matrixWords * sizeof(uint64_t));
-    memset(g.matrix, 0, matrixWords * sizeof(uint64_t));
-
-    /* --- Adjacency lists ------------------------------------------------- */
-    // headers are arena-allocated; backing data arrays are heap-allocated by IntVector
-    g.adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
-    for (int i = 0; i < totalNodes; i++)
-        int_vector_init(&g.adj[i], IG_ADJ_INITIAL_CAPACITY);
-
-    /* --- Parallel metadata arrays --------------------------------------- */
-    g.degree        = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.color         = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.active        = arena_alloc(arena, (size_t)totalNodes * sizeof(bool));
-    g.excl          = arena_alloc(arena, (size_t)totalNodes * sizeof(uint32_t));
-    g.spillCost     = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
-    g.crossesCall   = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
-    g.isReloadTemp  = arena_alloc(arena, (size_t)totalNodes * sizeof(char));
-
-    memset(g.degree,       0,    (size_t)totalNodes * sizeof(int));
-    memset(g.excl,         0,    (size_t)totalNodes * sizeof(uint32_t));
-    memset(g.spillCost,    0,    (size_t)totalNodes * sizeof(int));
-    memset(g.crossesCall,  0,    (size_t)totalNodes * sizeof(char));
-    memset(g.isReloadTemp, 0,    (size_t)totalNodes * sizeof(char));
-
-    // color = -1 (uncoloured): 0xFF fills every byte, which is -1 in two's complement
-    memset(g.color,  0xFF, (size_t)totalNodes * sizeof(int));
-    // active = true: sizeof(bool)==1, so memset with 1 is correct
-    memset(g.active, 1,    (size_t)totalNodes * sizeof(bool));
-
-    /* --- Reload-temp flag -------------------------------------------------
-     * Every vreg id in [firstSpillVreg, nextVreg) was introduced by a
-     * previous ra_spill_insert() round (see interference.h module doc).
-     * Clamp the lower bound so a caller passing firstSpillVreg < 0 (or a
-     * stale value larger than nextVreg) never corrupts the loop bounds. */
-    if (firstSpillVreg < nextVreg) {
-        int from = firstSpillVreg < 0 ? 0 : firstSpillVreg;
-        for (int v = from; v < nextVreg; v++) g.isReloadTemp[v] = 1;
-    }
-
-    /* --- Pre-colour physical registers ---------------------------------- */
-    // physical regs occupy node ids [nextVreg, nextVreg + PHYS_ALLOCATABLE)
-    // their colour equals their physical index (0..PHYS_ALLOCATABLE-1)
-    for (int p = 0; p < PHYS_ALLOCATABLE; p++)
-        g.color[nextVreg + p] = p;
-
-    /* --- Edge construction + metadata accumulation ---------------------- */
     // scratch array reused across instructions to hold extracted def/use ids
     int tmpArr[LIVENESS_MAX_IDS];
 
@@ -147,75 +231,9 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
         for (int i = blocks[b].range.start; i < blocks[b].range.end; i++) {
             const MachInstr *in = &f->instrs[i];
 
-            // spill cost weight: 10^loopDepth so hot-loop variables resist spilling
-            int w = regalloc_spill_weight(in->loopDepth);
-
-            // accumulate spill cost for every explicit use at this instruction
-            int n;
-            instr_uses(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++)
-                if (tmpArr[k] < nextVreg) g.spillCost[tmpArr[k]] += w;
-
-            // accumulate spill cost for every explicit def at this instruction
-            instr_defs(in, nextVreg, tmpArr, &n);
-            for (int k = 0; k < n; k++)
-                if (tmpArr[k] < nextVreg) g.spillCost[tmpArr[k]] += w;
-
-            /* --- Interference edges from explicit and implicit defs --- */
-            // liveness rule: every register defined at instruction i interferes
-            // with every register live immediately after i, because both must
-            // occupy distinct physical locations at the moment i commits its result
-            int defs[MAX_EXPLICIT_DEFS], nd, idefs[LIVENESS_MAX_IDS], nid;
-            instr_defs(in, nextVreg, defs, &nd);
-            instr_implicit_defs(in, nextVreg, idefs, &nid);   // e.g. CALL clobbers RAX
-
-            int id;
-
-            // edges for explicit defs (e.g. destination of MOV, ADD, …)
-            for (int d = 0; d < nd; d++) {
-                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
-                     LIVESET_NEXT(&it, &id); )
-                    ig_add_edge(&g, defs[d], id);
-            }
-
-            // edges for implicit defs (ABI side effects not in explicit operands)
-            for (int d = 0; d < nid; d++) {
-                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
-                     LIVESET_NEXT(&it, &id); )
-                    ig_add_edge(&g, idefs[d], id);
-            }
-
-            /* --- Constraint masks for special instructions ------------- */
-
-            if (in->op == MACH_CALL) {
-                // CALL clobbers all caller-saved registers; any vreg live
-                // across the call must not be assigned to one of them
-                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
-                     LIVESET_NEXT(&it, &id); ) {
-                    if (id < nextVreg) {
-                        // forbid all caller-saved colours (indices 0..PHYS_CALLER_SAVED_COUNT-1)
-                        g.excl[id] |= ((1U << PHYS_CALLER_SAVED_COUNT) - 1);
-                        // flag for colour selector: prefer callee-saved to avoid push/pop
-                        g.crossesCall[id] = 1;
-                    }
-                }
-
-            } else if (in->op == MACH_IDIV || in->op == MACH_CQO) {
-                // IDIV reads and writes RAX (quotient) and RDX (remainder);
-                // any vreg live across this must avoid both physical registers
-                uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
-                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
-                     LIVESET_NEXT(&it, &id); )
-                    if (id < nextVreg) g.excl[id] |= mask;
-
-            } else if (regalloc_is_setcc(in->op)) {
-                // SETcc writes %al (low byte of RAX); a vreg in RAX would alias
-                // the 1-byte result and corrupt it when widened — exclude RAX
-                uint32_t mask = (1U << PHYS_RAX);
-                for (LiveSetIter it = LIVESET_ITER(&liveAfter[i]);
-                     LIVESET_NEXT(&it, &id); )
-                    if (id < nextVreg) g.excl[id] |= mask;
-            }
+            ig_accumulate_spill_cost(&g, in, nextVreg, tmpArr);
+            ig_add_definition_edges(&g, in, nextVreg, &liveAfter[i]);
+            ig_apply_constraint_masks(&g, in, nextVreg, &liveAfter[i]);
         }
     }
 

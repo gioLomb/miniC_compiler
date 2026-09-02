@@ -66,7 +66,7 @@
  * @param op  Machine opcode to query.
  * @return    Estimated latency in cycles (≥ 0).
  */
-static inline int sched_latency_of(MachOp op) {
+static inline int sched_latency_of(MachOpCode op) {
     switch (op) {
     case MACH_ADD: case MACH_SUB: case MACH_NEG: case MACH_NOT:
     case MACH_XOR:  return 1;
@@ -108,7 +108,7 @@ static inline int sched_latency_of(MachOp op) {
  * @param op  Opcode to test.
  * @return    1 if the instruction cannot be reordered, 0 otherwise.
  */
-static inline int sched_is_pinned(MachOp op) {
+static inline int sched_is_pinned(MachOpCode op) {
     switch (op) {
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
     case MACH_JMP:
@@ -134,7 +134,7 @@ static inline int sched_is_pinned(MachOp op) {
  * @return    1 if serialisation with other side-effecting instructions is
  *            required, 0 otherwise.
  */
-static inline int sched_has_side_effect(MachOp op) {
+static inline int sched_has_side_effect(MachOpCode op) {
     switch (op) {
     case MACH_STORE: case MACH_PUSH: case MACH_POP:
     case MACH_CALL:  case MACH_IDIV: case MACH_CQO: return 1;
@@ -153,7 +153,7 @@ static inline int sched_has_side_effect(MachOp op) {
  * @param op  Opcode to test.
  * @return    1 for JE, JNE, JL, JLE, JG, JGE; 0 otherwise.
  */
-static inline int sched_is_jcc(MachOp op) {
+static inline int sched_is_jcc(MachOpCode op) {
     switch (op) {
     case MACH_JE: case MACH_JNE:
     case MACH_JL: case MACH_JLE:
@@ -170,7 +170,7 @@ static inline int sched_is_jcc(MachOp op) {
  * @param op  Opcode to test.
  * @return    1 for MACH_CMP and MACH_TEST; 0 otherwise.
  */
-static inline int sched_is_cmp_or_test(MachOp op) {
+static inline int sched_is_cmp_or_test(MachOpCode op) {
     return op == MACH_CMP || op == MACH_TEST;
 }
 

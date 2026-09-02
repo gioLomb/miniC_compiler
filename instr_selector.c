@@ -10,10 +10,6 @@
 #include "instr_selector.h"
 #include "varmap.h"
 
-/* =========================================================================
- * Physical register name table
- * ========================================================================= */
-
 // indexed by MachPhysReg enum value; last entry ("%al") is the 8-bit
 // alias of PHYS_RAX, used only when printing SETcc destinations
 static const char *phys_name64[] = {
@@ -22,160 +18,6 @@ static const char *phys_name64[] = {
     "%rbx", "%r12", "%r13", "%r14", "%r15",
     "%rbp", "%rsp", "%al"
 };
-
-/* =========================================================================
- * Loop-depth tracking
- * ========================================================================= */
-
-// mirrors IRInstr.loopDepth: copied onto every MachInstr emitted so the
-// register allocator's spill-cost heuristic (10^loopDepth) survives
-// lowering from IR to machine code
-static int g_curLoopDepth = 0;
-
-/* =========================================================================
- * MachFunction helpers
- * ========================================================================= */
-
-static MachFunction *mfunc_create(const char *name) {
-    MachFunction *f = calloc(1, sizeof(MachFunction));
-    f->name     = name;
-    f->capacity = 64;
-    f->instrs   = malloc((size_t)f->capacity * sizeof(MachInstr));
-    f->nextVreg = 0;
-    return f;
-}
-
-static inline void mfunc_emit(MachFunction *f, MachOp op,
-                               MachOperand dst, MachOperand src1, MachOperand src2) {
-    // standard doubling growth for the instruction array
-    if (f->count == f->capacity) {
-        f->capacity *= 2;
-        f->instrs = realloc(f->instrs, (size_t)f->capacity * sizeof(MachInstr));
-    }
-    f->instrs[f->count++] = (MachInstr){
-        .op        = op,
-        .dst       = dst,
-        .src1      = src1,
-        .src2      = src2,
-        .scale     = 8,               // default element size for future MO_MEM use
-        .loopDepth = g_curLoopDepth,  // stamp current static loop nesting
-    };
-}
-
-static inline int mfunc_new_vreg(MachFunction *f) { return f->nextVreg++; }
-
-/* =========================================================================
- * VarMap bridge
- * ========================================================================= */
-
-// thin rename: VarMap ids double as vreg ids in this backend (1:1 mapping,
-// no separate allocation step needed)
-static inline int operand_to_vreg(const Operand *op, VarMap *vm) {
-    return varmap_operand_id(vm, *op);
-}
-
-/**
- * @brief Materialise an IR operand into a vreg, emitting a load if it is
- *        a literal constant.
- *
- * Unlike operand_to_mach(), this ALWAYS returns a vreg id (never an
- * immediate MachOperand). Used where the target machine instruction has
- * no immediate-operand form (e.g. IDIV divisor, PUSH source) and the
- * value must sit in a register regardless of how it was expressed in IR.
- */
-static int load_operand(const Operand *op, VarMap *vm, MachFunction *f) {
-    switch (op->kind) {
-    case OPND_VAR:
-    case OPND_TEMP:
-        // already a storage location: just resolve its vreg id
-        return operand_to_vreg(op, vm);
-    case OPND_CONST_INT: {
-        // materialise the constant with a MOV into a fresh vreg
-        int dst = mfunc_new_vreg(f);
-        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = op->data.intVal }, (MachOperand){ .kind = MO_NONE });
-        return dst;
-    }
-    case OPND_CONST_FLOAT: {
-        // float constants are moved as their raw bit pattern (no SSE support
-        // in this backend); reinterpret via union to avoid UB from casting
-        // float->long directly, which would convert the VALUE not the bits
-        int dst = mfunc_new_vreg(f);
-        union { float fl; int i; } u; u.fl = op->data.floatVal;
-        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = u.i }, (MachOperand){ .kind = MO_NONE });
-        return dst;
-    }
-    default: return -1; // labels/functions/none: not a loadable value
-    }
-}
-
-/**
- * @brief Convert an IR operand directly to a MachOperand, WITHOUT forcing
- *        constants into a register.
- *
- * Used wherever the target instruction accepts an immediate operand
- * (ADD/SUB/CMP/MOV second operand, etc.), avoiding a redundant MOV that
- * load_operand() would otherwise emit.
- */
-static inline MachOperand operand_to_mach(const Operand *op, VarMap *vm,
-                                           MachFunction *mf) {
-    (void)mf;
-    switch (op->kind) {
-    case OPND_CONST_INT:   return (MachOperand){ .kind = MO_IMM, .imm = op->data.intVal };
-    case OPND_CONST_FLOAT: {
-        // same bit-reinterpretation trick as load_operand()
-        union { float f; int i; } u; u.f = op->data.floatVal;
-        return (MachOperand){ .kind = MO_IMM, .imm = u.i };
-    }
-    case OPND_VAR:
-    case OPND_TEMP:        return (MachOperand){ .kind = MO_VREG, .vregId = operand_to_vreg(op, vm) };
-    default:               return (MachOperand){ .kind = MO_NONE };
-    }
-}
-
-/* =========================================================================
- * Global name lookup — unica funzione rimasta per globali.
- * Serve solo nel case IR_GLOBAL_ADDR per risolvere symOffset -> nome simbolo.
- * ========================================================================= */
-
-// linear scan: globalCount is small (typically a handful of top-level
-// declarations), so an O(1) map would be overkill here
-static int find_global_idx(int symOff,
-                            const IRGlobalVar *globals, int globalCount) {
-    for (int i = 0; i < globalCount; i++)
-        if (globals[i].symOffset == symOff) return i;
-    return -1;
-}
-
-/* =========================================================================
- * Comparison helpers
- * ========================================================================= */
-
-/**
- * @brief Swap the sense of a relational operator (a OP b  ->  b OP' a).
- *
- * Needed when the CMP's left-hand operand turns out to be an immediate
- * (x86 CMP cannot take an immediate as its first/destination-like operand
- * in this backend's encoding), so the operands are swapped and the
- * comparison flipped to preserve the original truth value.
- */
-static inline IROp flip_cmp(IROp op) {
-    switch (op) {
-    case IR_LT: return IR_GT; case IR_GT: return IR_LT;
-    case IR_LE: return IR_GE; case IR_GE: return IR_LE;
-    default:    return op; // EQ/NE are symmetric: no flip needed
-    }
-}
-
-// maps an IR comparison opcode to the x86 SETcc variant that materialises
-// its boolean result into %al
-static inline MachOp comparison_to_setcc(IROp cmpOp) {
-    switch (cmpOp) {
-    case IR_LT: return MACH_SETL;  case IR_LE: return MACH_SETLE;
-    case IR_GT: return MACH_SETG;  case IR_GE: return MACH_SETGE;
-    case IR_EQ: return MACH_SETE;  case IR_NE: return MACH_SETNE;
-    default:    return MACH_SETE;
-    }
-}
 
 // System V AMD64 ABI: first 6 integer/pointer arguments go in these
 // registers, in this exact order; anything beyond NUM_ARG_REGS is spilled
@@ -213,6 +55,152 @@ typedef struct {
     int            dstVreg;  /**< vreg that would hold the materialised 0/1 result. */
 } PendingCmp;
 
+
+// mirrors IRInstr.loopDepth: copied onto every MachInstr emitted so the
+// register allocator's spill-cost heuristic (10^loopDepth) survives
+// lowering from IR to machine code
+static int g_curLoopDepth = 0;
+
+/* =========================================================================
+ * MachFunction helpers
+ * ========================================================================= */
+
+static MachFunction *mfunc_create(const char *name) {
+    MachFunction *f = calloc(1, sizeof(MachFunction));
+    f->name     = name;
+    f->capacity = 64;
+    f->instrs   = malloc((size_t)f->capacity * sizeof(MachInstr));
+    f->nextVreg = 0;
+    return f;
+}
+
+static inline void mfunc_emit(MachFunction *f, MachOpCode op,
+                               MachOperand dst, MachOperand src1, MachOperand src2) {
+    // standard doubling growth for the instruction array
+    if (f->count == f->capacity) {
+        f->capacity *= 2;
+        f->instrs = realloc(f->instrs, (size_t)f->capacity * sizeof(MachInstr));
+    }
+    f->instrs[f->count++] = (MachInstr){
+        .op        = op,
+        .dst       = dst,
+        .src1      = src1,
+        .src2      = src2,
+        .scale     = 8,               // default element size for future MO_MEM use
+        .loopDepth = g_curLoopDepth,  // stamp current static loop nesting
+    };
+}
+
+static inline int mfunc_new_vreg(MachFunction *f) { return f->nextVreg++; }
+
+/**
+ * @brief Materialise an IR operand into a vreg, emitting a load if it is
+ *        a literal constant.
+ *
+ * Unlike operand_to_mach(), this ALWAYS returns a vreg id (never an
+ * immediate MachOperand). Used where the target machine instruction has
+ * no immediate-operand form (e.g. IDIV divisor, PUSH source) and the
+ * value must sit in a register regardless of how it was expressed in IR.
+ *
+ * @param op            IR operand to materialise.
+ * @param operandToVreg VarMap providing the operand -> vreg id mapping.
+ * @param f             Machine function new MOVs (for constants) are emitted into.
+ */
+static int load_operand(const Operand *op, VarMap *operandToVreg, MachFunction *f) {
+    switch (op->kind) {
+    case OPND_VAR:
+    case OPND_TEMP:
+        // already a storage location: just resolve its vreg id
+        return varmap_operand_id(operandToVreg, *op);
+    case OPND_CONST_INT: {
+        // materialise the constant with a MOV into a fresh vreg
+        int dst = mfunc_new_vreg(f);
+        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = op->data.intVal }, (MachOperand){ .kind = MO_NONE });
+        return dst;
+    }
+    case OPND_CONST_FLOAT: {
+        // float constants are moved as their raw bit pattern (no SSE support
+        // in this backend); reinterpret via union to avoid UB from casting
+        // float->long directly, which would convert the VALUE not the bits
+        int dst = mfunc_new_vreg(f);
+        union { float fl; int i; } u; u.fl = op->data.floatVal;
+        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = u.i }, (MachOperand){ .kind = MO_NONE });
+        return dst;
+    }
+    default: return -1; // labels/functions/none: not a loadable value
+    }
+}
+
+/**
+ * @brief Convert an IR operand directly to a MachOperand, WITHOUT forcing
+ *        constants into a register.
+ *
+ * Used wherever the target instruction accepts an immediate operand
+ * (ADD/SUB/CMP/MOV second operand, etc.), avoiding a redundant MOV that
+ * load_operand() would otherwise emit.
+ *
+ * @param op            IR operand to convert.
+ * @param operandToVreg VarMap providing the operand -> vreg id mapping.
+ * @param mf            Unused (kept for call-site symmetry with load_operand()).
+ */
+static inline MachOperand operand_to_mach(const Operand *op, VarMap *operandToVreg,
+                                           MachFunction *mf) {
+    (void)mf;
+    switch (op->kind) {
+    case OPND_CONST_INT:   return (MachOperand){ .kind = MO_IMM, .imm = op->data.intVal };
+    case OPND_CONST_FLOAT: {
+        // same bit-reinterpretation trick as load_operand()
+        union { float f; int i; } u; u.f = op->data.floatVal;
+        return (MachOperand){ .kind = MO_IMM, .imm = u.i };
+    }
+    case OPND_VAR:
+    case OPND_TEMP:        return (MachOperand){ .kind = MO_VREG, .vregId = varmap_operand_id(operandToVreg, *op) };
+    default:               return (MachOperand){ .kind = MO_NONE };
+    }
+}
+
+
+// linear scan: globalCount is small (typically a handful of top-level
+// declarations), so an O(1) map would be overkill here
+static int find_global_idx(int symOff,
+                            const IRGlobalVar *globals, int globalCount) {
+    for (int i = 0; i < globalCount; i++)
+        if (globals[i].symOffset == symOff) return i;
+    return -1;
+}
+
+/* =========================================================================
+ * Comparison helpers
+ * ========================================================================= */
+
+/**
+ * @brief Swap the sense of a relational operator (a OP b  ->  b OP' a).
+ *
+ * Needed when the CMP's left-hand operand turns out to be an immediate
+ * (x86 CMP cannot take an immediate as its first/destination-like operand
+ * in this backend's encoding), so the operands are swapped and the
+ * comparison flipped to preserve the original truth value.
+ */
+static inline IROp flip_cmp(IROp op) {
+    switch (op) {
+    case IR_LT: return IR_GT; case IR_GT: return IR_LT;
+    case IR_LE: return IR_GE; case IR_GE: return IR_LE;
+    default:    return op; // EQ/NE are symmetric: no flip needed
+    }
+}
+
+// maps an IR comparison opcode to the x86 SETcc variant that materialises
+// its boolean result into %al
+static inline MachOpCode comparison_to_setcc(IROp cmpOp) {
+    switch (cmpOp) {
+    case IR_LT: return MACH_SETL;  case IR_LE: return MACH_SETLE;
+    case IR_GT: return MACH_SETG;  case IR_GE: return MACH_SETGE;
+    case IR_EQ: return MACH_SETE;  case IR_NE: return MACH_SETNE;
+    default:    return MACH_SETE;
+    }
+}
+
+
 /**
  * @brief Force-materialise a pending comparison as CMP + SETcc + MOVSX.
  *
@@ -220,12 +208,12 @@ typedef struct {
  * IR_IF_FALSE (so fusion is not possible) — the boolean value must be
  * computed the "normal" way after all.
  */
-static void flush_pending_cmp(PendingCmp *pcmp, VarMap *vm, MachFunction *f) {
+static void flush_pending_cmp(PendingCmp *pcmp, VarMap *operandToVreg, MachFunction *f) {
     if (!pcmp->active) return;
 
     const IRInstr *ci = pcmp->instr;
-    MachOperand lhs   = operand_to_mach(&ci->src1, vm, f);
-    MachOperand rhs   = operand_to_mach(&ci->src2, vm, f);
+    MachOperand lhs   = operand_to_mach(&ci->src1, operandToVreg, f);
+    MachOperand rhs   = operand_to_mach(&ci->src2, operandToVreg, f);
     IROp cmpOp        = ci->op;
 
     // x86 CMP requires the first operand to be a register; if the IR gave
@@ -259,24 +247,24 @@ static void flush_pending_cmp(PendingCmp *pcmp, VarMap *vm, MachFunction *f) {
  *        unused formal parameters) with a stable vreg id, then sync
  *        f->nextVreg so isel-internal temporaries never collide with them.
  */
-static void select_prescan_and_sync_vregs(const IRFunction *irf, VarMap *vm,
+static void select_prescan_and_sync_vregs(const IRFunction *irf, VarMap *operandToVreg,
                                            MachFunction *f) {
     // walk every instruction once just to register every distinct
     // variable/temp with a stable vreg id BEFORE any code is emitted
     for (int i = 0; i < irf->count; i++) {
         const IRInstr *in = &irf->instrs[i];
-        varmap_operand_id(vm, in->dst);
-        varmap_operand_id(vm, in->src1);
-        varmap_operand_id(vm, in->src2);
+        varmap_operand_id(operandToVreg, in->dst);
+        varmap_operand_id(operandToVreg, in->src1);
+        varmap_operand_id(operandToVreg, in->src2);
     }
     // also register formal parameters even if unused in the body, so their
     // ids stay dense and don't get silently skipped
     for (int p = 0; p < irf->paramCount; p++)
-        varmap_operand_id(vm, irf->params[p]);
+        varmap_operand_id(operandToVreg, irf->params[p]);
 
     // any fresh vreg allocated later (mfunc_new_vreg) must start counting
     // AFTER every id already handed out by VarMap above
-    f->nextVreg = vm->nextId;
+    f->nextVreg = operandToVreg->nextId;
 }
 
 /**
@@ -286,9 +274,9 @@ static void select_prescan_and_sync_vregs(const IRFunction *irf, VarMap *vm,
  * Parameters beyond the 6th (passed on the caller's stack) are not yet
  * supported — flagged with a diagnostic rather than silently miscompiled.
  */
-static void select_bind_params(const IRFunction *irf, VarMap *vm, MachFunction *f) {
+static void select_bind_params(const IRFunction *irf, VarMap *operandToVreg, MachFunction *f) {
     for (int p = 0; p < irf->paramCount; p++) {
-        int vreg = operand_to_vreg(&irf->params[p], vm);
+        int vreg = varmap_operand_id(operandToVreg, irf->params[p]);
         if (p < NUM_ARG_REGS) {
             mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = vreg }, (MachOperand){ .kind = MO_PHYS, .physReg = ARG_REGS[p] }, (MachOperand){ .kind = MO_NONE });
         } else {
@@ -320,16 +308,16 @@ static void select_goto(MachFunction *f, const IRInstr *in) {
  *        CMP + Jcc when possible (see PendingCmp doc), otherwise TEST+JE
  *        on an ordinary 0/1-valued vreg.
  */
-static void select_if_false(VarMap *vm, MachFunction *f, PendingCmp *pcmp,
+static void select_if_false(VarMap *operandToVreg, MachFunction *f, PendingCmp *pcmp,
                              const IRInstr *in) {
-    int cond_vreg = operand_to_vreg(&in->src1, vm);
+    int cond_vreg = varmap_operand_id(operandToVreg, in->src1);
     int lbl       = in->dst.data.labelId;
 
     if (pcmp->active && cond_vreg == pcmp->dstVreg) {
         /* CMP + Jcc fusion: skip SETcc/MOVSX entirely. */
         const IRInstr *ci = pcmp->instr;
-        MachOperand lhs   = operand_to_mach(&ci->src1, vm, f);
-        MachOperand rhs   = operand_to_mach(&ci->src2, vm, f);
+        MachOperand lhs   = operand_to_mach(&ci->src1, operandToVreg, f);
+        MachOperand rhs   = operand_to_mach(&ci->src2, operandToVreg, f);
         IROp cmpOp        = ci->op;
 
         if (lhs.kind == MO_IMM && rhs.kind != MO_IMM) {
@@ -345,7 +333,7 @@ static void select_if_false(VarMap *vm, MachFunction *f, PendingCmp *pcmp,
 
         // IR_IF_FALSE jumps when the condition is FALSE, so the emitted
         // Jcc must test the NEGATED comparison
-        MachOp jcc;
+        MachOpCode jcc;
         switch (cmpOp) {
         case IR_LT: jcc = MACH_JGE; break; case IR_LE: jcc = MACH_JG;  break;
         case IR_GT: jcc = MACH_JLE; break; case IR_GE: jcc = MACH_JL;  break;
@@ -362,27 +350,27 @@ static void select_if_false(VarMap *vm, MachFunction *f, PendingCmp *pcmp,
     }
 }
 
-static void select_assign(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int         dst = operand_to_vreg(&in->dst, vm);
-    MachOperand src = operand_to_mach(&in->src1, vm, f);
+static void select_assign(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int         dst = varmap_operand_id(operandToVreg, in->dst);
+    MachOperand src = operand_to_mach(&in->src1, operandToVreg, f);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, src, (MachOperand){ .kind = MO_NONE });
 }
 
 /** @brief Lowering already done in IR: only emits the LEA here. */
-static void select_global_addr(VarMap *vm, MachFunction *f, const IRInstr *in,
+static void select_global_addr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                                 const IRGlobalVar *globals, int globalCount) {
-    int dst = operand_to_vreg(&in->dst, vm);
+    int dst = varmap_operand_id(operandToVreg, in->dst);
     int idx = find_global_idx(in->src1.data.globalOffset, globals, globalCount);
     /* idx >= 0 guaranteed: lowering only emits IR_GLOBAL_ADDR for valid globals. */
     mfunc_emit(f, MACH_LEA, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_GLOBAL, .globalName = globals[idx].name }, (MachOperand){ .kind = MO_NONE });
 }
 
 /** @brief IR_ADD/IR_SUB, reusing dst as an operand in place where possible. */
-static void select_add_sub(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int         dst = operand_to_vreg(&in->dst,  vm);
-    MachOperand lhs = operand_to_mach(&in->src1, vm, f);
-    MachOperand rhs = operand_to_mach(&in->src2, vm, f);
-    MachOp      mop = (in->op == IR_ADD) ? MACH_ADD : MACH_SUB;
+static void select_add_sub(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int         dst = varmap_operand_id(operandToVreg, in->dst);
+    MachOperand lhs = operand_to_mach(&in->src1, operandToVreg, f);
+    MachOperand rhs = operand_to_mach(&in->src2, operandToVreg, f);
+    MachOpCode  mop = (in->op == IR_ADD) ? MACH_ADD : MACH_SUB;
     int lhs_id = (lhs.kind == MO_VREG) ? lhs.vregId : -1;
     int rhs_id = (rhs.kind == MO_VREG) ? rhs.vregId : -1;
 
@@ -404,10 +392,10 @@ static void select_add_sub(VarMap *vm, MachFunction *f, const IRInstr *in) {
 }
 
 /** @brief IR_MUL, with power-of-2 immediates strength-reduced to a shift. */
-static void select_mul(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int         dst  = operand_to_vreg(&in->dst,  vm);
-    MachOperand src1 = operand_to_mach(&in->src1, vm, f);
-    MachOperand src2 = operand_to_mach(&in->src2, vm, f);
+static void select_mul(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int         dst  = varmap_operand_id(operandToVreg, in->dst);
+    MachOperand src1 = operand_to_mach(&in->src1, operandToVreg, f);
+    MachOperand src2 = operand_to_mach(&in->src2, operandToVreg, f);
 
     MachOperand reg_side = src1, imm_side = src2;
     if (src1.kind == MO_IMM && src2.kind != MO_IMM) {
@@ -416,12 +404,11 @@ static void select_mul(VarMap *vm, MachFunction *f, const IRInstr *in) {
 
     if (imm_side.kind == MO_IMM && imm_side.imm > 0 &&
         (imm_side.imm & (imm_side.imm - 1)) == 0) {
-        /* power of 2: n * 2^k == n << k, cheaper than IMUL. */
-        int shift = 0; long v = imm_side.imm;
+        int shift = 0;
+         long v = imm_side.imm;
         while (v > 1) { shift++; v >>= 1; }
         int reg_id = (reg_side.kind == MO_VREG) ? reg_side.vregId : -1;
-        if (reg_id != dst)
-            mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, reg_side, (MachOperand){ .kind = MO_NONE });
+        if (reg_id != dst)  mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, reg_side, (MachOperand){ .kind = MO_NONE });
         mfunc_emit(f, MACH_SAL, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = shift }, (MachOperand){ .kind = MO_NONE });
     } else {
         // general IMUL path: commutative, so either operand aliasing dst
@@ -440,10 +427,10 @@ static void select_mul(VarMap *vm, MachFunction *f, const IRInstr *in) {
 }
 
 /** @brief IR_DIV/IR_MOD via RDX:RAX IDIV; both operands forced into registers. */
-static void select_div_mod(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int dst = operand_to_vreg(&in->dst, vm);
-    int lhs = load_operand(&in->src1, vm, f);
-    int rhs = load_operand(&in->src2, vm, f);
+static void select_div_mod(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int dst = varmap_operand_id(operandToVreg, in->dst);
+    int lhs = load_operand(&in->src1, operandToVreg, f);
+    int rhs = load_operand(&in->src2, operandToVreg, f);
     mfunc_emit(f, MACH_MOV,  (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_VREG, .vregId = lhs }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_CQO,  (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }); // sign-extend RAX into RDX:RAX
     mfunc_emit(f, MACH_IDIV, (MachOperand){ .kind = MO_VREG, .vregId = rhs }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
@@ -452,64 +439,64 @@ static void select_div_mod(VarMap *vm, MachFunction *f, const IRInstr *in) {
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = res }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void select_neg(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int         dst = operand_to_vreg(&in->dst,  vm);
-    MachOperand src = operand_to_mach(&in->src1, vm, f);
+static void select_neg(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int         dst = varmap_operand_id(operandToVreg, in->dst);
+    MachOperand src = operand_to_mach(&in->src1, operandToVreg, f);
     // MACH_NEG is in-place; only copy src into dst first if not already there
     if ((src.kind == MO_VREG ? src.vregId : -1) != dst)
         mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, src, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_NEG, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void select_not(VarMap *vm, MachFunction *f, const IRInstr *in) {
+static void select_not(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     // logical NOT: TEST sv,sv sets ZF iff sv is zero; SETE captures it;
     // MOVSX widens the byte result
-    int dst = operand_to_vreg(&in->dst, vm);
-    int sv  = load_operand(&in->src1, vm, f);
+    int dst = varmap_operand_id(operandToVreg, in->dst);
+    int sv  = load_operand(&in->src1, operandToVreg, f);
     mfunc_emit(f, MACH_TEST,  (MachOperand){ .kind = MO_VREG, .vregId = sv },  (MachOperand){ .kind = MO_VREG, .vregId = sv },  (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_SETE,  (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_AL }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_MOVSX, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_AL }, (MachOperand){ .kind = MO_NONE });
 }
 
 /** @brief Defer comparisons (IR_LT..IR_NE) for possible CMP+Jcc fusion. */
-static void select_defer_comparison(VarMap *vm, PendingCmp *pcmp, const IRInstr *in) {
-    int dst = operand_to_vreg(&in->dst, vm);
+static void select_defer_comparison(VarMap *operandToVreg, PendingCmp *pcmp, const IRInstr *in) {
+    int dst = varmap_operand_id(operandToVreg, in->dst);
     pcmp->active  = 1;
     pcmp->instr   = in;
     pcmp->dstVreg = dst;
 }
 
-static void select_load_arr(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int dst  = operand_to_vreg(&in->dst,  vm);
-    int base = operand_to_vreg(&in->src1, vm);
+static void select_load_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int dst  = varmap_operand_id(operandToVreg, in->dst);
+    int base = varmap_operand_id(operandToVreg, in->src1);
     if (in->src2.kind == OPND_CONST_INT) {
         // constant index folded into the addressing-mode displacement
         int disp = in->src2.data.intVal * 8;
         mfunc_emit(f, MACH_LOAD, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = -1, .scale = 0, .disp = disp } }, (MachOperand){ .kind = MO_NONE });
     } else {
         // dynamic index: real SIB addressing mode (base + idx*8)
-        int idx = load_operand(&in->src2, vm, f);
+        int idx = load_operand(&in->src2, operandToVreg, f);
         mfunc_emit(f, MACH_LOAD, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = idx, .scale = 8, .disp = 0 } }, (MachOperand){ .kind = MO_NONE });
     }
 }
 
-static void select_store_arr(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int base = operand_to_vreg(&in->dst, vm);
+static void select_store_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int base = varmap_operand_id(operandToVreg, in->dst);
     if (in->src1.kind == OPND_CONST_INT) {
         int disp = in->src1.data.intVal * 8;
-        int src  = load_operand(&in->src2, vm, f);
+        int src  = load_operand(&in->src2, operandToVreg, f);
         mfunc_emit(f, MACH_STORE, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = -1, .scale = 0, .disp = disp } }, (MachOperand){ .kind = MO_VREG, .vregId = src }, (MachOperand){ .kind = MO_NONE });
     } else {
-        int idx = load_operand(&in->src1, vm, f);
-        int src = load_operand(&in->src2, vm, f);
+        int idx = load_operand(&in->src1, operandToVreg, f);
+        int src = load_operand(&in->src2, operandToVreg, f);
         mfunc_emit(f, MACH_STORE, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = idx, .scale = 8, .disp = 0 } }, (MachOperand){ .kind = MO_VREG, .vregId = src }, (MachOperand){ .kind = MO_NONE });
     }
 }
 
 /** @brief Stage one call argument; actual placement happens at IR_CALL. */
-static void select_param(VarMap *vm, MachFunction *f, const IRInstr *in,
+static void select_param(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                           PendingArgs *args) {
-    MachOperand sv = operand_to_mach(&in->src1, vm, f);
+    MachOperand sv = operand_to_mach(&in->src1, operandToVreg, f);
     int sv_vreg;
     if (sv.kind == MO_IMM) {
         sv_vreg = mfunc_new_vreg(f);
@@ -522,7 +509,7 @@ static void select_param(VarMap *vm, MachFunction *f, const IRInstr *in,
 }
 
 /** @brief Emit the full call sequence (stack args, register args, CALL, cleanup). */
-static void select_call(VarMap *vm, MachFunction *f, const IRInstr *in,
+static void select_call(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                          PendingArgs *args) {
     int n = args->count;
     // overflow args (beyond the 6 ABI registers) pushed in REVERSE order
@@ -541,13 +528,13 @@ static void select_call(VarMap *vm, MachFunction *f, const IRInstr *in,
         mfunc_emit(f, MACH_ADD, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RSP }, (MachOperand){ .kind = MO_VREG, .vregId = adj }, (MachOperand){ .kind = MO_NONE });
     }
     // return value convention: RAX -> destination vreg
-    int dst = operand_to_vreg(&in->dst, vm);
+    int dst = varmap_operand_id(operandToVreg, in->dst);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_NONE });
     args->count = 0; // reset staging buffer for the next call site
 }
 
-static void select_return(VarMap *vm, MachFunction *f, const IRInstr *in) {
-    int sv = load_operand(&in->src1, vm, f);
+static void select_return(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+    int sv = load_operand(&in->src1, operandToVreg, f);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_VREG, .vregId = sv }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_RET, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
@@ -563,11 +550,13 @@ static MachFunction *select_function(const IRFunction *irf,
     g_curLoopDepth = 0; /* reset: must not leak from the previously
                             selected function's last instruction */
 
-    VarMap vm = varmap_init();
-    select_prescan_and_sync_vregs(irf, &vm, f);
+    // VarMap holding the operand -> vreg id mapping for this function
+    // (1:1: VarMap ids double as vreg ids in this backend)
+    VarMap operandToVreg = varmap_init();
+    select_prescan_and_sync_vregs(irf, &operandToVreg, f);
 
     mfunc_emit(f, MACH_FUNC_BEGIN, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    select_bind_params(irf, &vm, f);
+    select_bind_params(irf, &operandToVreg, f);
 
     PendingArgs args = { .count = 0 };
     PendingCmp  pcmp = { .active = 0 };
@@ -582,41 +571,41 @@ static MachFunction *select_function(const IRFunction *irf,
         if (pcmp.active) {
             int must_materialize = 1;
             if (in->op == IR_IF_FALSE)
-                must_materialize = (operand_to_vreg(&in->src1, &vm) != pcmp.dstVreg);
+                must_materialize = (varmap_operand_id(&operandToVreg, in->src1) != pcmp.dstVreg);
             if (must_materialize)
-                flush_pending_cmp(&pcmp, &vm, f);
+                flush_pending_cmp(&pcmp, &operandToVreg, f);
         }
 
         switch (in->op) {
         case IR_LABEL:       select_label(f, in); break;
         case IR_GOTO:        select_goto(f, in); break;
-        case IR_IF_FALSE:    select_if_false(&vm, f, &pcmp, in); break;
-        case IR_ASSIGN:      select_assign(&vm, f, in); break;
-        case IR_GLOBAL_ADDR: select_global_addr(&vm, f, in, globals, globalCount); break;
-        case IR_ADD: case IR_SUB: select_add_sub(&vm, f, in); break;
-        case IR_MUL:          select_mul(&vm, f, in); break;
-        case IR_DIV: case IR_MOD: select_div_mod(&vm, f, in); break;
-        case IR_NEG:          select_neg(&vm, f, in); break;
-        case IR_NOT:           select_not(&vm, f, in); break;
+        case IR_IF_FALSE:    select_if_false(&operandToVreg, f, &pcmp, in); break;
+        case IR_ASSIGN:      select_assign(&operandToVreg, f, in); break;
+        case IR_GLOBAL_ADDR: select_global_addr(&operandToVreg, f, in, globals, globalCount); break;
+        case IR_ADD: case IR_SUB: select_add_sub(&operandToVreg, f, in); break;
+        case IR_MUL:          select_mul(&operandToVreg, f, in); break;
+        case IR_DIV: case IR_MOD: select_div_mod(&operandToVreg, f, in); break;
+        case IR_NEG:          select_neg(&operandToVreg, f, in); break;
+        case IR_NOT:           select_not(&operandToVreg, f, in); break;
         case IR_LT: case IR_LE: case IR_GT: case IR_GE:
-        case IR_EQ: case IR_NE: select_defer_comparison(&vm, &pcmp, in); break;
-        case IR_LOAD_ARR:     select_load_arr(&vm, f, in); break;
-        case IR_STORE_ARR:    select_store_arr(&vm, f, in); break;
-        case IR_PARAM:        select_param(&vm, f, in, &args); break;
-        case IR_CALL:         select_call(&vm, f, in, &args); break;
-        case IR_RETURN:       select_return(&vm, f, in); break;
+        case IR_EQ: case IR_NE: select_defer_comparison(&operandToVreg, &pcmp, in); break;
+        case IR_LOAD_ARR:     select_load_arr(&operandToVreg, f, in); break;
+        case IR_STORE_ARR:    select_store_arr(&operandToVreg, f, in); break;
+        case IR_PARAM:        select_param(&operandToVreg, f, in, &args); break;
+        case IR_CALL:         select_call(&operandToVreg, f, in, &args); break;
+        case IR_RETURN:       select_return(&operandToVreg, f, in); break;
         }
     }
 
     // a comparison could be the very last instruction of the function body
     // (e.g. "return a < b;" without an intervening branch): flush it here
-    flush_pending_cmp(&pcmp, &vm, f);
+    flush_pending_cmp(&pcmp, &operandToVreg, f);
 
     // frame size: 8 bytes per vreg slot, rounded up to 16-byte alignment
     int raw      = f->nextVreg * 8;
     f->frameSize = (raw + 15) & ~15;
 
-    varmap_destroy(&vm);
+    varmap_destroy(&operandToVreg);
     return f;
 }
 

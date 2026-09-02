@@ -158,7 +158,7 @@ void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
  * `addq %rcx, %rax` reads and then writes RAX). The spill inserter uses
  * this to decide whether it must reload `dst` before emitting the instruction.
  */
-int regalloc_is_rmw(MachOp op) {
+int regalloc_is_rmw(MachOpCode op) {
     switch (op) {
     // two-operand ALU ops where dst is both an input and the output
     case MACH_ADD: case MACH_SUB: case MACH_IMUL:
@@ -175,7 +175,7 @@ int regalloc_is_rmw(MachOp op) {
  * interference-graph builder adds a constraint excluding RAX from any
  * vreg live across a SETcc to avoid aliasing conflicts.
  */
-int regalloc_is_setcc(MachOp op) {
+int regalloc_is_setcc(MachOpCode op) {
     switch (op) {
     case MACH_SETE: case MACH_SETNE: case MACH_SETL:
     case MACH_SETLE: case MACH_SETG: case MACH_SETGE:
@@ -191,7 +191,7 @@ int regalloc_is_setcc(MachOp op) {
  * boundaries: after a jump or call, execution may have come from a different
  * predecessor, so cached reload temporaries from the current block are stale.
  */
-int regalloc_is_ctrl_transfer(MachOp op) {
+int regalloc_is_ctrl_transfer(MachOpCode op) {
     switch (op) {
     // any instruction that can transfer control away from the next
     // sequential instruction invalidates same-block assumptions

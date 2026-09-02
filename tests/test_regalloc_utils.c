@@ -51,7 +51,7 @@ int main(void) {
 
     /* PASS 1-bis: stessa verifica per tutta la famiglia RMW */
     {
-        MachOp rmwOps[] = { MACH_SUB, MACH_IMUL, MACH_SAL, MACH_NEG, MACH_NOT, MACH_XOR };
+        MachOpCode rmwOps[] = { MACH_SUB, MACH_IMUL, MACH_SAL, MACH_NEG, MACH_NOT, MACH_XOR };
         for (size_t i = 0; i < sizeof(rmwOps)/sizeof(rmwOps[0]); i++) {
             MachInstr in = { .op = rmwOps[i], .dst = vreg(7), .src1 = vreg(8), .src2 = mo_none() };
             instr_uses(&in, 100, buf, &n);

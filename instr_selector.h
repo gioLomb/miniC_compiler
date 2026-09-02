@@ -17,9 +17,6 @@
 #define NUM_ARG_REGS 6
 #define MAX_PARAMS   64
 
-/* =========================================================================
- * Machine opcodes
- * ========================================================================= */
 
 typedef enum {
     MACH_MOV, MACH_MOVSX,
@@ -34,7 +31,7 @@ typedef enum {
     MACH_CALL, MACH_RET,
     MACH_LEA,                       /**< leaq globalname(%rip), dst          */
     MACH_LABEL, MACH_FUNC_BEGIN, MACH_FUNC_END,
-} MachOp;
+} MachOpCode;
 
 /* =========================================================================
  * Operand kind discriminant
@@ -115,7 +112,7 @@ typedef struct {
  * ========================================================================= */
 
 typedef struct {
-    MachOp      op;
+    MachOpCode     op;
     MachOperand dst, src1, src2;
     int         scale;
     int         loopDepth;

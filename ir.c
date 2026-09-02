@@ -25,14 +25,7 @@
 #include "sched.h"
 #include "arena.h"
 
-/* =========================================================================
- * Operator key helpers
- * ========================================================================= */
-// packs up to 2 operator characters into one 16-bit key for O(1) switch
-// dispatch instead of strcmp chains
-#define KEY_AND 0x2626
-#define KEY_OR  0x7C7C
-#define KEY_NOT 0x2100
+
 
 static inline unsigned short op_key(const char *s) {
     if (!s || !s[0]) return 0;
@@ -40,10 +33,6 @@ static inline unsigned short op_key(const char *s) {
     if (s[1]) k |= (unsigned char)s[1];
     return k;
 }
-
-/* =========================================================================
- * Module-level mutable state
- * ========================================================================= */
 
 // reset once per ir_generate() call; shared across every function compiled
 // in that program so temp/label ids are globally unique
@@ -54,16 +43,8 @@ static int nextLabel;
 // hot-loop values without re-deriving loop structure
 static int currentLoopDepth;
 
-/* =========================================================================
- * Operand constructors
- * ========================================================================= */
 
-/**
- * mk_var: distinguishes local variables (scopeLevel > 0) from globals
- * (scopeLevel == 0). Globals are emitted as OPND_GLOBAL and later expanded
- * by ir_lower_globals() into IR_GLOBAL_ADDR + LOAD/STORE_ARR before any
- * optimisation pass runs.
- */
+
 static inline Operand mk_var(const ASTNode *node) {
     if (node->scopeLevel == 0) {
         return (Operand){ .kind              = OPND_GLOBAL,
@@ -75,13 +56,6 @@ static inline Operand mk_var(const ASTNode *node) {
                       .data.sourceName = node->text };
 }
 
-// Operand no_operand(void) {
-//     return (Operand){ .kind = OPND_NONE };
-// }
-
-/* =========================================================================
- * CFG helpers
- * ========================================================================= */
 
 static inline int ir_is_terminator(IROp op) {
     // bitmask trick: terminators always end a basic block
@@ -104,35 +78,45 @@ int ir_is_pure(IROp op) {
     return (op < 32) && ((mask >> op) & 1U);
 }
 
+/**
+ * @brief Compact one block's instruction range in place, keeping only
+ *        surviving (non-eliminated) instructions.
+ *
+ * Safe in-place write: writeCursor never exceeds the read index i, since
+ * it only advances on a kept instruction (and always by <= the number of
+ * instructions read so far).
+ *
+ * @param f           Function whose instrs[] is compacted in place.
+ * @param eliminate   Per-instruction elimination flags.
+ * @param b           Block index being compacted.
+ * @param writeCursor In/out: next free slot in f->instrs; advanced by the
+ *                     number of surviving instructions in this block.
+ */
+static void compact_block(IRFunction *f, const char *eliminate, int b, int *writeCursor) {
+    int oldStart = f->blocks[b].bb.range.start;
+    int oldEnd   = f->blocks[b].bb.range.end;
+    int newStart = *writeCursor;
+
+    for (int i = oldStart; i < oldEnd; i++)
+        if (!eliminate[i])
+            f->instrs[(*writeCursor)++] = f->instrs[i];
+
+    f->blocks[b].bb.range.start = newStart;
+    f->blocks[b].bb.range.end   = *writeCursor;
+}
+
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
-    int nInstrs    = f->count;
-    // upper-bound allocation: at most nInstrs survive, usually fewer
-    IRInstr *newInstrs = malloc((size_t)nInstrs * sizeof(IRInstr));
-    int newCount   = 0;
+    int nInstrs = f->count;
+    int writeCursor = 0;
 
-    for (int b = 0; b < nBlocks; b++) {
-        int oldStart = f->blocks[b].bb.range.start;
-        int oldEnd   = f->blocks[b].bb.range.end;
-        int newStart = newCount;
+    for (int b = 0; b < nBlocks; b++)
+        compact_block(f, eliminate, b, &writeCursor);
 
-        // copy over every surviving instruction of this block, in order
-        for (int i = oldStart; i < oldEnd; i++) {
-            if (!eliminate[i])
-                newInstrs[newCount++] = f->instrs[i];
-        }
-
-        // block range shrinks to match however many instructions survived
-        f->blocks[b].bb.range.start = newStart;
-        f->blocks[b].bb.range.end   = newCount;
-    }
-
-    free(f->instrs);
-    f->instrs        = newInstrs;
-    f->count         = newCount;
-    f->capacity      = newCount;
+    f->count         = writeCursor;
+    f->capacity      = f->capacity; // unchanged: buffer reused, just shorter logical length
     f->curBlockStart = 0;
 
-    return (newCount != nInstrs);
+    return (writeCursor != nInstrs);
 }
 
 static inline void ir_close_block(IRFunction *f, int start, int end) {
@@ -192,8 +176,7 @@ static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Ope
 
     // record where this label ended up so ir_resolve_cfg can later resolve
     // jump targets by label id -> block index
-    if (op == IR_LABEL)
-        ir_register_label(f, dst.data.labelId, f->blockCount);
+    if (op == IR_LABEL) ir_register_label(f, dst.data.labelId, f->blockCount);
 
     // a terminator always ends the current block (GOTO/IF_FALSE/RETURN
     // are the last instruction control can reach before branching/exiting)
@@ -201,16 +184,6 @@ static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Ope
         ir_close_block(f, f->curBlockStart, f->count);
         f->curBlockStart = f->count;
     }
-}
-
-static inline void ir_emit_goto(IRFunction *f, Operand label) {
-    ir_emit_instr(f, IR_GOTO, label, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
-}
-static inline void ir_emit_if_false(IRFunction *f, Operand cond, Operand label) {
-    ir_emit_instr(f, IR_IF_FALSE, label, cond, (Operand){.kind = OPND_NONE});
-}
-static inline void ir_emit_label(IRFunction *f, Operand label) {
-    ir_emit_instr(f, IR_LABEL, label, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
 }
 
 /* =========================================================================
@@ -319,7 +292,7 @@ static void ir_emit_jump_if_false(ASTNode *cond, IRFunction *out, Operand falseL
         Operand skipLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         ir_emit_jump_if_true(cond->children[0], out, skipLbl);
         ir_emit_jump_if_false(cond->children[1], out, falseLbl);
-        ir_emit_label(out, skipLbl);
+        ir_emit_instr(out, IR_LABEL, skipLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
         return;
     }
     if (cond->kind == ND_UNARY && op_key(cond->text) == KEY_NOT) {
@@ -329,7 +302,7 @@ static void ir_emit_jump_if_false(ASTNode *cond, IRFunction *out, Operand falseL
     }
     // base case: no further short-circuit structure, evaluate and test
     Operand v = ir_emit_expr(cond, out);
-    ir_emit_if_false(out, v, falseLbl);
+    ir_emit_instr(out, IR_IF_FALSE, falseLbl, v, (Operand){.kind = OPND_NONE});
 }
 
 /**
@@ -342,7 +315,7 @@ static void ir_emit_jump_if_true(ASTNode *cond, IRFunction *out, Operand trueLbl
         Operand skipLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         ir_emit_jump_if_false(cond->children[0], out, skipLbl);
         ir_emit_jump_if_true(cond->children[1], out, trueLbl);
-        ir_emit_label(out, skipLbl);
+        ir_emit_instr(out, IR_LABEL, skipLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
         return;
     }
     if (cond->kind == ND_BINOP && op_key(cond->text) == KEY_OR) {
@@ -360,9 +333,9 @@ static void ir_emit_jump_if_true(ASTNode *cond, IRFunction *out, Operand trueLbl
     // explicit skip-over-the-goto pattern)
     Operand v       = ir_emit_expr(cond, out);
     Operand skipLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
-    ir_emit_if_false(out, v, skipLbl);
-    ir_emit_goto(out, trueLbl);
-    ir_emit_label(out, skipLbl);
+    ir_emit_instr(out, IR_IF_FALSE, skipLbl, v, (Operand){.kind = OPND_NONE});
+    ir_emit_instr(out, IR_GOTO, trueLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
+    ir_emit_instr(out, IR_LABEL, skipLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
 }
 
 /**
@@ -374,10 +347,10 @@ static Operand ir_emit_short_circuit_into(ASTNode *expr, IRFunction *out, Operan
     ir_emit_jump_if_false(expr, out, falseLbl);
     // reached only if expr was true
     ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 1 }, (Operand){.kind = OPND_NONE});
-    ir_emit_goto(out, endLbl);
-    ir_emit_label(out, falseLbl);
+    ir_emit_instr(out, IR_GOTO, endLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
+    ir_emit_instr(out, IR_LABEL, falseLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
     ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, (Operand){.kind = OPND_NONE});
-    ir_emit_label(out, endLbl);
+    ir_emit_instr(out, IR_LABEL, endLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
     return dest;
 }
 
@@ -559,13 +532,13 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
         if (stmt->nchildren > 2) {
             // has an else-branch: then-branch must skip over it
             Operand endLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
-            ir_emit_goto(out, endLbl);
-            ir_emit_label(out, elseLbl);
+            ir_emit_instr(out, IR_GOTO, endLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
+            ir_emit_instr(out, IR_LABEL, elseLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
             ir_emit_stmt(stmt->children[2], out);
-            ir_emit_label(out, endLbl);
+            ir_emit_instr(out, IR_LABEL, endLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
         } else {
             // no else-branch: elseLbl doubles as the join point
-            ir_emit_label(out, elseLbl);
+            ir_emit_instr(out, IR_LABEL, elseLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
         }
         break;
     }
@@ -573,13 +546,13 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
     case ND_WHILE: {
         Operand startLbl = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
         Operand endLbl   = (Operand){ .kind = OPND_LABEL, .data.labelId = nextLabel++ };
-        ir_emit_label(out, startLbl);
+        ir_emit_instr(out, IR_LABEL, startLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
         ir_emit_jump_if_false(stmt->children[0], out, endLbl);
         currentLoopDepth++;   // body instructions are nested one level deeper
         ir_emit_stmt(stmt->children[1], out);
         currentLoopDepth--;
-        ir_emit_goto(out, startLbl); // loop back to re-check the condition
-        ir_emit_label(out, endLbl);
+        ir_emit_instr(out, IR_GOTO, startLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE}); // loop back to re-check the condition
+        ir_emit_instr(out, IR_LABEL, endLbl, (Operand){.kind = OPND_NONE}, (Operand){.kind = OPND_NONE});
         break;
     }
 
@@ -667,79 +640,126 @@ static void ir_program_append(IRProgram *prog, IRFunction *f) {
     }
     prog->functions[prog->count++] = f;
 }
+/**
+ * @brief Parsed view of a global declaration's textual encoding.
+ *
+ * tyName/name point into the caller-owned mutable buffer passed to
+ * ir_parse_global_decl_text, so they stay valid only as long as that
+ * buffer does.
+ */
+typedef struct {
+    char *tyName;
+    char *name;
+    int   isArray;
+    int   arraySize;
+} GlobalDeclInfo;
+
+/**
+ * @brief Parse buf ("type name" or "type name[size]") in place into its
+ *        type/name/array-size components (same convention as ast_to_symtab.c).
+ *
+ * @param buf  Mutable copy of decl->text; NUL bytes are inserted at the
+ *             type/name and name/'[' boundaries, so out->tyName/out->name
+ *             end up pointing into it.
+ * @return 1 on success, 0 if the text is malformed (no space separator).
+ */
+static int ir_parse_global_decl_text(char *buf, GlobalDeclInfo *out) {
+    char *space = strchr(buf, ' ');
+    if (!space) return 0; // malformed text: caller skips defensively
+    *space      = '\0';
+    out->tyName = buf;
+    char *rest  = space + 1;
+
+    out->isArray   = 0;
+    out->arraySize = 0;
+    char *bracket = strchr(rest, '[');
+    if (bracket) {
+        *bracket       = '\0';
+        out->name      = rest;
+        out->isArray   = 1;
+        out->arraySize = atoi(bracket + 1);
+    } else {
+        out->name = rest;
+    }
+    return 1;
+}
+
+static inline DataType ir_global_data_type(const char *tyName) {
+    if      (tyName[0] == 'i') return T_INT;
+    else if (tyName[0] == 'f') return T_FLOAT;
+    return T_VOID;
+}
+
+/**
+ * @brief Grow prog->globals if needed (standard doubling growth) and
+ *        return a pointer to the freshly appended slot.
+ */
+static IRGlobalVar *ir_globals_append_slot(IRProgram *prog) {
+    if (prog->globalCount == prog->globalCap) {
+        prog->globalCap = prog->globalCap ? prog->globalCap * 2 : 8;
+        prog->globals   = realloc(prog->globals,
+                                  (size_t)prog->globalCap * sizeof(IRGlobalVar));
+    }
+    return &prog->globals[prog->globalCount++];
+}
+
+/**
+ * @brief Pre-evaluate a global's constant initializer list into a flat
+ *        array of longs (int value, or float re-interpreted as raw bits,
+ *        so a single 'long' array can hold both int and float initializers).
+ *
+ * @param decl  ND_VAR_DECL node whose children (if any) are the initializers.
+ * @param gv    Global var to populate (initVals/initCount left untouched
+ *              if decl has no children).
+ */
+static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
+    if (decl->nchildren == 0) return; // no initializer: nothing to build
+
+    // has an initializer list: pre-evaluate each constant child into
+    // initVals (int value, or float re-interpreted as raw bits so a
+    // single 'long' array can hold both int and float initializers)
+    int cnt       = decl->nchildren;
+    gv->initVals  = malloc((size_t)cnt * sizeof(long));
+    gv->initCount = cnt;
+    for (int j = 0; j < cnt; j++) {
+        ASTNode *ch = decl->children[j];
+        if (ch->kind == ND_NUM_INT) {
+            gv->initVals[j] = atol(ch->text);
+        } else if (ch->kind == ND_NUM_FLOAT) {
+            float fv = (float)atof(ch->text);
+            long  lv;
+            memcpy(&lv, &fv, sizeof fv); // reinterpret bits, not value
+            gv->initVals[j] = lv;
+        } else {
+            gv->initVals[j] = 0; // non-literal initializer: not supported, default 0
+        }
+    }
+}
 
 static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
     if (!decl || decl->kind != ND_VAR_DECL) return;
 
     // decl->text encodes "type name" or "type name[size]"; parse it
     // in-place on a mutable copy (same convention as ast_to_symtab.c)
-    char *buf    = strdup(decl->text);
-    char *space  = strchr(buf, ' ');
-    if (!space) { free(buf); return; } // malformed text: skip defensively
-    *space       = '\0';
-    char *tyName = buf;
-    char *rest   = space + 1;
+    char *buf = strdup(decl->text);
+    GlobalDeclInfo info;
+    if (!ir_parse_global_decl_text(buf, &info)) { free(buf); return; } // malformed text: skip defensively
 
-    int   isArray = 0, arraySize = 0;
-    char *name;
-    char *bracket = strchr(rest, '[');
-    if (bracket) {
-        *bracket  = '\0';
-        name      = rest;
-        isArray   = 1;
-        arraySize = atoi(bracket + 1);
-    } else {
-        name = rest;
-    }
+    IRGlobalVar *gv = ir_globals_append_slot(prog);
+    gv->name        = strdup(info.name);
+    gv->dataType    = ir_global_data_type(info.tyName);
+    gv->isArray     = info.isArray;
+    gv->arraySize   = info.arraySize;
+    gv->symOffset   = symOffset;
+    gv->initVals    = NULL;
+    gv->initCount   = 0;
 
-    DataType dt = T_VOID;
-    if      (tyName[0] == 'i') dt = T_INT;
-    else if (tyName[0] == 'f') dt = T_FLOAT;
-
-    // standard doubling growth
-    if (prog->globalCount == prog->globalCap) {
-        prog->globalCap = prog->globalCap ? prog->globalCap * 2 : 8;
-        prog->globals   = realloc(prog->globals,
-                                  (size_t)prog->globalCap * sizeof(IRGlobalVar));
-    }
-
-    IRGlobalVar *gv  = &prog->globals[prog->globalCount++];
-    gv->name         = strdup(name);
-    gv->dataType     = dt;
-    gv->isArray      = isArray;
-    gv->arraySize    = arraySize;
-    gv->symOffset    = symOffset;
-    gv->initVals     = NULL;
-    gv->initCount    = 0;
-
-    if (decl->nchildren > 0) {
-        // has an initializer list: pre-evaluate each constant child into
-        // initVals (int value, or float re-interpreted as raw bits so a
-        // single 'long' array can hold both int and float initializers)
-        int cnt      = decl->nchildren;
-        gv->initVals = malloc((size_t)cnt * sizeof(long));
-        gv->initCount = cnt;
-        for (int j = 0; j < cnt; j++) {
-            ASTNode *ch = decl->children[j];
-            if (ch->kind == ND_NUM_INT) {
-                gv->initVals[j] = atol(ch->text);
-            } else if (ch->kind == ND_NUM_FLOAT) {
-                float fv = (float)atof(ch->text);
-                long  lv;
-                memcpy(&lv, &fv, sizeof fv); // reinterpret bits, not value
-                gv->initVals[j] = lv;
-            } else {
-                gv->initVals[j] = 0; // non-literal initializer: not supported, default 0
-            }
-        }
-    }
+    ir_build_global_init_vals(decl, gv);
 
     free(buf);
 }
 
-/* =========================================================================
- * Public API — ir_generate
- * ========================================================================= */
+
 
 IRProgram *ir_generate(ASTNode *program) {
     nextTemp  = 0;
@@ -922,9 +942,6 @@ void ir_free(IRProgram *prog) {
     free(prog);
 }
 
-/* =========================================================================
- * IR front-end predicates
- * ========================================================================= */
 
 int ir_defines_dst(IROp op) {
     // opcodes that write a value into dst; used by liveness/DCE/CP to know
@@ -947,21 +964,73 @@ int ir_is_commutative(IROp op) {
 }
 
 int ir_operand_is_storage(OperandKind kind) {
-    /* OPND_GLOBAL is NOT storage: never tracked by VarMap/liveness.
-     * Survives only as src1 of IR_GLOBAL_ADDR, exactly like OPND_FUNC
-     * survives as src1 of IR_CALL — both are non-storage descriptors. */
     return kind == OPND_VAR || kind == OPND_TEMP;
 }
 
-/* =========================================================================
- * Predecessor list construction
- * =========================================================================
- * Shared, read-only, backward-direction view of the CFG built from succ[].
- * Used by cp.c (forward dataflow meet at join points) and loop.c (dominator
- * computation, natural-loop body collection) to avoid each independently
- * re-scanning every block's succ[] to find the predecessors of a given
- * block — an O(nBlocks^2) pattern when repeated inside a fixed-point loop.
- * ========================================================================= */
+
+/**
+ * @brief Pass 1: count incoming edges per block.
+ *
+ * One flat scan over every succ[] slot of every block — no per-block
+ * search, hence O(nBlocks) rather than the O(nBlocks^2) "for each block,
+ * scan all others for a matching succ[]" pattern this replaces.
+ *
+ * @param f          Function whose blocks[].bb.succ[] is scanned.
+ * @param n          f->blockCount, passed in to avoid recomputing it.
+ * @param predCount  Out: predCount[b] = number of edges into block b.
+ *                   Must already be zero-initialised.
+ */
+static void ir_count_pred_edges(IRFunction *f, int n, int *predCount) {
+    for (int b = 0; b < n; b++)
+        for (int k = 0; k < 2; k++) {
+            int s = f->blocks[b].bb.succ[k];
+            if (s >= 0 && s < n) predCount[s]++;
+        }
+}
+
+/**
+ * @brief Pass 2: turn per-block predecessor counts into a prefix sum,
+ *        giving each block a contiguous offset into predData.
+ *
+ * @param n          Number of blocks.
+ * @param predCount  In: predCount[b] = number of predecessors of block b.
+ * @param predStart  Out: predStart[b] = running total of predecessors of
+ *                   all blocks before b.
+ * @return Total number of edges (== sum of predCount[]), i.e. the required
+ *         size of predData.
+ */
+static int ir_prefix_sum_pred_counts(int n, const int *predCount, int *predStart) {
+    int total = 0;
+    for (int b = 0; b < n; b++) {
+        predStart[b] = total;
+        total += predCount[b];
+    }
+    return total;
+}
+
+/**
+ * @brief Pass 3: scatter each edge into predData at its block's slot,
+ *        using a per-block write cursor seeded from predStart.
+ *
+ * @param f          Function whose blocks[].bb.succ[] is scanned again.
+ * @param n          Number of blocks.
+ * @param predStart  predStart[b] = start offset of block b's slice in predData.
+ * @param predData   Out: flat array of predecessor block indices, one
+ *                   contiguous slice per block per predStart/predCount.
+ * @param arena      Scratch allocator for the per-block write cursor
+ *                   (pure scratch, discarded once this function returns).
+ */
+static void ir_fill_pred_data(IRFunction *f, int n, const int *predStart, int *predData, Arena *arena) {
+    // cursor is pure scratch, discarded after this loop
+    int *cursor = arena_alloc(arena, (size_t)n * sizeof(int));
+    memcpy(cursor, predStart, (size_t)n * sizeof(int));
+
+    for (int b = 0; b < n; b++)
+        for (int k = 0; k < 2; k++) {
+            int s = f->blocks[b].bb.succ[k];
+            if (s >= 0 && s < n) predData[cursor[s]++] = b;
+        }
+}
 
 PredList ir_build_pred_list(IRFunction *f, Arena *arena) {
     int n = f->blockCount;
@@ -970,38 +1039,14 @@ PredList ir_build_pred_list(IRFunction *f, Arena *arena) {
     pl.predCount = arena_alloc(arena, (size_t)n * sizeof(int));
     memset(pl.predCount, 0, (size_t)n * sizeof(int));
 
-    // pass 1: count incoming edges per block. One flat scan over every
-    // succ[] slot of every block — no per-block search, hence O(nBlocks)
-    // rather than the O(nBlocks^2) "for each block, scan all others for a
-    // matching succ[]" pattern this replaces.
-    for (int b = 0; b < n; b++)
-        for (int k = 0; k < 2; k++) {
-            int s = f->blocks[b].bb.succ[k];
-            if (s >= 0 && s < n) pl.predCount[s]++;
-        }
-
-    // prefix sum: predStart[b] = running total of predecessors of all
-    // blocks before b, giving each block a contiguous slice of predData
-    int total = 0;
-    for (int b = 0; b < n; b++) {
-        pl.predStart[b] = total;
-        total += pl.predCount[b];
-    }
+    ir_count_pred_edges(f, n, pl.predCount);
+    int total = ir_prefix_sum_pred_counts(n, pl.predCount, pl.predStart);
 
     // guard against a zero-size allocation when the function has no edges
     // at all (e.g. a single-block function with no branches)
     pl.predData = arena_alloc(arena, (size_t)(total > 0 ? total : 1) * sizeof(int));
 
-    // pass 2: fill predData using a per-block write cursor seeded from
-    // predStart; the cursor is pure scratch, discarded after this loop
-    int *cursor = arena_alloc(arena, (size_t)n * sizeof(int));
-    memcpy(cursor, pl.predStart, (size_t)n * sizeof(int));
-
-    for (int b = 0; b < n; b++)
-        for (int k = 0; k < 2; k++) {
-            int s = f->blocks[b].bb.succ[k];
-            if (s >= 0 && s < n) pl.predData[cursor[s]++] = b;
-        }
+    ir_fill_pred_data(f, n, pl.predStart, pl.predData, arena);
 
     return pl;
 }

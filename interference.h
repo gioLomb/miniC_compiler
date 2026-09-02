@@ -88,36 +88,17 @@ typedef IntVector AdjList;
  * @c adj[i].data is heap-allocated by IntVector; release with @c ig_free().
  */
 typedef struct {
-    int       n;        /**< Total node count: nextVreg + PHYS_ALLOCATABLE.
-                         *   Nodes [0, nextVreg) are virtual; nodes
-                         *   [nextVreg, n) are pre-coloured physical regs.   */
-    uint64_t *matrix;   /**< Compact lower-triangular bit matrix.
-                         *   Bit for pair (i,j) with i>j lives at position
-                         *   i*(i-1)/2 + j inside the flat uint64_t array.  */
-    AdjList  *adj;      /**< Per-node adjacency list (arena headers, heap data). */
-    int      *degree;   /**< Current interference degree of each node.
-                         *   Decremented as nodes are removed during Simplify. */
-    int      *color;    /**< Assigned physical-register colour.
-                         *   -1 = uncoloured (pre-allocation),
-                         *   -2 = spilled (no colour available),
-                         *   >=0 = index in [0, PHYS_ALLOCATABLE).           */
-    bool     *active;   /**< 1 while the node is still in the graph (not
-                         *   removed by Simplify or pre-assigned as physical). */
-    uint32_t *excl;     /**< Bitmask of forbidden physical-register colours
-                         *   beyond what interference edges already encode.
-                         *   Set for partial clobbers (SETcc writes %al).    */
-    int      *spillCost;    /**< Estimated cost of spilling this virtual register.
-                             *   Accumulated as loop-depth-weighted def/use count. */
-    char     *crossesCall;  /**< 1 if the vreg is live across at least one CALL.
-                             *   Used by colour selector to prefer callee-saved regs,
-                             *   reducing push/pop overhead in the function frame.  */
-    char     *isReloadTemp; /**< 1 if this node is a reload/spill temp introduced
-                             *   by a previous ra_spill_insert() round (see the
-                             *   module-level doc above and ig_build()'s
-                             *   firstSpillVreg parameter). Consulted by
-                             *   ra_simplify() to avoid respilling short-lived
-                             *   spill-code temporaries ahead of genuinely
-                             *   long-lived values.                              */
+    int       n;             /**< Total nodes: nextVreg + PHYS_ALLOCATABLE ([0,nextVreg)=virtual, rest=physical). */
+    uint64_t *matrix;        /**< Lower-triangular bit matrix; pair (i,j), i>j, at bit i*(i-1)/2+j. */
+    AdjList  *adj;           /**< Per-node adjacency list. */
+    int      *degree;        /**< Current interference degree; decremented during Simplify. */
+    int      *color;         /**< Assigned colour: -1=uncoloured, -2=spilled, >=0=phys reg index. */
+    bool     *active;        /**< 1 while node still in the graph. */
+    uint32_t *excl;          /**< Forbidden colour bitmask beyond interference edges (e.g. SETcc clobbers %al). */
+    int      *spillCost;     /**< Loop-depth-weighted def/use count. */
+    char     *crossesCall;   /**< 1 if live across a CALL; prefer callee-saved to cut push/pop. */
+    char     *isReloadTemp;  /**< 1 if a reload/spill temp from a prior ra_spill_insert() round;
+                              *   lets ra_simplify() avoid respilling short-lived temps first. */
 } IGraph;
 
 /**
