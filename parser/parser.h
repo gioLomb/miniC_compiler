@@ -4,6 +4,9 @@
 #include "ast.h"
 #include "../arena.h"
 
+#define NEW_NODE(p, kind, text) newNode((p)->ast_arena, (kind), (text))
+
+
 /**
  * @file parser.h
  * @brief Recursive-descent parser interface.
