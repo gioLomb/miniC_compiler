@@ -1,12 +1,31 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include "semantic.h"
 #include "ast_to_symtab.h"
 
-/* =========================================================================
- * Internal helpers
- * ========================================================================= */
+static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors);
+static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
+                           Arena *arena, int *errors);
+
+
+/**
+ * @brief Centralized error reporting helper to eliminate duplicated boilerplate code.
+ *
+ * Increments the error counter and prints formatted error messages to standard error.
+ *
+ * @param errors Pointer to the error accumulator counter.
+ * @param fmt    Format string (printf-style).
+ * @param ...    Variadic arguments matching the format string.
+ */
+static void reportError(int *errors, const char *fmt, ...) {
+    if (errors) (*errors)++;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+}
 
 /**
  * @brief Return a human-readable name for a DataType (used in error messages).
@@ -42,12 +61,6 @@ static inline int isTypeCompatible(DataType target, DataType value) {
     return 0;
 }
 
-/* Forward declarations: checkExprType and checkStmt are mutually recursive
- * because expressions can contain calls (which have argument expressions)
- * and statements contain expressions. */
-static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors);
-static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
-                           Arena *arena, int *errors);
 
 /* =========================================================================
  * Name resolution
@@ -76,26 +89,22 @@ static DataType resolveNameUse(ASTNode *expr, Scope *scope, int wantArray,
                               Symbol *outSym, int *errors) {
     Symbol sym;
     if (!sym_resolve(scope, expr->text, &sym)) {
-        fprintf(stderr, "Errore: '%s' non e' stato dichiarato\n", expr->text);
-        (*errors)++;
+        reportError(errors, "Errore: '%s' non e' stato dichiarato\n", expr->text);
         return T_VOID;
     }
     if (sym.kind != SYM_VAR) {
         // Function names are valid only in ND_CALL, not as plain identifiers.
-        fprintf(stderr, "Errore: '%s' e' una funzione, non una variabile\n", expr->text);
-        (*errors)++;
+        reportError(errors, "Errore: '%s' e' una funzione, non una variabile\n", expr->text);
         return T_VOID;
     }
     if (wantArray && !sym.isArray) {
-        fprintf(stderr, "Errore: '%s' non e' un array, non si puo' usare con []\n", expr->text);
-        (*errors)++;
+        reportError(errors, "Errore: '%s' non e' un array, non si puo' usare con []\n", expr->text);
         return T_VOID;
     }
     if (!wantArray && sym.isArray) {
         // An array name used without [] would decay to a pointer in C, but
         // this language does not support pointer arithmetic — reject it.
-        fprintf(stderr, "Errore: '%s' e' un array, va usato con [] e non da solo\n", expr->text);
-        (*errors)++;
+        reportError(errors, "Errore: '%s' e' un array, va usato con [] e non da solo\n", expr->text);
         return T_VOID;
     }
 
@@ -165,6 +174,84 @@ static int tryEvalConstant(ASTNode *expr, long *out) {
     return 0; // variables, float literals, calls: not constant
 }
 
+
+/**
+ * @brief Helper function to perform static array bounds checking.
+ * 
+ * @param expr     Array access AST node.
+ * @param idx      Index AST node.
+ * @param sym      Resolved array symbol.
+ * @param errors   Error count accumulator.
+ */
+static void check_array_bounds(ASTNode *expr, ASTNode *idx, const Symbol *sym, int *errors) {
+    long constValue;
+    if (tryEvalConstant(idx, &constValue)) {
+        if (constValue < 0 || constValue >= sym->arraySize) {
+            reportError(errors, "Errore: indice %ld fuori dai limiti di '%s' (dimensione %d)\n",
+                        constValue, expr->text, sym->arraySize);
+        }
+    }
+}
+
+/**
+ * @brief Helper function to check arguments passed to a function call.
+ * 
+ * @param expr        ND_CALL AST node.
+ * @param scope       Current scope.
+ * @param sym         Resolved function symbol.
+ * @param checkLimit  Number of arguments to type-check.
+ * @param errors      Error count accumulator.
+ */
+static void check_call_arguments(ASTNode *expr, Scope *scope, const Symbol *sym, int checkLimit, int *errors) {
+    for (int i = 0; i < expr->nchildren; i++) {
+        DataType argType = checkExprType(expr->children[i], scope, errors);
+        if (i < checkLimit) {
+            DataType paramType = symtab_unpack_param_type(sym->paramTypes, i);
+            if (argType != T_VOID && !isTypeCompatible(paramType, argType)) {
+                reportError(errors, "Errore: argomento %d di '%s' e' %s, atteso %s\n",
+                            i + 1, expr->text, typeName(argType), typeName(paramType));
+            }
+        }
+    }
+}
+
+/**
+ * @brief Helper function to validate variable initialization on declaration.
+ * 
+ * @param stmt     ND_VAR_DECL AST node.
+ * @param scope    Current scope.
+ * @param declType Resolved declared data type.
+ * @param varName  Variable name.
+ * @param isArray  Flag specifying if variable is an array.
+ * @param arraySize Size of the array (if applicable).
+ * @param errors   Error count accumulator.
+ */
+static void check_variable_init(ASTNode *stmt, Scope *scope, DataType declType,
+                                const char *varName, int isArray, int arraySize, int *errors) {
+    if (!isArray) {
+        // Scalar initializer: exactly one expression child.
+        DataType t = checkExprType(stmt->children[0], scope, errors);
+        if (t != T_VOID && !isTypeCompatible(declType, t)) {
+            reportError(errors, "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
+                        varName, typeName(declType), typeName(t));
+        }
+        return;
+    }
+
+    // Array initializer list.
+    if (stmt->nchildren > arraySize) {
+        reportError(errors, "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
+                    varName, stmt->nchildren, arraySize);
+    }
+    for (int i = 0; i < stmt->nchildren; i++) {
+        DataType t = checkExprType(stmt->children[i], scope, errors);
+        if (t != T_VOID && !isTypeCompatible(declType, t)) {
+            reportError(errors, "Errore: elemento %d dell'inizializzatore di '%s' e' %s, atteso %s\n",
+                        i, varName, typeName(t), typeName(declType));
+        }
+    }
+}
+
 /* =========================================================================
  * Expression type-checking
  * ========================================================================= */
@@ -194,7 +281,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         return T_FLOAT;
 
     case ND_ID:
-        return resolveNameUse(expr, scope, /*wantArray=*/0, NULL, errors);
+        return resolveNameUse(expr, scope, 0, NULL, errors);
 
     /* ---- Array element access: arr[idx] --------------------------------- */
     case ND_ARRAY_ACCESS: {
@@ -203,23 +290,15 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
 
         // Index must be integral; T_VOID means an earlier error already fired.
         if (idxType != T_VOID && idxType != T_INT) {
-            fprintf(stderr, "Errore: l'indice di '%s[]' deve essere int, non %s\n",
-                    expr->text, typeName(idxType));
-            (*errors)++;
+            reportError(errors, "Errore: l'indice di '%s[]' deve essere int, non %s\n",
+                        expr->text, typeName(idxType));
         }
 
         Symbol sym;
         DataType elemType = resolveNameUse(expr, scope, /*wantArray=*/1, &sym, errors);
 
-        // Static bounds check: only when the index is a compile-time constant.
-        long constValue;
-        if (elemType != T_VOID && tryEvalConstant(idx, &constValue)) {
-            if (constValue < 0 || constValue >= sym.arraySize) {
-                fprintf(stderr,
-                        "Errore: indice %ld fuori dai limiti di '%s' (dimensione %d)\n",
-                        constValue, expr->text, sym.arraySize);
-                (*errors)++;
-            }
+        if (elemType != T_VOID) {
+            check_array_bounds(expr, idx, &sym, errors);
         }
 
         return elemType;
@@ -231,35 +310,19 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         int found = sym_resolve(scope, expr->text, &sym);
 
         if (!found) {
-            fprintf(stderr, "Errore: funzione '%s' non e' stata dichiarata\n", expr->text);
-            (*errors)++;
+            reportError(errors, "Errore: funzione '%s' non e' stata dichiarata\n", expr->text);
         } else if (sym.kind != SYM_FUNC) {
-            fprintf(stderr, "Errore: '%s' non e' una funzione\n", expr->text);
-            (*errors)++;
+            reportError(errors, "Errore: '%s' non e' una funzione\n", expr->text);
             found = 0; // disable per-argument checking below
         } else if (expr->nchildren != sym.paramCount) {
-            fprintf(stderr, "Errore: '%s' chiamata con %d argomenti, ne servono %d\n",
-                    expr->text, expr->nchildren, sym.paramCount);
-            (*errors)++;
+            reportError(errors, "Errore: '%s' chiamata con %d argomenti, ne servono %d\n",
+                        expr->text, expr->nchildren, sym.paramCount);
             // Do not set found=0: still type-check the arguments supplied.
         }
 
-        // Type-check each argument even when the arity is wrong (best-effort
-        // diagnostics: report type errors alongside the arity error).
+        // Type-check each argument even when the arity is wrong.
         int checkLimit = found ? sym.paramCount : 0;
-
-        for (int i = 0; i < expr->nchildren; i++) {
-            DataType argType = checkExprType(expr->children[i], scope, errors);
-            if (i < checkLimit) {
-                DataType paramType = symtab_unpack_param_type(sym.paramTypes, i);
-                if (argType != T_VOID && !isTypeCompatible(paramType, argType)) {
-                    fprintf(stderr,
-                            "Errore: argomento %d di '%s' e' %s, atteso %s\n",
-                            i + 1, expr->text, typeName(argType), typeName(paramType));
-                    (*errors)++;
-                }
-            }
-        }
+        check_call_arguments(expr, scope, &sym, checkLimit, errors);
 
         return found ? sym.dataType : T_VOID;
     }
@@ -272,8 +335,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         // The parser accepts "1 = 2;" syntactically — reject it here at the
         // semantic level where we have enough context to diagnose it clearly.
         if (lvalue->kind != ND_ID && lvalue->kind != ND_ARRAY_ACCESS) {
-            fprintf(stderr, "Errore: il lato sinistro di '=' non e' una variabile valida\n");
-            (*errors)++;
+            reportError(errors, "Errore: il lato sinistro di '=' non e' una variabile valida\n");
             checkExprType(rvalue, scope, errors); // still visit rhs for further errors
             return T_VOID;
         }
@@ -284,9 +346,8 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         // T_VOID on either side means an error was already reported; skip the
         // type-mismatch check to avoid cascading "can't assign void to void".
         if (lt != T_VOID && rt != T_VOID && !isTypeCompatible(lt, rt)) {
-            fprintf(stderr, "Errore: non si puo' assegnare %s a una variabile %s\n",
-                    typeName(rt), typeName(lt));
-            (*errors)++;
+            reportError(errors, "Errore: non si puo' assegnare %s a una variabile %s\n",
+                        typeName(rt), typeName(lt));
         }
         return lt; // assignment expression has the type of the lhs
     }
@@ -298,32 +359,20 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
 
         // '%' requires integer operands on both sides (no float modulo).
         if (expr->text[0] == '%' && expr->text[1] == '\0') {
-            if (lt != T_VOID && lt != T_INT) (*errors)++;
-            if (rt != T_VOID && rt != T_INT) (*errors)++;
-            if ((lt != T_VOID && lt != T_INT) || (rt != T_VOID && rt != T_INT))
-                fprintf(stderr, "Errore: l'operatore %% richiede operandi interi\n");
+            if ((lt != T_VOID && lt != T_INT) || (rt != T_VOID && rt != T_INT)) {
+                reportError(errors, "Errore: l'operatore %% richiede operandi interi\n");
+            }
             return T_INT;
         }
 
         // Relational and logical operators always produce an int (boolean) result
-        // regardless of the operand types.  All such operators begin with one of
-        // these characters: = (==), ! (!=), & (&&), | (||), < (<, <=), > (>, >=).
-        switch (expr->text[0]) {
-        case '=': // "=="
-        case '!': // "!="
-        case '&': // "&&"
-        case '|': // "||"
-        case '<': // "<" or "<="
-        case '>': // ">" or ">="
+        // regardless of the operand types.
+        if (strchr("=!&|<>", expr->text[0]) != NULL) {
             return T_INT;
-        default:
-            break;
         }
 
         // Arithmetic operators (+, -, *, /):
-        //   int   op int   → int
-        //   float op *     → float  (any float operand widens the result)
-        //   T_VOID on either side → propagate T_VOID to suppress cascading errors
+
         if (lt == T_VOID || rt == T_VOID) return T_VOID;
         if (lt == T_FLOAT || rt == T_FLOAT) return T_FLOAT;
         return T_INT;
@@ -339,15 +388,11 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         return checkExprType(expr->children[0], scope, errors);
 
     default:
-        fprintf(stderr, "Errore interno: nodo inatteso in un'espressione\n");
-        (*errors)++;
+        reportError(errors, "Errore interno: nodo inatteso in un'espressione\n");
         return T_VOID;
     }
 }
 
-/* =========================================================================
- * Statement type-checking
- * ========================================================================= */
 
 /**
  * @brief Recursively type-check a statement node.
@@ -371,7 +416,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
 
     switch (stmt->kind) {
 
-    /* ---- Variable declaration: int x;  /  float arr[5] = {1.0, 2.0}; --- */
+    /* Variable declaration */
     case ND_VAR_DECL: {
         // Register the variable in the current scope and stamp the node with
         // (scopeLevel, offset); returns 0 on redeclaration.
@@ -390,35 +435,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
                                 &isArray, &arraySize);
         DataType declType = st_resolve_type(typeNameBuf);
 
-        if (!isArray) {
-            // Scalar initializer: exactly one expression child.
-            DataType t = checkExprType(stmt->children[0], scope, errors);
-            if (t != T_VOID && !isTypeCompatible(declType, t)) {
-                fprintf(stderr,
-                        "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
-                        varName, typeName(declType), typeName(t));
-                (*errors)++;
-            }
-        } else {
-            // Array initializer list: zero or more expression children (one
-            // per element).  Excess initializers are an error; missing ones
-            // are legal (remaining elements are zero-initialised at runtime).
-            if (stmt->nchildren > arraySize) {
-                fprintf(stderr,
-                        "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
-                        varName, stmt->nchildren, arraySize);
-                (*errors)++;
-            }
-            for (int i = 0; i < stmt->nchildren; i++) {
-                DataType t = checkExprType(stmt->children[i], scope, errors);
-                if (t != T_VOID && !isTypeCompatible(declType, t)) {
-                    fprintf(stderr,
-                            "Errore: elemento %d dell'inizializzatore di '%s' e' %s, atteso %s\n",
-                            i, varName, typeName(t), typeName(declType));
-                    (*errors)++;
-                }
-            }
-        }
+        check_variable_init(stmt, scope, declType, varName, isArray, arraySize, errors);
         break;
     }
 
@@ -452,10 +469,8 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
     case ND_RETURN: {
         DataType t = checkExprType(stmt->children[0], scope, errors);
         if (t != T_VOID && !isTypeCompatible(returnType, t)) {
-            fprintf(stderr,
-                    "Errore: return di tipo %s non compatibile col tipo %s della funzione\n",
-                    typeName(t), typeName(returnType));
-            (*errors)++;
+            reportError(errors, "Errore: return di tipo %s non compatibile col tipo %s della funzione\n",
+                        typeName(t), typeName(returnType));
         }
         break;
     }
@@ -472,9 +487,6 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
     }
 }
 
-/* =========================================================================
- * Per-function driver
- * ========================================================================= */
 
 /**
  * @brief Type-check a single function declaration end-to-end.
@@ -522,9 +534,6 @@ static void checkFunctionBody(ASTNode *decl, Scope *global,
     checkStmt(body, fnScope, returnType, arena, errors);
 }
 
-/* =========================================================================
- * Public entry point
- * ========================================================================= */
 
 int semantic_check(ASTNode *program, Scope *global) {
     int errors = 0;

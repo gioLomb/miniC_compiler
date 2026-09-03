@@ -29,6 +29,17 @@
  * riusata da chiamate precedenti. Fix: allocare+azzerare isReloadTemp come
  * gli altri campi paralleli.
  * ---------------------------------------------------------------------
+ *
+ * FIX applicato in QUESTA revisione: ra_select_colors() e' stata refactored
+ * per rimuovere il parametro 'nextVreg' (mai usato nel corpo: la funzione
+ * itera solo su stack[0..stackLen), gia' filtrato da ra_simplify() nel
+ * range [0,nextVreg)). Tutte le chiamate in questo file sono state
+ * aggiornate alla nuova firma a 5 argomenti:
+ *
+ *   ra_select_colors(g, stack, stackLen, spilled, pl)
+ *
+ * invece della vecchia firma a 6 argomenti che includeva 'n' (nextVreg)
+ * come secondo parametro.
  */
 
 #include <stdio.h>
@@ -118,13 +129,6 @@ static IGraph build_path(int n, Arena *arena) {
     return g;
 }
 
-static int edge(const IGraph *g, int i, int j) {
-    long idx;
-    if (i < j) { int t = i; i = j; j = t; }
-    idx = (long)i * (i - 1) / 2 + j;
-    return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
-}
-
 int main(void) {
 
     /* ================================================================
@@ -144,7 +148,8 @@ int main(void) {
         assert(stackLen == n && "ogni nodo deve essere rimosso e impilato una volta");
 
         int *spilled = malloc((size_t)n * sizeof(int));
-        int nSpilled = ra_select_colors(&g, n, stack, stackLen, spilled, NULL);
+        /* FIX: firma aggiornata, nextVreg rimosso (mai usato nel corpo). */
+        int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, NULL);
 
         /* Una cricca di n nodi richiede esattamente n colori: con k
          * disponibili, esattamente (n-k) nodi devono spillare. */
@@ -185,7 +190,7 @@ int main(void) {
         assert(stackLen == n);
 
         int *spilled = malloc((size_t)n * sizeof(int));
-        int nSpilled = ra_select_colors(&g, n, stack, stackLen, spilled, NULL);
+        int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, NULL);
         assert(nSpilled == 0 && "una cricca di esattamente k nodi deve essere colorabile");
 
         int seen[PHYS_ALLOCATABLE]; memset(seen, 0, sizeof(seen));
@@ -214,7 +219,7 @@ int main(void) {
         assert(stackLen == n);
 
         int *spilled = malloc((size_t)n * sizeof(int));
-        int nSpilled = ra_select_colors(&g, n, stack, stackLen, spilled, NULL);
+        int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, NULL);
         assert(nSpilled == 0 && "un path graph (grado<=2) e' sempre 2-colorabile, a maggior ragione con k=14");
 
         for (int i = 0; i + 1 < n; i++)
@@ -266,7 +271,7 @@ int main(void) {
         pl.pairs[0] = (PartnerPair){ .u = 0, .v = 1 };
         pl.count = 1; pl.cap = 1;
 
-        int nSpilled = ra_select_colors(&g, n, stack, 1, spilled, &pl);
+        int nSpilled = ra_select_colors(&g, stack, 1, spilled, &pl);
         assert(nSpilled == 0);
         assert(g.color[0] == 5 && "il biased coloring deve riusare il colore 5 del partner");
 
@@ -360,7 +365,7 @@ int main(void) {
         pl.pairs[1] = (PartnerPair){ .u = 0, .v = 2 }; /* B: colore 3, disponibile */
         pl.count = 2; pl.cap = 2;
 
-        int nSpilled = ra_select_colors(&g, n, stack, 1, spilled, &pl);
+        int nSpilled = ra_select_colors(&g, stack, 1, spilled, &pl);
         assert(nSpilled == 0);
         assert(g.color[0] == 3 &&
                "hint del primo partner (colore escluso) deve essere scartato; "

@@ -93,7 +93,7 @@ TEST_RA_COLOR_SRCS       := $(COMMON_SRCS) \
 # (per regalloc_is_rmw) + arena.c (indirettamente incluso via instr_selector.h
 # -> ir.h -> arena non necessario a runtime, ma instr_selector.h/ir.h non
 # richiedono simboli extra): nessuna dipendenza dal resto del frontend/IR.
-TEST_RA_SPILL_SRCS       := $(REGALLOC_UTILS_SRC) $(RA_SPILL_SRC) \
+TEST_RA_SPILL_SRCS       := $(ARENA_SRC) $(REGALLOC_UTILS_SRC) $(RA_SPILL_SRC) \
                             tests/test_ra_spill.c
 
 # ============================================================

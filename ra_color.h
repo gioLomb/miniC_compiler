@@ -49,22 +49,8 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack);
 
 /**
  * @brief Select phase: assign physical-register colors in reverse removal order.
- *
- * For each node popped from @p stack (LIFO reinsertion), computes the set of
- * colors still available given already-colored neighbours and the node's
- * exclusion mask, then applies the following priority:
- *
- *  1. Biased hint from a move-related partner in @p pl (if available and
- *     still valid within the @c available mask).
- *  2. For vregs crossing a CALL, prefer a callee-saved color to minimise
- *     push/pop overhead in the function prologue/epilogue.
- *  3. Lowest available color (no special preference).
- *
- * If no color is available the node is marked as spilled (@c color = -2)
- * and appended to @p spilled.
- *
+ * ...
  * @param g        Interference graph (colors written into g->color).
- * @param nextVreg Number of virtual registers.
  * @param stack    Removal-order stack produced by ra_simplify().
  * @param stackLen Number of entries in @p stack.
  * @param spilled  Output array (caller-allocated, capacity >= nextVreg)

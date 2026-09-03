@@ -42,14 +42,6 @@
 #include "regalloc_utils.h" //TODO
 #include "instr_selector.h"
 
-/* =========================================================================
- * Latency table — Agner Fog Haswell / Broadwell estimates
- * =========================================================================
- * Each value is the instruction latency in cycles (time from issue to result
- * available to a dependent instruction).  The scheduler uses these to
- * compute the critical-path height of each DAG node and to prioritise
- * high-latency operations so they start as early as possible.
- * ========================================================================= */
 
 /**
  * @brief Return the execution latency in cycles for machine opcode @p op.
@@ -92,9 +84,6 @@ static inline int sched_latency_of(MachOpCode op) {
     }
 }
 
-/* =========================================================================
- * Instruction predicates
- * ========================================================================= */
 
 /**
  * @brief Return non-zero if @p op must stay at a fixed position in the block.
@@ -174,17 +163,7 @@ static inline int sched_is_cmp_or_test(MachOpCode op) {
     return op == MACH_CMP || op == MACH_TEST;
 }
 
-/* =========================================================================
- * Operand / def-use extractors
- * =========================================================================
- * These helpers translate MachOperand structs into flat integer register ids
- * used by build_dag() to look up and update the SparseMap renaming table.
- *
- * Id space:
- *   [0,       nextVreg)                — virtual registers
- *   [nextVreg, nextVreg+PHYS_COUNT)    — physical registers (PHYS_AL
- *                                        normalised to PHYS_RAX)
- * ========================================================================= */
+
 
 /**
  * @brief Extract the primary register id from a MachOperand.

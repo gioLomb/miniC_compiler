@@ -21,16 +21,6 @@
  * For every loop containing a basic induction variable (e.g. `i = i + c`) and a
  * derived induction variable (e.g. `t = i * d`), this pass rewrites the IR as follows:
  *
- * @code
- *   [pre-header]          [pre-header]
- *                   ->      t_sr = i * d
- *
- *   [body]                [body]
- *     t = i * d     ->      t = t_sr        (candidate for Dead Code Elimination)
- *     i = i + c             i = i + c
- *                           t_sr = t_sr + (c * d)
- * @endcode
- *
  * Prerequisites
  * -------------
  * Requires `licm_optimize()` to have been executed on the target function beforehand

@@ -102,8 +102,7 @@ static inline void reload_mem_operands_if_spilled(MachOperand *mem_holder, int o
     }
 }
 
-static inline void emit_spilled_destination(MachInstr *in, int orig_next_vreg,
-                                            const BitSet *ss, const int *slot,
+static inline void emit_spilled_destination(MachInstr *in, const int *slot,
                                             MachFunction *f, MachInstr *new_instrs,
                                             int *new_count, int *cache)
 {
@@ -112,26 +111,23 @@ static inline void emit_spilled_destination(MachInstr *in, int orig_next_vreg,
     int dst_tmp;
 
     if (regalloc_is_rmw(in->op)) {
-        // Read-modify-write: load current value before instruction executes
         MachOperand tmp = { .kind = MO_VREG, .vregId = orig_dst_vreg };
         load_spilled(&tmp, orig_dst_vreg, f, dst_store_off, new_instrs, new_count, cache);
         dst_tmp = tmp.vregId;
     } else {
-        // Pure write: allocate a fresh temporary
         dst_tmp = f->nextVreg++;
     }
 
     in->dst.vregId = dst_tmp;
     new_instrs[(*new_count)++] = *in;
 
-    // Emit store instruction to persist result to stack frame
     MachInstr st = {0};
-    st.op         = MACH_MOV;
-    st.dst.kind   = MO_STACK; 
+    st.op           = MACH_MOV;
+    st.dst.kind     = MO_STACK;
     st.dst.stackOff = dst_store_off;
-    st.src1.kind  = MO_VREG;  
+    st.src1.kind    = MO_VREG;
     st.src1.vregId  = dst_tmp;
-    st.src2.kind  = MO_NONE;
+    st.src2.kind    = MO_NONE;
 
     new_instrs[(*new_count)++] = st;
     cache[orig_dst_vreg] = dst_tmp;
@@ -177,7 +173,7 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
                           is_spilled_vreg(&ss, in.dst.vregId, origNextVreg);
 
         if (dstSpilled) {
-            emit_spilled_destination(&in, origNextVreg, &ss, slot, f, newInstrs, &newCount, cache);
+            emit_spilled_destination(&in, slot, f, newInstrs, &newCount, cache);
         } else {
             newInstrs[newCount++] = in;
         }

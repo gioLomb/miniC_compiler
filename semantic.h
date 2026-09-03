@@ -9,13 +9,6 @@
  * @brief Single-pass semantic analysis: scope creation, name resolution,
  *        and type checking.
  *
- * Merges what used to be two separate phases:
- *   - **Pass 2**: creation of parameter/block scopes and declaration of
- *     local variables.
- *   - **Semantic verification**: name resolution and type checking of every
- *     use site (ND_ID, ND_CALL, ND_ARRAY_ACCESS, assignments, operators,
- *     return statements).
- *
  * Rationale for merging: the scopes opened during Pass 2 (one per function
  * body, one per nested block) were local to the C call-frame of the old
  * walking function and disappeared when it returned — no clean way for a
