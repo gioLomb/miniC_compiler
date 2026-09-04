@@ -204,6 +204,15 @@ IRProgram *ir_generate(ASTNode *program);
 int ir_is_pure(IROp op);
 
 /**
+ * @brief Tests two operands for structural identity (same kind and same storage location).
+ *
+ * @param a First operand.
+ * @param b Second operand.
+ * @return 1 if both operands reference the same variable or temporary, 0 otherwise.
+ */
+int ir_is_same_operand(const Operand *a, const Operand *b);
+
+/**
  * @brief Compact @p f->instrs by removing every instruction flagged in @p eliminate.
  *
  * Rebuilds the instruction array in a single pass, rewriting each block's

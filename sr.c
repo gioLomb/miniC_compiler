@@ -7,7 +7,6 @@
  * Internal organization
  * ---------------------
  *  foldInt                  - Integer constant folding helper.
- *  sameOperand              - Operand equivalence comparison.
  *  count_variable_definitions- Counts variable write frequencies within a loop.
  *  collect_base_induction_vars- Filters and extracts basic induction variables.
  *  findInductionBase        - Identifies basic induction variables (i = i +/- c).
@@ -65,24 +64,6 @@ static inline int foldInt(IROp operation, int operandA, int operandB, int *resul
     }
 }
 
-/**
- * @brief Tests two operands for structural identity.
- *
- * @param a First operand.
- * @param b Second operand.
- * @return 1 if both operands reference the same variable or temporary, 0 otherwise.
- */
-static inline int sameOperand(Operand operandA, Operand operandB) {
-    if (operandA.kind != operandB.kind) return 0;
-    // var: match by (level, offset)
-    if (operandA.kind == OPND_VAR)
-        return operandA.data.varLevel  == operandB.data.varLevel &&
-               operandA.data.varOffset == operandB.data.varOffset;
-    // temp: match by id
-    if (operandA.kind == OPND_TEMP)
-        return operandA.data.tempId == operandB.data.tempId;
-    return 0; // const/other: never same
-}
 
 /**
  * @brief Descriptor for a basic induction variable in a loop.
@@ -135,36 +116,40 @@ static void count_variable_definitions(const IRFunction *irFunction, const Loop 
     }
 }
 
-//TODO
-static int collect_base_induction_vars(const IRFunction *irFunction, const Loop *targetLoop, VarMap *variableMap,
-                                      const int *definitionCounts, InductionBase *baseVariables) {
+
+static int collect_base_induction_vars(const IRFunction *irFunction, const Loop *targetLoop,
+                                        VarMap *variableMap, const int *definitionCounts,
+                                        InductionBase *baseVariables) {
     int collectedCount = 0;
 
     for (int bodyIndex = 0; bodyIndex < targetLoop->bodyCount && collectedCount < MAX_IVARS; bodyIndex++) {
         int blockIndex = targetLoop->body[bodyIndex];
-        for (int instructionIndex = irFunction->blocks[blockIndex].bb.range.start;
-             instructionIndex < irFunction->blocks[blockIndex].bb.range.end && collectedCount < MAX_IVARS;
-             instructionIndex++) {
-            const IRInstr *currentInstruction = &irFunction->instrs[instructionIndex];
 
-            // pattern: dst = dst +/- const
-            if (currentInstruction->op != IR_ADD && currentInstruction->op != IR_SUB) continue;
-            if (!ir_operand_is_storage(currentInstruction->dst.kind))                 continue;
-            if (!sameOperand(currentInstruction->dst, currentInstruction->src1))       continue;
-            if (currentInstruction->src2.kind != OPND_CONST_INT)                      continue;
+        // cache block instruction range — avoids repeated struct dereference in inner loop
+        int instrStart = irFunction->blocks[blockIndex].bb.range.start;
+        int instrEnd   = irFunction->blocks[blockIndex].bb.range.end;
 
-            // must be single-def var (clean IV, no other writers)
-            int variableId = varmap_operand_id(variableMap, currentInstruction->dst);
-            if (variableId < 0 || definitionCounts[variableId] != 1)                   continue;
+        for (int iIdx = instrStart; iIdx < instrEnd && collectedCount < MAX_IVARS; iIdx++) {
+            const IRInstr *instr = &irFunction->instrs[iIdx];
 
-            int stepValue = currentInstruction->src2.data.intVal; // SUB -> negative step
-            if (currentInstruction->op == IR_SUB) stepValue = -stepValue;
+            // guard cascade: filter non-IV patterns (cold path)
+            if (instr->op != IR_ADD && instr->op != IR_SUB)      continue;
+            if (!ir_operand_is_storage(instr->dst.kind))          continue;
+            if (!ir_is_same_operand(&(instr->dst), &(instr->src1)))            continue;
+            if (instr->src2.kind != OPND_CONST_INT)               continue;
+
+            // must be single-def (clean IV)
+            int variableId = varmap_operand_id(variableMap, instr->dst);
+            if (variableId < 0 || definitionCounts[variableId] != 1) continue;
+
+            int stepValue = instr->src2.data.intVal;
+            if (instr->op == IR_SUB) stepValue = -stepValue; // SUB → negative step
 
             baseVariables[collectedCount++] = (InductionBase){
-                .variable                  = currentInstruction->dst,
+                .variable                  = instr->dst,
                 .variableId                = variableId,
                 .stepValue                 = stepValue,
-                .incrementInstructionIndex = instructionIndex,
+                .incrementInstructionIndex = iIdx,
             };
         }
     }
@@ -186,6 +171,18 @@ static int findInductionBase(IRFunction *irFunction, Loop *targetLoop, VarMap *v
     return collect_base_induction_vars(irFunction, targetLoop, variableMap, definitionCounts, baseVariables);
 }
 
+
+// Returns 1 if instr matches (iv * const) or (const * iv), writing factor into *outFactor.
+static int match_iv_mul_const(const IRInstr *in, Operand iv, int *outFactor) {
+    if (ir_is_same_operand(&(in->src1), &iv) && in->src2.kind == OPND_CONST_INT) {
+        *outFactor = in->src2.data.intVal; return 1;
+    }
+    if (ir_is_same_operand(&(in->src2), &iv) && in->src1.kind == OPND_CONST_INT) {
+        *outFactor = in->src1.data.intVal; return 1;
+    }
+    return 0;
+}
+
 static int try_match_derived_iv(const IRInstr *currentInstruction, int instructionIndex, VarMap *variableMap,
                                 const InductionBase *baseVariables, int baseVariableCount,
                                 InductionDerived *outDerivedVariable, int *nextTemporaryId) {
@@ -198,12 +195,7 @@ static int try_match_derived_iv(const IRInstr *currentInstruction, int instructi
         int constantFactor = 0;
 
         // i*const or const*i, commutative
-        if (sameOperand(currentInstruction->src1, baseVar->variable) && currentInstruction->src2.kind == OPND_CONST_INT)
-            constantFactor = currentInstruction->src2.data.intVal;
-        else if (sameOperand(currentInstruction->src2, baseVar->variable) && currentInstruction->src1.kind == OPND_CONST_INT)
-            constantFactor = currentInstruction->src1.data.intVal;
-        else
-            continue;
+        if (!match_iv_mul_const(currentInstruction, baseVar->variable, &constantFactor)) continue;
 
         int calculatedStride; // stride = step(i) * multiplier
         if (!foldInt(IR_MUL, baseVar->stepValue, constantFactor, &calculatedStride)) continue;
@@ -238,10 +230,11 @@ static int findDerived(IRFunction *irFunction, Loop *targetLoop, VarMap *variabl
     // same traversal as basic-IV scan
     for (int bodyIndex = 0; bodyIndex < targetLoop->bodyCount; bodyIndex++) {
         int blockIndex = targetLoop->body[bodyIndex];
-        for (int instructionIndex = irFunction->blocks[blockIndex].bb.range.start;
-             instructionIndex < irFunction->blocks[blockIndex].bb.range.end && derivedCount < MAX_DERIVED;
-             instructionIndex++) {
-            if (try_match_derived_iv(&irFunction->instrs[instructionIndex], instructionIndex, variableMap, 
+        int start = irFunction->blocks[blockIndex].bb.range.start;
+        int end   = irFunction->blocks[blockIndex].bb.range.end;
+
+        for (int instrIdx = start; instrIdx < end && derivedCount < MAX_DERIVED; instrIdx++) {
+            if (try_match_derived_iv(&irFunction->instrs[instrIdx], instrIdx, variableMap, 
                                      baseVariables, baseVariableCount, &derivedVariables[derivedCount], nextTemporaryId)) {
                 derivedCount++;
             }

@@ -88,24 +88,7 @@ int is_comparison_op(IROp op) {
 }
 
 
-/**
- * @brief Structural equality for two Operand values.
- *
- * Used by the rewrite pass to detect when substituting a constant into
- * an operand actually changed it (avoids spurious modified=1 signals).
- */
-static inline int operand_equal(const Operand *a, const Operand *b) {
-    if (a->kind != b->kind) return 0;
-    if (a->kind == OPND_CONST_INT)   return a->data.intVal   == b->data.intVal;
-    if (a->kind == OPND_CONST_FLOAT) return a->data.floatVal == b->data.floatVal;
-    if (a->kind == OPND_VAR)
-        return a->data.varLevel  == b->data.varLevel &&
-               a->data.varOffset == b->data.varOffset;
-    if (a->kind == OPND_TEMP)  return a->data.tempId  == b->data.tempId;
-    if (a->kind == OPND_LABEL) return a->data.labelId == b->data.labelId;
-    if (a->kind == OPND_FUNC)  return strcmp(a->data.funcName, b->data.funcName) == 0;
-    return 1; /* OPND_NONE */
-}
+
 
 /**
  * @brief Constant-fold a binary integer operation.
@@ -503,7 +486,7 @@ static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, VarMap
 
     if (cond.kind != OPND_CONST_INT && cond.kind != OPND_CONST_FLOAT) {
         // not fully constant: keep only if the substitution actually changed something
-        if (operand_equal(&cond, &in->src1)) return 0;
+        if (ir_is_same_operand(&cond, &in->src1)) return 0;
         in->src1 = cond;
         return 1;
     }
@@ -543,8 +526,8 @@ static int try_fold_generic_instr(IRInstr *in, ConstMap *live, VarMap *vm) {
 
     Operand ns1 = const_map_try_fold(in->src1, live, vm);
     Operand ns2 = const_map_try_fold(in->src2, live, vm);
-    if (!operand_equal(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
-    if (!operand_equal(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
+    if (!ir_is_same_operand(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
+    if (!ir_is_same_operand(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
 
     // only binary arithmetic/relational opcodes are foldable here
     int isBinaryFoldable =

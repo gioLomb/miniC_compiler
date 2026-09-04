@@ -239,63 +239,87 @@ static int find_func_begin_index(const MachFunction *f)
     }
     return -1;
 }
+/** @brief Build a PUSH instruction saving physical register @p physReg. */
+static inline MachInstr make_push_instr(int physReg) {
+    MachInstr ps = {0};
+    ps.op          = MACH_PUSH;
+    ps.dst.kind    = MO_PHYS;
+    ps.dst.physReg = physReg;
+    return ps;
+}
+
+/** @brief Build a POP instruction restoring physical register @p physReg. */
+static inline MachInstr make_pop_instr(int physReg) {
+    MachInstr po = {0};
+    po.op          = MACH_POP;
+    po.dst.kind    = MO_PHYS;
+    po.dst.physReg = physReg;
+    return po;
+}
 
 /**
- * @brief Insert PUSH/POP pairs in the prologue/epilogue for used callee-saved regs.
- */ //TODO: ARENA, CACHING POINTER, EXTRACT FUNCTION
-static void save_restore_callee(MachFunction *f){
+ * @brief Emit @p funcBeginInstr followed by one PUSH per used callee-saved reg.
+ * @return Updated write cursor into @p dst.
+ */
+static int emit_pushes(MachInstr *dst, int at, const MachInstr *funcBeginInstr,
+                        const int *used, int usedCount) {
+    // keep FUNC_BEGIN itself as the very first instruction
+    dst[at++] = *funcBeginInstr;
+    // one PUSH per callee-saved reg actually written in this function
+    for (int k = 0; k < usedCount; k++)
+        dst[at++] = make_push_instr(used[k]);
+    return at;
+}
+
+/**
+ * @brief Emit POPs for the used callee-saved registers, reverse push order.
+ * @return Updated write cursor into @p dst.
+ */
+static int emit_pops(MachInstr *dst, int at, const int *used, int usedCount) {
+    // LIFO: last pushed must be popped first to restore correctly
+    for (int k = usedCount - 1; k >= 0; k--)
+        dst[at++] = make_pop_instr(used[k]);
+    return at;
+}
+
+static void save_restore_callee(MachFunction *f)
+{
     int retCount = 0;
     uint32_t usedMask = collect_used_callee_saved(f, &retCount);
 
-    if (usedMask == 0) return; // Guard clause: No registers to save
+    if (usedMask == 0) return; // no callee-saved reg touched: nothing to save
 
     int used[PHYS_CALLEE_SAVED_COUNT];
     int usedCount = 0;
-
-    for (int p = PHYS_RBX; p <= PHYS_R15; p++) {
-        if ((usedMask >> p) & 1u) {
-            used[usedCount++] = p;
-        }
-    }
+    // collect used callee-saved regs in fixed RBX..R15 order (deterministic push/pop order)
+    for (int p = PHYS_RBX; p <= PHYS_R15; p++)
+        if ((usedMask >> p) & 1u) used[usedCount++] = p;
 
     int funcBeginIdx = find_func_begin_index(f);
 
+    // worst case: 1 PUSH per used reg once, 1 POP per used reg per RET
     size_t allocCapacity = (size_t)(f->count + usedCount + (size_t)usedCount * retCount);
     MachInstr *newInstrs = malloc(allocCapacity * sizeof(MachInstr));
     int newCount = 0;
 
     for (int i = 0; i < f->count; i++) {
         if (i == funcBeginIdx) {
-            newInstrs[newCount++] = f->instrs[i];
-            for (int k = 0; k < usedCount; k++) {
-                MachInstr ps = {0};
-                ps.op = MACH_PUSH;
-                ps.dst.kind = MO_PHYS;
-                ps.dst.physReg = used[k];
-                newInstrs[newCount++] = ps;
-            }
+            // prologue site: FUNC_BEGIN + pushes, then skip the plain copy below
+            newCount = emit_pushes(newInstrs, newCount, &f->instrs[i], used, usedCount);
             continue;
         }
+        if (f->instrs[i].op == MACH_RET)
+            // epilogue site: pops go right before RET
+            newCount = emit_pops(newInstrs, newCount, used, usedCount);
 
-        if (f->instrs[i].op == MACH_RET) {
-            for (int k = usedCount - 1; k >= 0; k--) {
-                MachInstr po = {0};
-                po.op = MACH_POP;
-                po.dst.kind = MO_PHYS;
-                po.dst.physReg = used[k];
-                newInstrs[newCount++] = po;
-            }
-        }
-
+        // default: copy the instruction through unchanged
         newInstrs[newCount++] = f->instrs[i];
     }
 
-    free(f->instrs);
+    free(f->instrs); // old buffer always malloc'd (mfunc_create/realloc pipeline)
     f->instrs = newInstrs;
     f->count  = newCount;
 }
-
-
 /**
  * @brief Run a single build->liveness->interference->color round.
  *

@@ -137,6 +137,15 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
 }
 
 
+// static inline int operand_identity_mismatch(Operand dst, Operand op) {
+// //     if (op.kind == OPND_VAR)
+// //         return dst.data.varLevel  != op.data.varLevel ||
+// //                dst.data.varOffset != op.data.varOffset;
+// //     if (op.kind == OPND_TEMP)
+// //         return dst.data.tempId != op.data.tempId;
+// //     return 0; // unknown kind: conservatively no mismatch
+// // }
+
 /**
  * @brief Scan a single block's instruction range for a definition of @p op,
  *        updating *foundIdx with the (last) matching definition's index.
@@ -151,27 +160,25 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
  * @return 0 to keep scanning the remaining blocks, or -1 if a matching
  *         definition was found that is NOT marked invariant — the caller
  *         must abort the whole search immediately in that case.
- *///TODO
+ */
 static int scan_block_for_def(IRFunction *f, int b, Operand op,
                                const char *invariant, int *foundIdx) {
-    for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
-        IRInstr *in = &f->instrs[j];
-        if (!ir_defines_dst(in->op)) continue;
-        if (in->dst.kind != op.kind) continue;
+    const IRInstr *instrs = f->instrs; // cache pointer, evita reload da f ogni iter
+    int start = f->blocks[b].bb.range.start;
+    int end   = f->blocks[b].bb.range.end;
 
-        // match by kind-specific identity fields
-        if (op.kind == OPND_VAR &&
-            (in->dst.data.varLevel  != op.data.varLevel ||
-             in->dst.data.varOffset != op.data.varOffset)) continue;
-        if (op.kind == OPND_TEMP && in->dst.data.tempId != op.data.tempId) continue;
+    for (int j = start; j < end; j++) {
+        const IRInstr *in = &instrs[j];
 
-        // definition found — it must itself be marked invariant
+        if (!ir_defines_dst(in->op) || in->dst.kind != op.kind) continue; // fuse cold guards
+
+        if (!ir_is_same_operand(&(in->dst),&op)) continue;
+
         if (!invariant[j]) return -1;
         *foundIdx = j;
     }
     return 0;
 }
-
 
 /**
  * @brief If @p op is defined exactly once in @p L, return that instruction
@@ -365,7 +372,7 @@ static void enqueue_dependents(const UsedByList *usedBy, int dstId,
  * @param wTail    Number of entries already seeded into worklist.
  * @param invariant Output array of length f->count; invariant[j] is set
  *                 to 1 for every loop-invariant instruction.
- *///TODO
+ */
 static void propagate_worklist(IRFunction *f, Loop *L, VarMap *vm,
                                 const int *defCount, UsedByList *usedBy,
                                 int *worklist, int wTail, char *invariant) {
@@ -373,19 +380,16 @@ static void propagate_worklist(IRFunction *f, Loop *L, VarMap *vm,
 
     while (wHead < wTail) {
         int j = worklist[wHead++];
-        IRInstr *in = &f->instrs[j];
 
-        // both sources must be invariant for the instruction to be invariant
+        if (invariant[j]) continue; // cheap check first — already marked, skip expensive src checks
+
+        const IRInstr *in = &f->instrs[j]; // cache only after cheap guard passes
+
         if (!src_is_invariant(f, L, in->src1, defCount, vm, invariant)) continue;
         if (!src_is_invariant(f, L, in->src2, defCount, vm, invariant)) continue;
 
-        // already marked: nothing new to propagate
-        if (invariant[j]) continue;
-
         invariant[j] = 1;
 
-        // notify all instructions that use this instruction's destination —
-        // they may now become invariant too
         int dstId = varmap_operand_id(vm, in->dst);
         enqueue_dependents(usedBy, dstId, worklist, &wTail, invariant);
     }
@@ -493,28 +497,26 @@ static inline int instr_block(IRFunction *f, int j) {
  * @param inBody    inBody[b] = 1 if block b belongs to the loop body (pre-filled by caller).
  * @param doMove    Output: doMove[j] set to 1 for every instruction safe to hoist.
  * @return          Number of instructions marked safe to hoist.
- */ //TODO
+ */ 
 static int mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv, int header,
                            const char *inBody, char *doMove) {
-    int moved = 0;
+    const IRInstr *instrs = f->instrs; // cache
+    int count  = f->count;
+    int moved  = 0;
 
-    for (int j = 0; j < f->count; j++) {
+    for (int j = 0; j < count; j++) {
         if (!invariant[j]) continue;
 
         int blk = instr_block(f, j);
         if (!inBody[blk]) continue;
 
-        // containing block must dominate all loop exits
         if (!dominates_all_exits(L, Dom, blk)) continue;
 
-        // exactly one definition of the destination in the loop
-        int dstId = varmap_operand_id(vm, f->instrs[j].dst);
+        int dstId = varmap_operand_id(vm, instrs[j].dst); // use cached ptr
         if (dstId < 0 || defCount[dstId] != 1) continue;
 
-        // destination must not be live-in at the header
-        // (otherwise an external predecessor of the header uses the old value)
         if (bitset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
 
         doMove[j] = 1;

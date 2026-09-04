@@ -968,6 +968,21 @@ int ir_operand_is_storage(OperandKind kind) {
 }
 
 
+int ir_is_same_operand(const Operand *a, const Operand *b) {
+    if (a->kind != b->kind) return 0;
+    switch (a->kind) {
+    case OPND_VAR:         return a->data.varLevel  == b->data.varLevel &&
+                                  a->data.varOffset == b->data.varOffset;
+    case OPND_TEMP:        return a->data.tempId    == b->data.tempId;
+    case OPND_CONST_INT:   return a->data.intVal    == b->data.intVal;
+    case OPND_CONST_FLOAT: return a->data.floatVal  == b->data.floatVal;
+    case OPND_LABEL:       return a->data.labelId   == b->data.labelId;
+    case OPND_FUNC:        return strcmp(a->data.funcName, b->data.funcName) == 0;
+    case OPND_NONE:        return 1;
+    default:               return 0;
+    }
+}
+
 /**
  * @brief Pass 1: count incoming edges per block.
  *
