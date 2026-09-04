@@ -4,6 +4,7 @@
 #include <string.h>
 #include "semantic.h"
 #include "ast_to_symtab.h"
+#include "parser/errorCollector.h"
 
 static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors);
 static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
@@ -11,11 +12,15 @@ static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
 
 
 /**
- * @brief Centralized error reporting helper to eliminate duplicated boilerplate code.
+ * @brief Local counting wrapper around the shared error collector.
  *
- * Increments the error counter and prints formatted error messages to standard error.
+ * Delegates print + global running total to ec_reportv() (error_collector.h),
+ * removing the print/vfprintf duplication this function used to own.
+ * Keeps only the per-call *errors accumulation, since semantic_check()'s
+ * return value (and every caller checking pass1Errors/semErrors) depends
+ * on a locally-scoped count, not just the global total.
  *
- * @param errors Pointer to the error accumulator counter.
+ * @param errors Pointer to the error accumulator counter (may be NULL).
  * @param fmt    Format string (printf-style).
  * @param ...    Variadic arguments matching the format string.
  */
@@ -23,7 +28,7 @@ static void reportError(int *errors, const char *fmt, ...) {
     if (errors) (*errors)++;
     va_list args;
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    ec_reportv(fmt, args);
     va_end(args);
 }
 

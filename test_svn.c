@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "lexer.h"
-#include "parser/error.h"
+// #include "parser/error.h"          // RIMOSSO
+#include "parser/errorCollector.h"           // AGGIUNTO
 #include "parser/ast.h"
 #include "parser/parser.h"
 #include "arena.h"
@@ -18,6 +19,9 @@ static IRProgram *pipeline(const char *src, ASTNode **outRoot, Arena **outArena)
     Arena   *astArena = arena_create(0);
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
+
+    // (Opzionale) reset del pending dopo il parsing
+    // ec_clear_pending();
 
     Scope *global = sym_scopeCreate(NULL);
     st_resolve_global_namespace(root, global);

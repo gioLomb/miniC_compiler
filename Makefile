@@ -16,7 +16,7 @@ BIN_DIR   := bin
 # ---- Sorgenti condivisi ----
 SCANNER_SRC     := scanner/re2c/scanner_generated.c
 AST_SRC         := parser/ast.c
-ERROR_SRC       := parser/error.c
+ERROR_SRC       := parser/errorCollector.c
 PARSER_SRC      := parser/parser.c
 HASHTABLE_SRC   := hash_table.c
 SYMTAB_SRC      := symbol_table.c

@@ -11,7 +11,7 @@
  *
  *  parse_program            - Entry point for parsing a whole program.
  *  parse_statement          - Dispatches to statement/declaration parsers.
- *  parse_block              - Parses a {...} block.
+ *  parse_block               - Parses a {...} block.
  *  parse_declaration        - Parses a declaration (variable, array, or function).
  *  parse_variable_declaration - Parses a simple variable declaration with optional initializer.
  *  parse_array_declaration  - Parses an array declaration with optional initializer list.
@@ -23,18 +23,26 @@
  *  parse_expression_statement - Parses an expression followed by semicolon.
  *
  *  parse_expr               - Top-level expression parser (assignment).
- *  parse_assign             - Parses assignment (right-associative).
+ *  parse_assign              - Parses assignment (right-associative).
  *  parse_logic_or           - Parses ||.
  *  parse_logic_and          - Parses &&.
  *  parse_equality           - Parses ==, !=.
  *  parse_relational         - Parses <, >, <=, >=.
  *  parse_additive           - Parses +, -.
  *  parse_term               - Parses *, /, %.
- *  parse_unary              - Parses unary !, -.
- *  parse_factor             - Parses primary expressions.
- *  parse_call               - Parses function call after identifier.
- *  parse_array_access       - Parses array access after identifier.
- *  parse_parenthesized      - Parses '(' expr ')'.
+ *  parse_unary               - Parses unary !, -.
+ *  parse_factor              - Parses primary expressions.
+ *  parse_call                - Parses function call after identifier.
+ *  parse_array_access        - Parses array access after identifier.
+ *  parse_parenthesized       - Parses '(' expr ')'.
+ *
+ * Error reporting
+ * ---------------
+ * Uses the shared error collector (error_collector.h) instead of a
+ * parser-private module: ec_report_cascading() suppresses repeated
+ * diagnostics for the same erroneous statement (same role the old
+ * parser/error.h reportError played), ec_pending_error()/ec_clear_pending()
+ * drive panic-mode recovery in synchronize().
  */
 
 #include <stdio.h>
@@ -43,7 +51,7 @@
 #include "../tokens.h"
 #include "../lexer.h"
 #include "../arena.h"
-#include "error.h"
+#include "errorCollector.h"
 #include "ast.h"
 #include "parser.h"
 
@@ -113,8 +121,9 @@ static void match(Parser *p, int expected) {
     if (p->current_token == expected) {
         advance(p);
     } else {
-        // Report error with line info and current token details.
-        reportError(lexer_current_line(),
+        // Report error with line info and current token details; suppressed
+        // if a cascading error was already flagged for this statement.
+        ec_report_cascading(lexer_current_line(),
                     "atteso token %d, trovato '%s' (token %d)",
                     expected, p->current_lexeme, p->current_token);
     }
@@ -174,10 +183,10 @@ ASTNode *ParseProgram(Arena *arena) {
     // Parse declarations and statements until we hit EOF.
     while (parser.current_token != TOK_EOF) {
         addChild(parser.ast_arena, program_node, parse_statement(&parser));
-        if (hadAnyError()) {
-            // Recover from error and clear the error state.
+        if (ec_pending_error()) {
+            // Recover from error and clear the pending-error flag.
             synchronize(&parser);
-            clearError();
+            ec_clear_pending();
         }
     }
 
@@ -231,9 +240,9 @@ static ASTNode *parse_block(Parser *p) {
     // Parse statements until we hit the closing brace or EOF.
     while (p->current_token != TOK_DEL_RBRACE && p->current_token != TOK_EOF) {
         addChild(p->ast_arena, block_node, parse_statement(p));
-        if (hadAnyError()) {
+        if (ec_pending_error()) {
             synchronize(p);
-            clearError();
+            ec_clear_pending();
         }
     }
     match(p, TOK_DEL_RBRACE);
@@ -619,7 +628,7 @@ static ASTNode *parse_factor(Parser *p) {
 
         default:
             // Unexpected token in an expression context.
-            reportError(lexer_current_line(),
+            ec_report_cascading(lexer_current_line(),
                         "token inatteso %d in un'espressione", p->current_token);
             return newNode(p->ast_arena, ND_ERROR, "<error>");
     }

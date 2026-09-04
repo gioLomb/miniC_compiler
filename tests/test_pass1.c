@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "lexer.h"
-#include "parser/error.h"
+// #include "parser/error.h"          // RIMOSSO
+#include "parser/errorCollector.h"           // AGGIUNTO
 #include "parser/ast.h"
 #include "parser/parser.h"
 #include "arena.h"
@@ -45,7 +46,11 @@ int main(int argc, char **argv) {
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    printf("Parsing: %d errori.\n", totalErrorCount());
+    // Sostituito totalErrorCount() con ec_error_count()
+    printf("Parsing: %d errori.\n", ec_error_count());
+
+    // (Opzionale) pulizia del flag di pending, se il parser non lo ha già fatto
+    // ec_clear_pending();
 
     Scope *global = sym_scopeCreate(NULL);
     int symErrors = st_resolve_global_namespace(root, global);

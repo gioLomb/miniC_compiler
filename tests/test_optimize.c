@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../lexer.h"
-#include "../parser/error.h"
+// #include "../parser/error.h"          // RIMOSSO
+#include "parser/errorCollector.h"          // AGGIUNTO
 #include "../parser/ast.h"
 #include "../parser/parser.h"
 #include "../symbol_table.h"
@@ -10,10 +11,6 @@
 #include "../semantic.h"
 #include "../optimize.h"
 
-/*
- * Scrive 'src' su file temp, esegue pipeline fino a optimize_ast incluso.
- * Restituisce radice AST ottimizzato + *outArena (il chiamante li distrugge).
- */
 static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     const char *path = "/tmp/miniC_test_optimize_src.c";
     FILE *f = fopen(path, "w");
@@ -26,6 +23,9 @@ static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
+    // (Opzionale) pulizia del pending dopo il parsing
+    // ec_clear_pending();
+
     Scope *global = sym_scopeCreate(NULL);
     st_resolve_global_namespace(root, global);
     semantic_check(root, global);
@@ -36,6 +36,7 @@ static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     *outArena = astArena;
     return root;
 }
+
 
 static ASTNode *lastFuncBody(ASTNode *root) {
     ASTNode *decl = root->children[root->nchildren - 1];

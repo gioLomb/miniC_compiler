@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../lexer.h"
-#include "error.h"
+#include "errorCollector.h"
 #include "ast.h"
 #include "parser.h"
 #include "../arena.h"
@@ -47,8 +47,10 @@ int main(int argc, char **argv) {
 
     if (!emit_asm) { printf("=== PARSE TREE ===\n"); printAST(root, 0); }
 
-    if (totalErrorCount() > 0) {
-        printf("\nParsing completato con %d errori.\n", totalErrorCount());
+    // ec_error_count() is the shared collector's grand total (never reset
+    // across phases), same role totalErrorCount() used to play locally.
+    if (ec_error_count() > 0) {
+        printf("\nParsing completato con %d errori.\n", ec_error_count());
         //freeAST(root);
          arena_destroy(astArena); return 1;
     }

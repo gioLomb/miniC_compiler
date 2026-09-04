@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../lexer.h"
-#include "../parser/error.h"
+#include "parser/errorCollector.h"          
 #include "../parser/ast.h"
 #include "../parser/parser.h"
 #include "../arena.h"
@@ -24,6 +24,9 @@ static IRProgram *parseAndGenerateIR(const char *src,
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
+    // (Opzionale) pulizia del pending dopo il parsing
+    // ec_clear_pending();
+
     Scope *global = sym_scopeCreate(NULL);
     st_resolve_global_namespace(root, global);
     int errs = semantic_check(root, global);
@@ -38,6 +41,7 @@ static IRProgram *parseAndGenerateIR(const char *src,
     *outArena = astArena;
     return ir_generate(root);
 }
+
 
 static IRFunction *lastFunc(IRProgram *prog) {
     return prog->functions[prog->count - 1];

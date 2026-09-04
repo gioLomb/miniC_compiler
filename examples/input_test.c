@@ -1,10 +1,8 @@
-
-int g = 3;
 int main() {
    int a = 5;
    int b;
-   b = a *3;
-   int somma = foo(a,b,4,7);
+   b = a * 3;
+   int somma = foo(b,4,7);
    return somma * 2 +fee(2,3); 
 }
 
