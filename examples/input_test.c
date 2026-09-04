@@ -2,7 +2,7 @@ int main() {
    int a = 5;
    int b;
    b = a * 3;
-   int somma = foo(b,4,7);
+   int somma = foo(b,a,4,7);
    return somma * 2 +fee(2,3); 
 }
 

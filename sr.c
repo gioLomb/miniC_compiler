@@ -135,6 +135,7 @@ static void count_variable_definitions(const IRFunction *irFunction, const Loop 
     }
 }
 
+//TODO
 static int collect_base_induction_vars(const IRFunction *irFunction, const Loop *targetLoop, VarMap *variableMap,
                                       const int *definitionCounts, InductionBase *baseVariables) {
     int collectedCount = 0;

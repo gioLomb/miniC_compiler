@@ -385,10 +385,14 @@ static int *build_label_to_instr(const IRFunction *f, Arena *arena, int *outCap)
     int *map = arena_alloc(arena, (size_t)cap * sizeof(int));
     memset(map, -1, (size_t)cap * sizeof(int));
 
+    const IRInstr *instrs = f->instrs;
+    int labelBase = f->labelBase;
+
     for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op != IR_LABEL) continue;
-        int idx = f->instrs[i].dst.data.labelId - f->labelBase;
-        map[idx] = i;
+        if (instrs[i].op == IR_LABEL) {
+            int idx = instrs[i].dst.data.labelId - labelBase;
+            map[idx] = i;
+        }
     }
 
     *outCap = cap;
@@ -412,7 +416,7 @@ static void collect_referenced_labels(const IRFunction *f,
         if (in->op != IR_GOTO && in->op != IR_IF_FALSE) continue;
 
         int idx = in->dst.data.labelId - f->labelBase;
-        if (idx < 0 || idx >= mapCap) continue; // defensive: not found -> no-op
+        if (idx < 0 || idx >= mapCap) continue; // not found -> no-op
 
         int j = labelToInstr[idx];
         if (j >= 0) referenced[j] = 1;

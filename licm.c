@@ -107,17 +107,29 @@
  * @return        Array defCount[0..numVars-1]; caller must not free it.
  */
 static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
-                             int numVars, Arena *arena) {
+                               int numVars, Arena *arena) {
     int *defCount = arena_alloc(arena, (size_t)numVars * sizeof(int));
     memset(defCount, 0, (size_t)numVars * sizeof(int));
 
-    for (int i = 0; i < L->bodyCount; i++) {
+    const int bodyCount = L->bodyCount;
+    const IRBlock *blocks = f->blocks;
+    const IRInstr *instrs = f->instrs;
+
+    for (int i = 0; i < bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
-            IRInstr *in = &f->instrs[j];
-            if (!ir_defines_dst(in->op) || !ir_operand_is_storage(in->dst.kind)) continue;
-            int id = varmap_operand_id(vm, in->dst);
-            if (id >= 0) defCount[id]++;
+        int start = blocks[b].bb.range.start;
+        int end   = blocks[b].bb.range.end;
+
+        for (int j = start; j < end; j++) {
+            const IRInstr *in = &instrs[j];
+            
+            // Short-circuiting combinato per le guardie dell'istruzione
+            if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
+                int id = varmap_operand_id(vm, in->dst);
+                if (id >= 0) {
+                    defCount[id]++;
+                }
+            }
         }
     }
 
@@ -139,7 +151,7 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
  * @return 0 to keep scanning the remaining blocks, or -1 if a matching
  *         definition was found that is NOT marked invariant — the caller
  *         must abort the whole search immediately in that case.
- */
+ *///TODO
 static int scan_block_for_def(IRFunction *f, int b, Operand op,
                                const char *invariant, int *foundIdx) {
     for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
@@ -288,29 +300,36 @@ static void register_src_uses(VarMap *vm, UsedByList *usedBy, IRInstr *in, int j
  * @return Number of instructions seeded into worklist (the new wTail).
  */
 static int seed_worklist(IRFunction *f, Loop *L, VarMap *vm,
-                          UsedByList *usedBy, int *worklist) {
+                         UsedByList *usedBy, int *worklist) {
     int wTail = 0;
 
-    for (int i = 0; i < L->bodyCount; i++) {
+    const int bodyCount = L->bodyCount;
+    const IRBlock *blocks = f->blocks;
+    const IRInstr *instrs = f->instrs;
+
+    for (int i = 0; i < bodyCount; i++) {
         int b = L->body[i];
-        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++) {
-            IRInstr *in = &f->instrs[j];
+        int start = blocks[b].bb.range.start;
+        int end   = blocks[b].bb.range.end;
 
-            // only pure instructions that write a storage dst are candidates
-            if (!ir_is_pure(in->op) || !ir_defines_dst(in->op) ||
-                !ir_operand_is_storage(in->dst.kind)) continue;
+        for (int j = start; j < end; j++) {
+            const IRInstr *in = &instrs[j];
 
-            // register this instruction as a user of its source operands
-            register_src_uses(vm, usedBy, in, j);
+            // Filter pure candidate instructions writing to a storage destination
+            if (ir_is_pure(in->op) && ir_defines_dst(in->op) &&
+                ir_operand_is_storage(in->dst.kind)) {
 
-            // immediately enqueue: sources may already be invariant
-            worklist[wTail++] = j;
+                // register this instruction as a user of its source operands
+                register_src_uses(vm, usedBy, (IRInstr *)in, j);
+
+                // immediately enqueue: sources may already be invariant
+                worklist[wTail++] = j;
+            }
         }
     }
 
     return wTail;
 }
-
 /**
  * @brief Push into worklist every not-yet-invariant instruction that uses
  *        dstId, so it gets re-checked now that dstId is invariant.
@@ -346,7 +365,7 @@ static void enqueue_dependents(const UsedByList *usedBy, int dstId,
  * @param wTail    Number of entries already seeded into worklist.
  * @param invariant Output array of length f->count; invariant[j] is set
  *                 to 1 for every loop-invariant instruction.
- */
+ *///TODO
 static void propagate_worklist(IRFunction *f, Loop *L, VarMap *vm,
                                 const int *defCount, UsedByList *usedBy,
                                 int *worklist, int wTail, char *invariant) {
@@ -474,7 +493,7 @@ static inline int instr_block(IRFunction *f, int j) {
  * @param inBody    inBody[b] = 1 if block b belongs to the loop body (pre-filled by caller).
  * @param doMove    Output: doMove[j] set to 1 for every instruction safe to hoist.
  * @return          Number of instructions marked safe to hoist.
- */
+ */ //TODO
 static int mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv, int header,
@@ -530,7 +549,7 @@ typedef struct {
  *                  surviving suffix); left untouched for hoisted j — callers
  *                  must gate access on doMove[j], not on a sentinel value.
  * @return Layout describing the new array and where the hoisted block sits.
- */
+ */ //todo: arena
 static HoistLayout compact_and_hoist(IRFunction *f, const char *doMove, int moved,
                                       int insertAt, int *oldToNew) {
     int nInstrs = f->count;

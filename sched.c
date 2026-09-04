@@ -161,11 +161,11 @@ static int emit_pinned_headers(const MachInstr *src, int instrCount,
                                 DAGNode *nodes, MachInstr *result) {
     int rCount = 0;
     for (int i = 0; i < instrCount; i++) {
-        if (!is_pinned_header(src[i].op)) {
-            continue;
+        const MachInstr in = src[i];
+        if (is_pinned_header(in.op)) {
+            result[rCount++]   = in;
+            nodes[i].scheduled = 1;
         }
-        result[rCount++]   = src[i];
-        nodes[i].scheduled = 1;
     }
     return rCount;
 }
@@ -260,16 +260,24 @@ void sched_schedule(MachProgram *mp) {
     Arena *blockArena   = arena_create(0);
     Arena *scratchArena = arena_create(0);
 
-    for (int fi = 0; fi < mp->count; fi++) {
-        MachFunction *f = mp->functions[fi];
-        if (!f || f->count == 0) continue;
+    const int funcCount = mp->count;
+    MachFunction **functions = mp->functions;
 
-        arena_reset(blockArena);
-        BlockRange *blocks = arena_alloc(blockArena, (size_t)f->count * sizeof(BlockRange));
-        int bbCount = find_basic_blocks(f, blocks);
+    for (int fi = 0; fi < funcCount; fi++) {
+        MachFunction *f = functions[fi];
+        
+        // Inversione della guardia: ramo caldo nel fall-through path
+        if (f && f->count > 0) {
+            arena_reset(blockArena);
+            
+            const size_t allocSize = (size_t)f->count * sizeof(BlockRange);
+            BlockRange *blocks = arena_alloc(blockArena, allocSize);
+            
+            const int bbCount = find_basic_blocks(f, blocks);
 
-        for (int b = 0; b < bbCount; b++) {
-            schedule_block(f, blocks[b], scratchArena);
+            for (int b = 0; b < bbCount; b++) {
+                schedule_block(f, blocks[b], scratchArena);
+            }
         }
     }
 

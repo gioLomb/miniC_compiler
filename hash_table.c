@@ -78,21 +78,18 @@ int ht_set(Hash_Table * restrict table, void * restrict key, size_t keySize,
     unsigned int index = (unsigned int)(h & (table->capacity - 1));
 
     for (Entry *e = table->pool[index]; e; e = e->next) {
-        if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
+        if (e->hash != h || !keys_equal(e->key, e->keySize, key, keySize)) continue;
 
-        if (valueSize <= e->cap) {
-            // existing buffer still fits: overwrite in place, no allocation
-            memcpy(e->value, value, valueSize);
-            e->size = valueSize;
-        } else {
+        if (valueSize > e->cap) {
             // outgrew the buffer: allocate a fresh one (old one just leaks
             // inside the arena, reclaimed in bulk by ht_destroy)
             size_t newCap = round_pow2(valueSize);
             e->value = arena_alloc(table->arena, newCap);
-            memcpy(e->value, value, valueSize);
-            e->size = valueSize;
             e->cap  = newCap;
         }
+        // existing buffer still fits: overwrite in place, no allocation
+        memcpy(e->value, value, valueSize);
+        e->size = valueSize;
         return 1;
     }
 
@@ -114,27 +111,29 @@ int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
     if (!table || !key || !destBuffer) return 0;
     unsigned long h = table->hashFunction(key, keySize);
     unsigned int index = (unsigned int)(h & (table->capacity - 1));
+    
     for (Entry *e = table->pool[index]; e; e = e->next) {
-        // fast reject: differing cached hash implies differing keys,
-        // skips the memcmp entirely on non-matching bucket entries
-        if (e->hash != h) continue;
-        if (!keys_equal(e->key, e->keySize, key, keySize)) continue;
-        size_t n = e->size < destSize ? e->size : destSize;
-        memcpy(destBuffer, e->value, n);
-        return 1;
-    }
+        if (e->hash == h && keys_equal(e->key, e->keySize, key, keySize)) {
+            size_t n = e->size < destSize ? e->size : destSize;
+            memcpy(destBuffer, e->value, n);
+            return 1;
+        }
+    }   
     return 0;
 }
-
 int ht_delete(Hash_Table * restrict table, void * restrict key, size_t keySize) {
     if (!table || !key) return 0;
 
-    unsigned int index = (unsigned int)(table->hashFunction(key, keySize) & (table->capacity - 1));
+    unsigned long h = table->hashFunction(key, keySize);
+    unsigned int index = (unsigned int)(h & (table->capacity - 1));
     Entry *prev = NULL;
     Entry *e = table->pool[index];
 
     // walk the bucket's chain until the matching key or its end
-    while (e && !keys_equal(e->key, e->keySize, key, keySize)) {
+    while (e) {
+        if (e->hash == h && keys_equal(e->key, e->keySize, key, keySize)) {
+            break;
+        }
         prev = e;
         e = e->next;
     }

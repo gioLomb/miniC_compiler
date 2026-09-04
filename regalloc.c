@@ -177,9 +177,12 @@ static inline int is_identity_mov(const MachInstr *in)
 
 static void finalize(MachFunction *f, const int *color)
 {
+    const int count = f->count;
+    MachInstr *instrs = f->instrs;
     int newCount = 0;
-    for (int i = 0; i < f->count; i++) {
-        MachInstr *in = &f->instrs[i];
+
+    for (int i = 0; i < count; i++) {
+        MachInstr *in = &instrs[i];
 
         rewrite_phys(&in->dst,  color);
         rewrite_phys(&in->src1, color);
@@ -188,12 +191,11 @@ static void finalize(MachFunction *f, const int *color)
         rewrite_mem(&in->dst,  color);
         rewrite_mem(&in->src1, color);
 
-        if (is_identity_mov(in)) {
-            continue;
+        if (!is_identity_mov(in)) {
+            instrs[newCount++] = *in;
         }
-
-        f->instrs[newCount++] = *in;
     }
+
     f->count = newCount;
 }
 
@@ -240,9 +242,8 @@ static int find_func_begin_index(const MachFunction *f)
 
 /**
  * @brief Insert PUSH/POP pairs in the prologue/epilogue for used callee-saved regs.
- */
-static void save_restore_callee(MachFunction *f)
-{
+ */ //TODO: ARENA, CACHING POINTER, EXTRACT FUNCTION
+static void save_restore_callee(MachFunction *f){
     int retCount = 0;
     uint32_t usedMask = collect_used_callee_saved(f, &retCount);
 
@@ -294,19 +295,6 @@ static void save_restore_callee(MachFunction *f)
     f->count  = newCount;
 }
 
-/* =========================================================================
- * Main allocation loop for a single function
- * =========================================================================
- * REFACTOR (Extract Function + Slide Statements, regalloc_try_round):
- *   The per-round body used to live inline in the for(;;) loop below, with
- *   an IDENTICAL 5-line cleanup block (free/free/ig_free/arena_destroy/free)
- *   duplicated in both the success (nSpilled == 0) and spill (nSpilled > 0)
- *   branches. Duplicated cleanup is a latent leak: adding a new per-round
- *   resource later and freeing it in only one branch would silently leak on
- *   the other path. Extracted into regalloc_try_round(), with the cleanup
- *   slid out of the if/else so it runs exactly once per round regardless of
- *   outcome.
- * ========================================================================= */
 
 /**
  * @brief Run a single build->liveness->interference->color round.

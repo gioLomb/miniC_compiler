@@ -298,7 +298,7 @@ static void build_natural_loop(Loop *L, IRFunction *f, int h, int b,
  * this call (see module header for the rationale).
  *
  * Stops early if MAX_LOOPS loops have already been found.
- */
+ */ //TODO
 int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
     int n = f->blockCount, nLoops = 0;
     // reuse a single body scratch buffer across all loops

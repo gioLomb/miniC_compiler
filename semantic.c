@@ -547,12 +547,17 @@ int semantic_check(ASTNode *program, Scope *global) {
     // Destroyed at the end: no per-allocation free needed.
     Arena *arena = arena_create(0);
 
-    for (int i = 0; i < program->nchildren; i++) {
-        ASTNode *decl = program->children[i];
+    const int nchildren = program->nchildren;
+    ASTNode **children  = program->children;
+
+    for (int i = 0; i < nchildren; i++) {
+        ASTNode *decl = children[i];
+        
         // Global variable declarations were fully handled by Pass 1
         // (st_resolve_global_namespace); only function bodies need walking here.
-        if (decl->kind != ND_FUNC_DECL) continue;
-        checkFunctionBody(decl, global, arena, &errors);
+        if (decl->kind == ND_FUNC_DECL) {
+            checkFunctionBody(decl, global, arena, &errors);
+        }
     }
 
     arena_destroy(arena);

@@ -662,37 +662,42 @@ static void emit_operand(const MachOperand *o, FILE *out) {
 
 /** @brief Emit .bss entries for every zero-initialised global (initCount == 0). */
 static void emit_bss_section(FILE *out, const IRProgram *ir) {
-    int has_bss = 0;
-    for (int i = 0; i < ir->globalCount; i++)
-        if (ir->globals[i].initCount == 0) { has_bss = 1; break; }
-    if (!has_bss) return;
+    int section_emitted = 0;
 
-    fprintf(out, "\t.bss\n");
     for (int i = 0; i < ir->globalCount; i++) {
         const IRGlobalVar *g = &ir->globals[i];
         if (g->initCount > 0) continue;
+
+        // Emit .bss header lazily only on the first uninitialized global found
+        if (!section_emitted) {
+            fprintf(out, "\t.bss\n");
+            section_emitted = 1;
+        }
+
         int nelems = g->isArray ? g->arraySize : 1;
         fprintf(out, "\t.globl %s\n%s:\n", g->name, g->name);
         fprintf(out, "\t.zero %d\n", nelems * 8); // 8 bytes/element (int and float both stored as 8-byte slots)
     }
-}
+} 
 
 /** @brief Emit .data entries for every explicitly-initialised global. */
 static void emit_data_section(FILE *out, const IRProgram *ir) {
-    int has_data = 0;
-    for (int i = 0; i < ir->globalCount; i++)
-        if (ir->globals[i].initCount > 0) { has_data = 1; break; }
-    if (!has_data) return;
+    int section_emitted = 0;
 
-    fprintf(out, "\t.data\n");
     for (int i = 0; i < ir->globalCount; i++) {
         const IRGlobalVar *g = &ir->globals[i];
         if (g->initCount == 0) continue;
+
+        // Emit .data header lazily only on the first initialized global found
+        if (!section_emitted) {
+            fprintf(out, "\t.data\n");
+            section_emitted = 1;
+        }
+
         int nelems = g->isArray ? g->arraySize : 1;
         fprintf(out, "\t.globl %s\n%s:\n", g->name, g->name);
         for (int j = 0; j < nelems; j++) {
             // elements past the explicit initializer list default to 0
-            // (C semantics: partial array initializers zero-fill the rest)
             long val = (j < g->initCount) ? g->initVals[j] : 0L;
             fprintf(out, "\t.quad %ld\n", val);
         }
@@ -833,10 +838,15 @@ static void emit_generic_instr(const MachInstr *in, FILE *out) {
 
 /** @brief Print every instruction of one function body, in order. */
 static void emit_function_body(const MachFunction *f, FILE *out) {
-    for (int i = 0; i < f->count; i++) {
-        const MachInstr *in = &f->instrs[i];
-        if (emit_fixed_encoding_instr(in, f->frameSize, out)) continue;
-        emit_generic_instr(in, out);
+    const int count = f->count;
+    const MachInstr *instrs = f->instrs;
+    const int frameSize = f->frameSize;
+
+    for (int i = 0; i < count; i++) {
+        const MachInstr *in = &instrs[i];
+        if (!emit_fixed_encoding_instr(in, frameSize, out)) {
+            emit_generic_instr(in, out);
+        }
     }
 }
 
