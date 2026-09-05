@@ -448,21 +448,7 @@ static inline int dominates_all_exits(Loop *L, LiveSet *Dom, int blk) {
     return 1;
 }
 
-/**
- * @brief Return the block index that contains instruction @p j.
- *
- * Linear search over blocks; acceptable because the number of blocks per
- * loop body is small in practice.
- *
- * @param f  IR function.
- * @param j  Instruction index.
- * @return   Block index, or -1 if not found (should not happen).
- */
-static inline int instr_block(IRFunction *f, int j) {
-    for (int b = 0; b < f->blockCount; b++)
-        if (j >= f->blocks[b].bb.range.start && j < f->blocks[b].bb.range.end) return b;
-    return -1;
-}
+
 
 /* =========================================================================
  * Phase 3 — Safety check and motion
@@ -478,45 +464,52 @@ static inline int instr_block(IRFunction *f, int j) {
  *      rewritten consistently.
  * ========================================================================= */
 
+
 /**
- * @brief Determine which loop-invariant instructions are safe to hoist.
+ * @brief Build a flat instruction-index -> block-index lookup table.
  *
- * An invariant instruction j is safe when:
- *   1. its containing block dominates all loop exits, and
- *   2. its destination has exactly one definition in the loop and is not
- *      live-in at the loop header.
+ * Blocks partition f->instrs[] contiguously in increasing order (see
+ * ir_close_block() in ir.c: every block's [start,end) is disjoint and blocks
+ * appear in index order), so a single forward scan over blocks fills the
+ * whole map in O(instrs + blocks) total. Replaces the previous pattern of
+ * calling instr_block() (O(blocks) linear scan) once per instruction inside
+ * mark_hoistable()'s loop over every instruction in the function — an
+ * O(instrs * blocks) cost per loop processed by LICM.
  *
- * @param f         IR function.
- * @param L         Loop being analysed.
- * @param Dom       Dominator sets.
- * @param invariant Per-instruction invariance flags.
- * @param defCount  Per-id definition counts.
- * @param vm        VarMap for id resolution.
- * @param liv       Liveness result, queried for live-in at the header.
- * @param header    Loop header block index.
- * @param inBody    inBody[b] = 1 if block b belongs to the loop body (pre-filled by caller).
- * @param doMove    Output: doMove[j] set to 1 for every instruction safe to hoist.
- * @return          Number of instructions marked safe to hoist.
- */ 
+ * @param f      IR function whose blocks are scanned.
+ * @param arena  Arena the output array is allocated from.
+ * @return       Arena-allocated array of length f->count; instrToBlock[j] is
+ *               the index of the block containing instruction j.
+ */
+static int *build_instr_to_block(IRFunction *f, Arena *arena) {
+    int *instrToBlock = arena_alloc(arena, (size_t)f->count * sizeof(int));
+    for (int b = 0; b < f->blockCount; b++)
+        for (int j = f->blocks[b].bb.range.start; j < f->blocks[b].bb.range.end; j++)
+            instrToBlock[j] = b;
+    return instrToBlock;
+}
+
+
 static int mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv, int header,
-                           const char *inBody, char *doMove) {
-    const IRInstr *instrs = f->instrs; // cache
-    int count  = f->count;
-    int moved  = 0;
+                           const char *inBody, const int *instrToBlock, char *doMove) {
+    int moved = 0;
 
-    for (int j = 0; j < count; j++) {
+    for (int j = 0; j < f->count; j++) {
         if (!invariant[j]) continue;
 
-        int blk = instr_block(f, j);
+        int blk = instrToBlock[j];  // O(1) lookup instead of instr_block() scan
         if (!inBody[blk]) continue;
 
+        // containing block must dominate all loop exits
         if (!dominates_all_exits(L, Dom, blk)) continue;
 
-        int dstId = varmap_operand_id(vm, instrs[j].dst); // use cached ptr
+        // exactly one definition of the destination in the loop
+        int dstId = varmap_operand_id(vm, f->instrs[j].dst);
         if (dstId < 0 || defCount[dstId] != 1) continue;
 
+        // destination must not be live-in at the header
         if (bitset_test(&liv->blockSets.LiveIn[header], dstId)) continue;
 
         doMove[j] = 1;
@@ -525,6 +518,7 @@ static int mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
 
     return moved;
 }
+
 
 /** @brief Result of compacting instrs into [prefix | hoisted | rest] layout. */
 typedef struct {
@@ -658,17 +652,18 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     Arena *localArena = arena_create(0);
 
-    // doMove[j] = 1 if instruction j passes all safety checks
     char *doMove = arena_alloc(localArena, (size_t)nInstrs);
-    // inBody[b]  = 1 if block b is part of the loop body
     char *inBody = arena_alloc(localArena, (size_t)nBlocks);
     memset(doMove, 0, (size_t)nInstrs);
     memset(inBody, 0, (size_t)nBlocks);
 
     for (int i = 0; i < L->bodyCount; i++) inBody[L->body[i]] = 1;
 
+    // precomputed once per loop instead of per-instruction linear scan
+    int *instrToBlock = build_instr_to_block(f, localArena);
+
     int moved = mark_hoistable(f, L, Dom, invariant, defCount, vm, liv,
-                                header, inBody, doMove);
+                                header, inBody, instrToBlock, doMove);
     if (!moved) { arena_destroy(localArena); return 0; }
 
     // insertAt: first instruction index of the loop header block —
