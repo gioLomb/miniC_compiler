@@ -94,7 +94,7 @@ static int function_touches_globals(const IRFunction *f) {
  */
 static void emitter_push(Emitter *e, IROp op, Operand dst,
                           Operand src1, Operand src2, int loopDepth) {
-    if (e->count == e->cap) {
+    if (__builtin_expect(e->count == e->cap,0)) {
         // standard doubling growth
         e->cap *= 2;
         e->buf  = realloc(e->buf, (size_t)e->cap * sizeof(IRInstr));

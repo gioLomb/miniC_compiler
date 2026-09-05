@@ -77,7 +77,7 @@ static MachFunction *mfunc_create(const char *name) {
 static inline void mfunc_emit(MachFunction *f, MachOpCode op,
                                MachOperand dst, MachOperand src1, MachOperand src2) {
     // standard doubling growth for the instruction array
-    if (f->count == f->capacity) {
+    if (__builtin_expect(f->count == f->capacity,0)) {
         f->capacity *= 2;
         f->instrs = realloc(f->instrs, (size_t)f->capacity * sizeof(MachInstr));
     }

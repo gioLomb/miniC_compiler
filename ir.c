@@ -152,7 +152,7 @@ static void ir_register_label(IRFunction *f, int labelId, int futureBlockIdx) {
 
 static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2) {
     // standard doubling growth
-    if (f->count == f->capacity) {
+    if (__builtin_expect(f->count == f->capacity,0)) {
         f->capacity = f->capacity ? f->capacity * 2 : 16;
         f->instrs = realloc(f->instrs, (size_t)f->capacity * sizeof(IRInstr));
     }
@@ -160,7 +160,7 @@ static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Ope
 
     // a label always starts a new block: close whatever was open before it
     // (labels are jump targets, so control flow can enter here from elsewhere)
-    if (op == IR_LABEL && idx > f->curBlockStart) {
+    if (__builtin_expect(op == IR_LABEL,0) && idx > f->curBlockStart) {
         ir_close_block(f, f->curBlockStart, idx);
         f->curBlockStart = idx;
     }
@@ -176,11 +176,11 @@ static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Ope
 
     // record where this label ended up so ir_resolve_cfg can later resolve
     // jump targets by label id -> block index
-    if (op == IR_LABEL) ir_register_label(f, dst.data.labelId, f->blockCount);
+    if (__builtin_expect(op == IR_LABEL,0)) ir_register_label(f, dst.data.labelId, f->blockCount);
 
     // a terminator always ends the current block (GOTO/IF_FALSE/RETURN
     // are the last instruction control can reach before branching/exiting)
-    if (ir_is_terminator(op)) {
+    if (__builtin_expect(ir_is_terminator(op),0)) {
         ir_close_block(f, f->curBlockStart, f->count);
         f->curBlockStart = f->count;
     }

@@ -31,7 +31,7 @@ void int_vector_init(IntVector *v, int capacity) {
 void int_vector_push(IntVector *v, int value) {
     if (!v) return;
 
-    if (v->len == v->cap) {
+    if (__builtin_expect(v->len == v->cap,0)) {
         // Double capacity, or fall back to the initial minimum when
         // starting from an empty (lazy-initialised) vector.
         int newCap = v->cap ? v->cap * 2 : INT_VECTOR_INITIAL_CAP;
