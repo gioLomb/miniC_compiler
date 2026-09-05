@@ -68,9 +68,9 @@ static RenameTracker rename_tracker_create(int vregCount, int physCount, int n, 
 static void dag_add_edge(DAGNode *nodes, int from, int to, Arena *arena) {
     if (from == to) return;
 
-    for (SuccNode *s = nodes[from].succs; s; s = s->next) {
-        if (s->to == to) return; // already present: skip
-    }
+    // O(1) dedup via bitset instead of walking the successor list
+    if (bitset_test(&nodes[from].connectedTo, to)) return;
+    bitset_set(&nodes[from].connectedTo, to);
 
     SuccNode *sn      = arena_alloc(arena, sizeof(SuccNode));
     sn->to            = to;
@@ -148,16 +148,28 @@ static inline int get_max_successor_height(const DAGNode *node, const DAGNode *n
 
 
 /**
- * @brief initialise every DAGNode with its instruction index and static latency.
+ * @brief initialise every DAGNode with its instruction index, static latency,
+ *        and an empty "already connected to" dedup bitset.
+ *
+ * All n bitsets are carved out of one contiguous arena slab (single alloc)
+ * instead of n separate arena_alloc calls — same slab pattern used by
+ * liveness.c for per-block bit-word arrays.
  */
 static void dag_init_nodes(const MachFunction *f, BlockRange blk,
-                            DAGNode *nodes, int n) {
+                            DAGNode *nodes, int n, Arena *arena) {
+    int words = (n + 63) / 64;
+    uint64_t *slab = arena_alloc(arena, (size_t)n * (size_t)words * sizeof(uint64_t));
+    memset(slab, 0, (size_t)n * (size_t)words * sizeof(uint64_t));
+
     for (int i = 0; i < n; i++) {
         MachOpCode op  = f->instrs[blk.start + i].op;
         int        lat = sched_latency_of(op);
         nodes[i] = (DAGNode){ .instrIdx = blk.start + i, .latency = lat, .height = lat };
+        // point this node's dedup bitset into its slice of the shared slab
+        nodes[i].connectedTo = (BitSet){ slab + (size_t)i * words, words };
     }
 }
+
 
 /**
  * @brief  mark CMP/TEST instructions immediately followed by a Jcc as pinned for macro-fusion.
@@ -239,7 +251,7 @@ void build_dag(const MachFunction *f, BlockRange blk, DAGNode *nodes,
 
     RenameTracker rt = rename_tracker_create(f->nextVreg, PHYS_ALLOCATABLE, n, arena);
 
-    dag_init_nodes(f, blk, nodes, n);
+    dag_init_nodes(f, blk, nodes, n, arena);
     dag_pin_fusion_pairs(f, blk, nodes, n);
     dag_build_dependencies(f, blk, &rt, nodes, arena, n);
     dag_propagate_heights(nodes, n);

@@ -35,6 +35,7 @@
 
 #include "instr_selector.h"
 #include "arena.h"
+#include "bitset.h"   
 
 /** Upper bound on ids returned by one call to sched_uses / instr_implicit_*. */
 #define SCHED_MAX_REG_IDS 16
@@ -45,9 +46,7 @@ typedef struct SuccNode {
     struct SuccNode *next; /**< Next edge in this node's successor list.       */
 } SuccNode;
 
-/**
- * @brief One node in the instruction dependency DAG for a single basic block.
- */
+
 typedef struct DAGNode {
     int       instrIdx;        /**< Index into f->instrs[] of the instruction.  */
     int       latency;         /**< Estimated execution latency in cycles.       */
@@ -57,6 +56,11 @@ typedef struct DAGNode {
     int       pinnedForFusion; /**< 1 if this CMP/TEST must stay glued to its Jcc. */
     SuccNode *succs;           /**< Head of the successor edge list.             */
     int       nSuccs;          /**< Total outgoing edges.                        */
+    BitSet    connectedTo;     /**< Bit i set iff an edge to local node i already
+                                *   exists; O(1) dedup check in dag_add_edge()
+                                *   instead of walking succs (O(degree) per call,
+                                *   O(n^2) worst case when many instructions
+                                *   share a def/use on the same register). */
 } DAGNode;
 
 /**
