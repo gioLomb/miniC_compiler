@@ -45,59 +45,132 @@
 #include "arena.h"
 
 
-static int find_label_block(const int *labelIds, const int *blockIdx,
-                             int n, int labelId)
-{
-    for (int i = 0; i < n; i++) {
-        if (labelIds[i] == labelId) {
-            return blockIdx[i];
-        }
-    }
-    return -1; // Label not found
-}
+// static int find_label_block(const int *labelIds, const int *blockIdx,
+//                              int n, int labelId)
+// {
+//     for (int i = 0; i < n; i++) {
+//         if (labelIds[i] == labelId) {
+//             return blockIdx[i];
+//         }
+//     }
+//     return -1; // Label not found
+// }
+
+// /**
+//  * Builds the lookup table mapping label IDs to block indices.
+//  */
+// static int build_label_map(const MachFunction *f, const BasicBlock *blocks, int count,
+//                            Arena *arena, int **outLabelIds, int **outBlockIdx)
+// {
+//     int allocSize = (count > 0) ? count : 1;
+//     int *labelIds = arena_alloc(arena, (size_t)allocSize * sizeof(int));
+//     int *blockIdx = arena_alloc(arena, (size_t)allocSize * sizeof(int));
+//     int nLabels = 0;
+
+//     for (int b = 0; b < count; b++) {
+//         if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
+//             labelIds[nLabels] = f->instrs[blocks[b].range.start].dst.labelId;
+//             blockIdx[nLabels] = b;
+//             nLabels++;
+//         }
+//     }
+
+//     *outLabelIds = labelIds;
+//     *outBlockIdx = blockIdx;
+//     return nLabels;
+// }
+
+#include <limits.h>   // INT_MAX/INT_MIN per il calcolo del range label
+
+/** Sentinel: nessun blocco registrato per questo slot label. */
+#define LABEL_MAP_NONE (-1)
 
 /**
- * Builds the lookup table mapping label IDs to block indices.
+ * @brief Build a direct-address labelId -> block-index map for @p blocks.
+ *
+ * Label ids seen in one function occupy a compact integer range (they come
+ * from ir.c's globally increasing nextLabel counter, and this function only
+ * sees the slice generated while it was being compiled), so a direct-address
+ * array offset by the minimum label id gives O(1) lookup after a single
+ * O(nBlocks) build pass — replacing the previous find_label_block() linear
+ * scan called once per JMP/Jcc (O(nBlocks) per call, O(nBlocks^2) overall
+ * per wire_block_successors() invocation, repeated every regalloc round).
+ *
+ * @param f        Machine function whose label-starting blocks are indexed
+ *                 (a block's label, if any, always sits at range.start).
+ * @param blocks   Basic-block array.
+ * @param count    Number of blocks.
+ * @param arena    Arena for the output array.
+ * @param outMinId Set to the minimum label id found (lookup offset), or 0
+ *                 if the function has no labels at all.
+ * @param outSize  Set to the allocated size of the returned array.
+ * @return         Arena-allocated array; slot [labelId - *outMinId] holds
+ *                 the owning block index, or LABEL_MAP_NONE if unmapped.
  */
-static int build_label_map(const MachFunction *f, const BasicBlock *blocks, int count,
-                           Arena *arena, int **outLabelIds, int **outBlockIdx)
+static int *build_label_to_block(const MachFunction *f, const BasicBlock *blocks, int count,
+                                  Arena *arena, int *outMinId, int *outSize)
 {
-    int allocSize = (count > 0) ? count : 1;
-    int *labelIds = arena_alloc(arena, (size_t)allocSize * sizeof(int));
-    int *blockIdx = arena_alloc(arena, (size_t)allocSize * sizeof(int));
-    int nLabels = 0;
+    int minId = INT_MAX, maxId = INT_MIN;
 
+    // first pass: find the label id range among this function's blocks
     for (int b = 0; b < count; b++) {
         if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
-            labelIds[nLabels] = f->instrs[blocks[b].range.start].dst.labelId;
-            blockIdx[nLabels] = b;
-            nLabels++;
+            int lid = f->instrs[blocks[b].range.start].dst.labelId;
+            if (lid < minId) minId = lid;
+            if (lid > maxId) maxId = lid;
         }
     }
 
-    *outLabelIds = labelIds;
-    *outBlockIdx = blockIdx;
-    return nLabels;
+    if (minId > maxId) {
+        // no labels at all in this function (e.g. a single straight-line block)
+        *outMinId = 0;
+        *outSize  = 1;
+        int *map = arena_alloc(arena, sizeof(int));
+        map[0] = LABEL_MAP_NONE;
+        return map;
+    }
+
+    int size = maxId - minId + 1;
+    int *map = arena_alloc(arena, (size_t)size * sizeof(int));
+    for (int i = 0; i < size; i++) map[i] = LABEL_MAP_NONE;
+
+    // second pass: fill direct-address slots
+    for (int b = 0; b < count; b++) {
+        if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
+            int lid = f->instrs[blocks[b].range.start].dst.labelId;
+            map[lid - minId] = b;
+        }
+    }
+
+    *outMinId = minId;
+    *outSize  = size;
+    return map;
+}
+
+/** @brief O(1) labelId -> block-index lookup via the direct-address map. */
+static inline int lookup_label_block(const int *map, int minId, int size, int labelId)
+{
+    int idx = labelId - minId;
+    return (idx >= 0 && idx < size) ? map[idx] : -1;
 }
 
 /**
  * Connects control flow graph edges based on block boundary instructions.
  */
 static void wire_block_successors(BasicBlock *blocks, int count, const MachFunction *f,
-                                 const int *labelIds, const int *blockIdx, int nLabels)
-{
+                                 const int *labelMap, int minId, int mapSize){
     for (int b = 0; b < count; b++) {
         int last = blocks[b].range.end - 1;
         switch (f->instrs[last].op) {
         case MACH_JMP:
-            blocks[b].succ[0] = find_label_block(labelIds, blockIdx, nLabels,
-                                                  f->instrs[last].dst.labelId);
+            blocks[b].succ[0] = lookup_label_block(labelMap, minId, mapSize,
+                                                    f->instrs[last].dst.labelId);
             break;
         case MACH_JE: case MACH_JNE: case MACH_JL:
         case MACH_JLE: case MACH_JG: case MACH_JGE:
             blocks[b].succ[0] = (b + 1 < count) ? b + 1 : -1;
-            blocks[b].succ[1] = find_label_block(labelIds, blockIdx, nLabels,
-                                                  f->instrs[last].dst.labelId);
+            blocks[b].succ[1] = lookup_label_block(labelMap, minId, mapSize,
+                                                    f->instrs[last].dst.labelId);
             break;
         case MACH_RET:
             break;
@@ -139,11 +212,10 @@ static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
     }
 
     // Build label lookup table and wire CFG edges (Refactoring: Extract Function)
-    int *labelIds = NULL;
-    int *blockIdx = NULL;
-    int nLabels = build_label_map(f, blocks, count, arena, &labelIds, &blockIdx);
+    int minId, mapSize;
+    int *labelMap = build_label_to_block(f, blocks, count, arena, &minId, &mapSize);
 
-    wire_block_successors(blocks, count, f, labelIds, blockIdx, nLabels);
+    wire_block_successors(blocks, count, f, labelMap, minId, mapSize);
 
     *outCount = count;
     return blocks;
