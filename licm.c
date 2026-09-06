@@ -121,10 +121,8 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
 
     for (int i = 0; i < bodyCount; i++) {
         int b = L->body[i];
-        int start = blocks[b].bb.range.start;
-        int end   = blocks[b].bb.range.end;
 
-        for (int j = start; j < end; j++) {
+        for (int j = blocks[b].bb.range.start; j < blocks[b].bb.range.end; j++) {
             const IRInstr *in = &instrs[j];
             if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
                 int id = varmap_operand_id(vm, in->dst);
@@ -237,10 +235,8 @@ static int seed_worklist(IRFunction *f, Loop *L, VarMap *vm,
 
     for (int i = 0; i < bodyCount; i++) {
         int b = L->body[i];
-        int start = blocks[b].bb.range.start;
-        int end   = blocks[b].bb.range.end;
 
-        for (int j = start; j < end; j++) {
+        for (int j = blocks[b].bb.range.start; j < blocks[b].bb.range.end; j++) {
             const IRInstr *in = &instrs[j];
 
             // Filter pure candidate instructions writing to a storage destination

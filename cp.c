@@ -251,8 +251,7 @@ static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
             // predecessors via the precomputed CSR list instead of scanning
             // every block's succ[] on every fixed-point iteration
             int start = preds->predStart[b];
-            int cnt   = preds->predCount[b];
-            for (int i = 0; i < cnt; i++) {
+            for (int i = 0; i < preds->predCount[b]; i++) {
                 int p = preds->predData[start + i];
                 if (i == 0) const_map_copy(&in[b], &out[p]); // first predecessor: copy
                 else        const_map_meet(&in[b], &out[p]); // subsequent: meet (join)

@@ -66,12 +66,11 @@ static void init_dominator_sets(BitSet *Dom, int n, int words, Arena *arena) {
 static void intersect_predecessor_dominators(BitSet *inter, const BitSet *Dom,
                                              const PredList *preds, int b, int words) {
     int start = preds->predStart[b];
-    int cnt   = preds->predCount[b];
 
     // intersect Dom sets of all predecessors, resolved via the
     // precomputed CSR list instead of re-scanning every block's succ[] to find them
     bitset_copy(inter, &Dom[preds->predData[start]]); // first pred: copy
-    for (int i = 1; i < cnt; i++) {
+    for (int i = 1; i < preds->predCount[b]; i++) {
         int p = preds->predData[start + i];
         // subsequent preds: AND word by word (intersection)
         for (int w = 0; w < words; w++) {
@@ -168,8 +167,7 @@ static void bfs_traverse_loop_body(int header, int tail, char *inBody,
         // fixed-size preds[n][2] array this had no cap on fan-in, so a
         // join block with more than two incoming edges is handled correctly
         int start = preds->predStart[b];
-        int cnt   = preds->predCount[b];
-        for (int k = 0; k < cnt; k++) {
+        for (int k = 0; k < preds->predCount[b]; k++) {
             int p = preds->predData[start + k];
             if (!inBody[p]) {
                 inBody[p] = 1;
