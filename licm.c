@@ -91,25 +91,29 @@
  *   defCount == 1  → single definition, may be invariant (checked in phase 2)
  *   defCount >= 2  → redefined, can never be invariant
  * ========================================================================= */
-
 /**
- * @brief Count definitions of every tracked operand inside loop @p L.
+ * @brief Count definitions of every tracked operand inside loop @p L, and
+ *        record the instruction index of each single-definition variable's
+ *        unique definition site.
  *
- * Allocates and returns a zero-initialised array of length @p numVars
- * from @p arena.  Only instructions that define a storage operand
- * (OPND_VAR or OPND_TEMP) are counted; constants and labels are ignored.
+ * @p outDefInstrIdx receives an array of length @p numVars, initialised to
+ * -1, set to the defining instruction's index whenever a definition is seen.
+ * For ids with defCount == 1 this is guaranteed to be THE unique definition;
+ * for ids with defCount >= 2 the value is meaningless (last write wins) and
+ * callers must never read it without checking defCount == 1 first.
  *
- * @param f       IR function containing the loop.
- * @param L       Loop whose body blocks are scanned.
- * @param vm      VarMap for operand-to-id translation.
- * @param numVars Total number of tracked variable ids.
- * @param arena   Arena for the output array allocation.
- * @return        Array defCount[0..numVars-1]; caller must not free it.
+ * This turns the repeated "find where variable X is defined in this loop"
+ * scan (previously redone on every worklist pop inside propagate_worklist ->
+ * src_is_invariant -> single_loop_def_invariant, up to O(loop size) per call)
+ * into a single O(loop size) pass done once here.
  */
 static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
-                               int numVars, Arena *arena) {
+                               int numVars, Arena *arena, int **outDefInstrIdx) {
     int *defCount = arena_alloc(arena, (size_t)numVars * sizeof(int));
     memset(defCount, 0, (size_t)numVars * sizeof(int));
+
+    int *defInstrIdx = arena_alloc(arena, (size_t)numVars * sizeof(int));
+    memset(defInstrIdx, -1, (size_t)numVars * sizeof(int)); // -1 = no def seen yet
 
     const int bodyCount = L->bodyCount;
     const IRBlock *blocks = f->blocks;
@@ -122,133 +126,50 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
 
         for (int j = start; j < end; j++) {
             const IRInstr *in = &instrs[j];
-            
-            // Short-circuiting combinato per le guardie dell'istruzione
             if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
                 int id = varmap_operand_id(vm, in->dst);
                 if (id >= 0) {
                     defCount[id]++;
+                    defInstrIdx[id] = j; // meaningful only when defCount[id] == 1
                 }
             }
         }
     }
 
+    *outDefInstrIdx = defInstrIdx;
     return defCount;
 }
 
 
-// static inline int operand_identity_mismatch(Operand dst, Operand op) {
-// //     if (op.kind == OPND_VAR)
-// //         return dst.data.varLevel  != op.data.varLevel ||
-// //                dst.data.varOffset != op.data.varOffset;
-// //     if (op.kind == OPND_TEMP)
-// //         return dst.data.tempId != op.data.tempId;
-// //     return 0; // unknown kind: conservatively no mismatch
-// // }
-
 /**
- * @brief Scan a single block's instruction range for a definition of @p op,
- *        updating *foundIdx with the (last) matching definition's index.
+ * @brief O(1) check whether @p id's unique in-loop definition is invariant.
  *
- * @param f          Function whose instrs[] is scanned.
- * @param b          Block index to scan.
- * @param op         Operand whose definition(s) we're looking for.
- * @param invariant  Per-instruction "is this def loop-invariant" flags.
- * @param foundIdx   In/out: updated to j for every matching definition found
- *                   in this block (last match wins, consistent with the
- *                   original single loop's behaviour).
- * @return 0 to keep scanning the remaining blocks, or -1 if a matching
- *         definition was found that is NOT marked invariant — the caller
- *         must abort the whole search immediately in that case.
+ * Only valid when the caller already knows defCount[id] == 1. The defining
+ * instruction's index is static (precomputed once by count_defs_in_loop());
+ * only its invariance flag is dynamic (advances as propagate_worklist() runs).
  */
-static int scan_block_for_def(IRFunction *f, int b, Operand op,
-                               const char *invariant, int *foundIdx) {
-    const IRInstr *instrs = f->instrs; // cache pointer, evita reload da f ogni iter
-    int start = f->blocks[b].bb.range.start;
-    int end   = f->blocks[b].bb.range.end;
-
-    for (int j = start; j < end; j++) {
-        const IRInstr *in = &instrs[j];
-
-        if (!ir_defines_dst(in->op) || in->dst.kind != op.kind) continue; // fuse cold guards
-
-        if (!ir_is_same_operand(&(in->dst),&op)) continue;
-
-        if (!invariant[j]) return -1;
-        *foundIdx = j;
-    }
-    return 0;
+static inline int single_loop_def_invariant(const int *defInstrIdx,
+                                            const char *invariant, int id) {
+    int idx = defInstrIdx[id];
+    return (idx >= 0 && invariant[idx]) ? idx : -1;
 }
 
-/**
- * @brief If @p op is defined exactly once in @p L, return that instruction
- *        index; return -1 if @p op is not a storage operand, is not defined
- *        in the loop, or is defined more than once or by a non-invariant
- *        instruction.
- *
- * Used by src_is_invariant to check the "single definition and that definition
- * is itself invariant" case.
- *
- * @param f         IR function.
- * @param L         Loop being analysed.
- * @param op        Operand to locate.
- * @param invariant Per-instruction invariance flags (phase 2 output so far).
- * @return          Index of the unique defining instruction, or -1.
- */
-static int single_loop_def_invariant(IRFunction *f, Loop *L, Operand op,
-                                   const char *invariant) {
-    if (!ir_operand_is_storage(op.kind)) return -1;
-
-    int found = -1;
-    for (int i = 0; i < L->bodyCount; i++) {
-        int b = L->body[i];
-        if (scan_block_for_def(f, b, op, invariant, &found) < 0) return -1;
-    }
-
-    return found;
-}
-
-/**
- * @brief Return non-zero if source operand @p src is loop-invariant.
- *
- * An operand is invariant if any of the following holds:
- *   - it is a constant or absent (OPND_CONST_INT, OPND_CONST_FLOAT, OPND_NONE)
- *   - it is not a storage operand (label, function name)
- *   - it has no definition inside the loop (defCount == 0)
- *   - it has exactly one definition in the loop and that definition is
- *     already marked invariant (transitive invariance)
- *
- * @param f         IR function.
- * @param L         Loop being analysed.
- * @param src       Source operand to test.
- * @param defCount  Per-id definition counts from count_defs_in_loop.
- * @param vm        VarMap for id resolution.
- * @param invariant Per-instruction invariance flags built so far.
- * @return          1 if @p src is invariant, 0 otherwise.
- */
-static int src_is_invariant(IRFunction *f, Loop *L, Operand src,
-                           const int *defCount, VarMap *vm, const char *invariant) {
+static int src_is_invariant(Operand src, const int *defCount,
+                           const int *defInstrIdx, VarMap *vm, const char *invariant) {
    if (src.kind == OPND_CONST_INT || src.kind == OPND_CONST_FLOAT ||
         src.kind == OPND_NONE      || src.kind == OPND_GLOBAL) return 1;
- 
+
     if (!ir_operand_is_storage(src.kind)) return 0;
 
     int id = varmap_operand_id(vm, src);
 
-    // defined outside the loop: value is fixed for all iterations
     if (id < 0 || defCount[id] == 0) return 1;
 
-    // exactly one definition: invariant iff that definition is itself invariant
-    if (defCount[id] == 1) return single_loop_def_invariant(f, L, src, invariant) >= 0;
+    if (defCount[id] == 1) return single_loop_def_invariant(defInstrIdx, invariant, id) >= 0;
 
-    // two or more definitions: value changes across iterations → not invariant
     return 0;
 }
 
-/*
- * Invariant detection via worklist
- *
-*/
 
 /** Historical name preserved: UsedByList is now just an IntVector. */
 typedef IntVector UsedByList;
@@ -360,33 +281,20 @@ static void enqueue_dependents(const UsedByList *usedBy, int dstId,
     }
 }
 
-/**
- * @brief Propagate invariance to a fixed point: pop an instruction, check
- *        that both its sources are invariant, mark it invariant, and
- *        enqueue every instruction that uses its dst (they may now become
- *        invariant too).
- *
- * @param usedBy   Reverse-use map built by seed_worklist.
- * @param worklist Worklist array, sized f->count by the caller; grows in
- *                 place as new dependents are pushed.
- * @param wTail    Number of entries already seeded into worklist.
- * @param invariant Output array of length f->count; invariant[j] is set
- *                 to 1 for every loop-invariant instruction.
- */
-static void propagate_worklist(IRFunction *f, Loop *L, VarMap *vm,
-                                const int *defCount, UsedByList *usedBy,
+
+static void propagate_worklist(IRFunction *f, const int *defCount, const int *defInstrIdx,
+                                VarMap *vm, UsedByList *usedBy,
                                 int *worklist, int wTail, char *invariant) {
     int wHead = 0;
 
     while (wHead < wTail) {
         int j = worklist[wHead++];
+        IRInstr *in = &f->instrs[j];
 
-        if (invariant[j]) continue; // cheap check first — already marked, skip expensive src checks
+        if (!src_is_invariant(in->src1, defCount, defInstrIdx, vm, invariant)) continue;
+        if (!src_is_invariant(in->src2, defCount, defInstrIdx, vm, invariant)) continue;
 
-        const IRInstr *in = &f->instrs[j]; // cache only after cheap guard passes
-
-        if (!src_is_invariant(f, L, in->src1, defCount, vm, invariant)) continue;
-        if (!src_is_invariant(f, L, in->src2, defCount, vm, invariant)) continue;
+        if (invariant[j]) continue;
 
         invariant[j] = 1;
 
@@ -395,34 +303,16 @@ static void propagate_worklist(IRFunction *f, Loop *L, VarMap *vm,
     }
 }
 
-/**
- * @brief Mark every loop-invariant instruction in @p invariant[].
- *
- * Builds the usedBy reverse map, seeds the worklist with instructions
- * whose sources are trivially invariant, then propagates transitively.
- * On return, invariant[j] == 1 for every instruction index j inside the
- * loop body that is loop-invariant.
- *
- * @param f         IR function.
- * @param L         Loop being analysed.
- * @param vm        VarMap for id resolution.
- * @param numVars   Total number of tracked operand ids.
- * @param defCount  Per-id definition counts from count_defs_in_loop.
- * @param invariant Output array of length f->count, zeroed by the caller.
- * @param arena     Arena used for the phase-local output arrays.
- */
+
 static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
-                            int numVars, const int *defCount,
+                            int numVars, const int *defCount, const int *defInstrIdx,
                             char *invariant, Arena *arena) {
     int n = f->count;
-
     UsedByList *usedBy = alloc_used_by(numVars);
-
-    /* worklist: dimensione massima nota, quindi arena */
     int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
 
     int wTail = seed_worklist(f, L, vm, usedBy, worklist);
-    propagate_worklist(f, L, vm, defCount, usedBy, worklist, wTail, invariant);
+    propagate_worklist(f, defCount, defInstrIdx, vm, usedBy, worklist, wTail, invariant);
 
     free_used_by(usedBy, numVars);
     free(usedBy);
@@ -722,13 +612,12 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
         VarMap *vm  = &liv.varMap;
         int numVars = liv.blockSets.numVars;
 
-        // phase 1: count definitions inside the loop body
-        int *defCount = count_defs_in_loop(f, L, vm, numVars, arenaScratch);
+        int *defInstrIdx;
+        int *defCount = count_defs_in_loop(f, L, vm, numVars, arenaScratch, &defInstrIdx);
 
-        // phase 2: find all loop-invariant instructions
         char *invariant = arena_alloc(arenaScratch, (size_t)f->count);
         memset(invariant, 0, (size_t)f->count);
-        find_invariants(f, L, vm, numVars, defCount, invariant, arenaScratch);
+        find_invariants(f, L, vm, numVars, defCount, defInstrIdx, invariant, arenaScratch);
 
         // phase 3: move safe invariants to the pre-header
         int moved = move_invariants(f, L, Dom, invariant, defCount, vm, &liv);
