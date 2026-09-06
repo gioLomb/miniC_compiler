@@ -108,30 +108,85 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
     return stackLen;
 }
 
-/* =========================================================================
- * Helper Functions — Selection Phase (Refactoring: Extract Function)
- * ========================================================================= */
+
 
 /**
- * Returns the partner ID for node @p v in the pair, or -1 if @p v is not part of it.
+ * @brief CSR (compressed sparse row) index: node id -> list of partner node ids.
+ *
+ * Built once per ra_select_colors() call from the flat PartnerList, replacing
+ * the O(pl->count) linear scan hint_color() previously did for every single
+ * node being colored (O(nodes * moves) worst case over the whole function).
+ * Lookup for one node becomes O(local degree) instead of O(total pairs).
  */
-static inline int get_partner_id(const PartnerPair *pair, int v) {
-    if (pair->u == v) return pair->v;
-    if (pair->v == v) return pair->u;
-    return -1;
+typedef struct {
+    int *start;  /**< start[v]: offset into data[] for node v; start[n] = total. */
+    int *data;   /**< Flat array of partner node ids, one contiguous slice per node. */
+} PartnerIndex;
+
+/**
+ * @brief Build the node -> partners CSR index from @p pl.
+ *
+ * Each PartnerPair(u,v) contributes one entry to u's list and one to v's
+ * list (undirected: coloring either endpoint may want to check the other).
+ * Entries within a node's slice preserve @p pl's original pair order, so
+ * scan-order-dependent tie-breaking (first valid hint wins) is unaffected.
+ *
+ * @param pl  Partner list to index; NULL or empty yields an empty index.
+ * @param n   Total node count (== IGraph.n), sizes the start[] array.
+ * @return    Heap-allocated PartnerIndex; release with partner_index_free().
+ */
+static PartnerIndex build_partner_index(const PartnerList *pl, int n) {
+    PartnerIndex idx = { NULL, NULL };
+    if (!pl || pl->count == 0 || n <= 0) return idx;
+
+    // pass 1: count how many pairs touch each node
+    int *count = calloc((size_t)n, sizeof(int));
+    for (int i = 0; i < pl->count; i++) {
+        int u = pl->pairs[i].u, v = pl->pairs[i].v;
+        if (u >= 0 && u < n) count[u]++;
+        if (v >= 0 && v < n) count[v]++;
+    }
+
+    // pass 2: prefix sum -> offsets
+    idx.start = malloc((size_t)(n + 1) * sizeof(int));
+    int total = 0;
+    for (int i = 0; i < n; i++) { idx.start[i] = total; total += count[i]; }
+    idx.start[n] = total;
+
+    // pass 3: scatter, using a write cursor seeded from start[]
+    idx.data = malloc((size_t)(total > 0 ? total : 1) * sizeof(int));
+    int *cursor = malloc((size_t)n * sizeof(int));
+    memcpy(cursor, idx.start, (size_t)n * sizeof(int));
+
+    for (int i = 0; i < pl->count; i++) {
+        int u = pl->pairs[i].u, v = pl->pairs[i].v;
+        if (u >= 0 && u < n && v >= 0 && v < n) {
+            idx.data[cursor[u]++] = v;
+            idx.data[cursor[v]++] = u;
+        }
+    }
+
+    free(cursor);
+    free(count);
+    return idx;
+}
+
+/** @brief Release a PartnerIndex built by build_partner_index(). */
+static void partner_index_free(PartnerIndex *idx) {
+    free(idx->start);
+    free(idx->data);
+    idx->start = idx->data = NULL;
 }
 
 /**
- * Look up a preferred color from the partner list (Biased Coloring).
+ * Look up a preferred color from the partner index (Biased Coloring).
  */
 static int hint_color(int v, uint32_t available,
-                      const IGraph *g,const PartnerList *pl){
-    if (!pl || pl->count == 0) return -1;
+                      const IGraph *g, const PartnerIndex *pidx){
+    if (!pidx->start) return -1;
 
-    for (int i = 0; i < pl->count; i++) {
-        int partner = get_partner_id(&pl->pairs[i], v);
-        if (partner < 0) continue;
-
+    for (int k = pidx->start[v]; k < pidx->start[v + 1]; k++) {
+        int partner = pidx->data[k];
         int pc = g->color[partner];
         if (pc < 0 || (unsigned)pc >= PHYS_ALLOCATABLE) continue;
 
@@ -159,9 +214,9 @@ static inline uint32_t compute_forbidden_colors(const IGraph *g, int v) {
 
 
 static inline int choose_color(int v, uint32_t available,
-                               const IGraph *g,const PartnerList *pl){
+                               const IGraph *g,const PartnerIndex *pidx){
     // Priority 1: biased hint from a move-related partner
-    int hint = hint_color(v, available, g, pl);
+    int hint = hint_color(v, available, g, pidx);
     if (hint >= 0) return hint;
 
     // Priority 2: live across CALL — prefer callee-saved registers
@@ -186,6 +241,9 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen,
     int nSpilled = 0;
     const uint32_t valid_mask = (1u << PHYS_ALLOCATABLE) - 1u;
 
+    // built once for the whole coloring pass instead of scanning pl per node
+    PartnerIndex pidx = build_partner_index(pl, g->n);
+
     for (int si = stackLen - 1; si >= 0; si--) {
         int v = stack[si];
         g->active[v] = 1;
@@ -193,7 +251,7 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen,
         uint32_t forbidden = compute_forbidden_colors(g, v);
         uint32_t available = (~forbidden) & valid_mask;
 
-        int chosen = choose_color(v, available, g, pl);
+        int chosen = choose_color(v, available, g, &pidx);
 
         if (chosen >= 0) {
             g->color[v] = chosen;
@@ -203,5 +261,6 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen,
         }
     }
 
+    partner_index_free(&pidx);
     return nSpilled;
 }
