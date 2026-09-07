@@ -246,21 +246,25 @@ static BasicBlock *ir_convert_blocks(IRFunction *f, Arena *arena) {
 }
 
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
-                                    Arena *arena) {
+                                    VarMap *sharedVarMap, Arena *arena) {
     LivenessResult r = {0};
 
-    // Pre-scan all instructions to assign a compact id to every distinct operand
-    r.varMap = varmap_init();
+    // Reuse caller's VarMap (table pointer shared, mutations visible to
+    // caller) when given; otherwise own a fresh one, exactly as before.
+    r.varMap = sharedVarMap ? *sharedVarMap : varmap_init();
     ir_populate_varmap(f, &r.varMap);
-    int numVars = r.varMap.nextId; // total distinct operands seen
+    // Sync back the possibly-grown id counter so the caller's copy stays
+    // in lockstep (e.g. cp_optimize's next call sees the right nextId).
+    if (sharedVarMap) sharedVarMap->nextId = r.varMap.nextId;
 
-    // Convert IRBlock descriptors to the generic BasicBlock
+    int numVars = r.varMap.nextId;
+
     BasicBlock *lb = ir_convert_blocks(f, arena);
 
     IRLivenessCtx ctx = { f, &r.varMap };
     r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
                                          irExtract, &ctx, arena);
-    r.liveAfter = NULL; // IR-level passes do not need per-instruction granularity
+    r.liveAfter = NULL;
     return r;
 }
 

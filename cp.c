@@ -198,17 +198,17 @@ static inline int fold_binary_float(IROp op, float a, float b, float *res) {
  * Must be called before any ConstMap operations so that every
  * variable/temporary that appears in the function has a valid id in [0, nextId).
  */
-static VarMap cp_build_varmap(IRFunction *f) {
-    VarMap vm = varmap_init();
-    for (int i = 0; i < f->count; i++) {
-        IRInstr *in = &f->instrs[i];
-        // register dst, src1, src: get-or-create semantics
-        varmap_operand_id(&vm, in->dst);
-        varmap_operand_id(&vm, in->src1);
-        varmap_operand_id(&vm, in->src2);
-    }
-    return vm;
-}
+// static VarMap cp_build_varmap(IRFunction *f) {
+//     VarMap vm = varmap_init();
+//     for (int i = 0; i < f->count; i++) {
+//         IRInstr *in = &f->instrs[i];
+//         // register dst, src1, src: get-or-create semantics
+//         varmap_operand_id(&vm, in->dst);
+//         varmap_operand_id(&vm, in->src1);
+//         varmap_operand_id(&vm, in->src2);
+//     }
+//     return vm;
+// }
 
 
 /**
@@ -594,19 +594,33 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
 
 
 
-int cp_optimize(IRFunction *f, Arena *arenaScratch) {
+/**
+ * @brief Register every operand of @p f into @p vm (get-or-create).
+ *
+ * Idempotent: when @p vm was already populated by a previous call (shared
+ * across the CP/DCE loop), this only performs cheap lookups (hits) for
+ * known operands; only genuinely new operands (e.g. SR temps introduced
+ * after LICM+SR) trigger an actual insert.
+ */
+static void cp_register_operands(VarMap *vm, IRFunction *f) {
+    for (int i = 0; i < f->count; i++) {
+        IRInstr *in = &f->instrs[i];
+        varmap_operand_id(vm, in->dst);
+        varmap_operand_id(vm, in->src1);
+        varmap_operand_id(vm, in->src2);
+    }
+}
+
+int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
-    // Caller-owned scratch: reset here instead of create/destroy per call,
-    // reused across the CP+DCE fixed-point loop in ir_build_function().
     arena_reset(arenaScratch);
 
-    VarMap vm = cp_build_varmap(f);
-    int numVars = vm.nextId;
+    cp_register_operands(vm, f);
+    int numVars = vm->nextId;
     PredList preds = ir_build_pred_list(f, arenaScratch);
 
-    //allocate in[]/out[] — all initialised to LAT_UNKNOWN by const_map_init
     ConstMap *in  = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap *out = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));
     ConstMap  tmp;
@@ -616,22 +630,18 @@ int cp_optimize(IRFunction *f, Arena *arenaScratch) {
         const_map_init(&out[b], numVars, arenaScratch);
     }
 
-    cp_run_forward_dataflow(f, in, out, &tmp, numVars, &vm, &preds);
+    cp_run_forward_dataflow(f, in, out, &tmp, numVars, vm, &preds);
 
-    // rewrite + CFG pruning 
     int modified = 0;
-    // eliminate[] is a boolean per-instruction: 1 = delete in sweep
     char *eliminate = arena_alloc(arenaScratch, (size_t)f->count * sizeof(char));
     memset(eliminate, 0, (size_t)f->count * sizeof(char));
 
     for (int b = 0; b < nBlocks; b++)
-        modified |= cp_rewrite_block(f, b, in, eliminate, &vm, arenaScratch);
+        modified |= cp_rewrite_block(f, b, in, eliminate, vm, arenaScratch);
 
-    // orphan labels left after CFG pruning can be removed safely
     modified |= (cp_mark_orphan_labels(f, eliminate, arenaScratch) > 0);
-    // sweep — only if something was marked for elimination 
-    if (modified)  modified = ir_sweep(f, eliminate, nBlocks);
+    if (modified) modified = ir_sweep(f, eliminate, nBlocks);
 
-    varmap_destroy(&vm);
+    // vm ownership stays with the caller (ir.c) — never destroyed here.
     return modified;
 }

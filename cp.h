@@ -53,6 +53,7 @@
 #define CP_H
 
 #include "ir.h"
+#include "varmap.h"
 
 /**
  * @brief Run constant propagation and CFG pruning on a single IR function.
@@ -81,9 +82,14 @@
  * All dataflow storage (ConstMaps, VarMap backing) is allocated from a
  * temporary arena that is destroyed before returning.
  *
- * @param f  IR function to optimise (modified in place).
- * @return   1 if @p f was modified, 0 if the IR was already at fixed point.
+ * @param f    IR function to optimise (modified in place).
+ * @param vm   Shared operand->id VarMap, owned by the caller (ir.c). Reused
+ *             across every call in the CP/DCE fixed-point loop instead of
+ *             being rebuilt each time; cp_optimize only registers any
+ *             not-yet-seen operand (get-or-create, cheap when already known).
+ * @param arenaScratch  Scratch arena for all dataflow storage (reset here).
+ * @return     1 if @p f was modified, 0 if the IR was already at fixed point.
  */
-int cp_optimize(IRFunction *f,Arena *arenaScratch);
+int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch);
 
 #endif /* CP_H */

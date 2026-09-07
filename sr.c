@@ -465,7 +465,7 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
     // VarMap (from liveness analysis) gives a dense variable-id space used
     // throughout to count/track definitions per variable.
     Arena         *livenessArena  = arena_create(0);
-    LivenessResult livenessResult = liveness_computeIr(irFunction, NULL, livenessArena);
+    LivenessResult livenessResult = liveness_computeIr(irFunction, NULL, NULL, livenessArena);
     VarMap        *variableMap    = &livenessResult.varMap;
 
     // Scan the whole function once to find the highest temp id already in

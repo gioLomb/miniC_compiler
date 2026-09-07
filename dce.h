@@ -31,28 +31,16 @@
 #define DCE_H
 
 #include "ir.h"
+#include "varmap.h"
 
 /**
- * @brief Run one Dead Code Elimination iteration over @p f.
- *
- * Removes instructions that are either:
- *   - Inside an unreachable basic block (no path from the entry reaches it), or
- *   - Pure computations (no side effects) whose destination operand is dead
- *     at every point past the instruction (i.e., the value is never read).
- *
- * A pure instruction is one whose only effect is computing a value:
- * arithmetic, comparisons, logical operators, assignments, and array loads.
- * Impure instructions — stores, calls, returns, branches, labels — are
- * never eliminated regardless of whether their destination is live.
- *
- * @pre  @p f must have a valid, fully resolved CFG (succ[] set for all blocks).
- * @post Instructions in unreachable blocks and pure instructions with dead
- *       destinations have been removed.  All block start/end indices are
- *       updated to reflect the compacted layout.
- *
- * @param f  IR function to optimise (modified in place).
- * @return   1 if at least one instruction was removed, 0 if IR is unchanged.
+ * @param f    IR function to optimise (modified in place).
+ * @param vm   Shared operand->id VarMap, owned by the caller. Forwarded to
+ *             liveness_computeIr() so the operand table is reused across
+ *             the CP/DCE fixed-point loop instead of rebuilt every call.
+ * @param arenaScratch  Scratch arena for reachability/liveness/elimination data.
+ * @return 1 if at least one instruction was eliminated, 0 if IR is unchanged.
  */
-int dce_optimize(IRFunction *f, Arena *arenaScratch);
+int dce_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch);
 
 #endif /* DCE_H */

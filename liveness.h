@@ -211,10 +211,6 @@ typedef struct {
     VarMap            varMap;     /**< Operand-to-id mapping (heap memory).  */
 } LivenessResult;
 
-/* =========================================================================
- * Public front-end wrappers
- * ========================================================================= */
-
 /**
  * @brief Run liveness analysis on an IR function.
  *
@@ -226,13 +222,24 @@ typedef struct {
  * @note liveAfter is set to NULL — IR passes (DCE, LICM, SR) work at
  *       block granularity and do not need per-instruction sets.
  *
- * @param f          IR function to analyse.
- * @param reachable  Per-block reachability flags (NULL = all reachable).
- * @param arena      Arena for all output allocations except varMap.
- * @return           LivenessResult; varMap must be destroyed by the caller.
+ * @param f             IR function to analyse.
+ * @param reachable     Per-block reachability flags (NULL = all reachable).
+ * @param sharedVarMap  Optional pre-existing VarMap to reuse instead of
+ *        building a private one from scratch. Pass NULL to keep the
+ *        original behaviour: a fresh VarMap is created and owned by the
+ *        returned LivenessResult (caller must varmap_destroy it). When
+ *        non-NULL, the map stays owned by the caller — it is populated in
+ *        place (any operand not yet registered gets a fresh id, and the
+ *        assigned nextId is written back into *sharedVarMap) — and must
+ *        NOT be destroyed via LivenessResult.varMap. Used by the CP/DCE
+ *        fixed-point loop in ir.c to avoid rebuilding the operand->id
+ *        table on every iteration.
+ * @param arena         Arena for all output allocations except varMap.
+ * @return              LivenessResult; varMap must be destroyed by the
+ *                       caller only when @p sharedVarMap was NULL.
  */
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
-                                    Arena *arena);
+                                   VarMap *sharedVarMap, Arena *arena);
 
 /**
  * @brief Run liveness analysis on a machine-code function.

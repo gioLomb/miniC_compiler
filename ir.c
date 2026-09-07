@@ -596,35 +596,41 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     ir_resolve_cfg(f);
 
-    /* Lowering: OPND_GLOBAL -> IR_GLOBAL_ADDR + LOAD/STORE_ARR, uniform form.
-     * Must happen BEFORE SVN/DCE/CP so every optimiser sees homogeneous IR
-     * and can reason about globals exactly like any other variable. */
-    ir_lower_globals(f,arena);
-    
-    svn_optimize(f);
-    dce_optimize(f,arena);
+   ir_lower_globals(f,arena);
 
-    // constant propagation exposes dead code, DCE removing dead defs can
-    // expose further propagation opportunities: iterate to a fixed point
-    int changed;
+svn_optimize(f);
+
+// Single VarMap shared by every cp_optimize/dce_optimize call below, for
+// the entire lifetime of this function's optimisation pipeline. Avoids
+// rebuilding the operand->id hash table from scratch on every iteration
+// of the fixed-point loops (previously the dominant compile-time cost —
+// see profiling notes). varmap_operand_id is get-or-create, so operands
+// introduced later by SR are transparently picked up without any explicit
+// rebuild step.
+VarMap sharedVarMap = varmap_init();
+
+dce_optimize(f, &sharedVarMap, arena);
+
+int changed;
+do {
+    changed  = cp_optimize(f, &sharedVarMap, arena);
+    changed |= dce_optimize(f, &sharedVarMap, arena);
+} while (changed);
+
+changed  = licm_optimize(f,arena);
+changed |= sr_optimize(f,arena);
+
+if (changed) {
     do {
-        changed  = cp_optimize(f,arena);
-        changed |= dce_optimize(f,arena);
+        changed  = cp_optimize(f, &sharedVarMap, arena);
+        changed |= dce_optimize(f, &sharedVarMap, arena);
     } while (changed);
+}
 
-    changed  = licm_optimize(f,arena);
-    changed |= sr_optimize(f,arena);
+varmap_destroy(&sharedVarMap);
 
-    if (changed) {
-        // LICM/SR can leave behind dead multiplications and newly-exposed
-        // constants (see sr.h): run one more CP+DCE fixed-point round
-        do {
-            changed  = cp_optimize(f,arena);
-            changed |= dce_optimize(f,arena);
-        } while (changed);
-    }
-    
-    return f;
+return f;
+
 }
 
 /* =========================================================================

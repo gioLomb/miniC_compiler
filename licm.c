@@ -596,7 +596,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
     // here would invalidate Dom/loops still in use by subsequent loop
     // iterations in this same call.
     Arena         *livArena = arena_create(0);
-    LivenessResult  liv     = liveness_computeIr(f, NULL, livArena);
+    LivenessResult  liv     = liveness_computeIr(f, NULL, NULL, livArena);
     int totalMoved = 0;
 
     for (int l = 0; l < nLoops; l++) {
@@ -624,7 +624,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
             varmap_destroy(&liv.varMap);
             arena_destroy(livArena);
             livArena = arena_create(0);
-            liv = liveness_computeIr(f, NULL, livArena);
+            liv = liveness_computeIr(f, NULL, NULL, livArena);
         }
     }
 
