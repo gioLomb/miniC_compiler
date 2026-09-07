@@ -10,6 +10,7 @@
 #include "block.h"
 #include <stdlib.h>
 #include "symbol_table.h"
+//#include "varmap.h"
 
 #define IR_INITIAL_CAPACITY 64  /**< Initial instrs[] capacity for a fresh IRFunction. */
 
@@ -108,10 +109,6 @@ typedef struct {
 } IRBlock;
 
 
-/**
- * @brief One compiled IR function: flat instruction array, block list, and
- *        label-resolution scaffolding.
- */
 typedef struct {
     char    *name;
     IRInstr *instrs;
@@ -121,16 +118,28 @@ typedef struct {
     IRBlock *blocks;
     int      blockCount;
     int      blockCap;
-    int      curBlockStart;  /**< Start index of the block currently being emitted. */
+    int      curBlockStart;
 
-    int  labelBase;          /**< First label id used by this function (labels are numbered globally). */
-    int *labelToBlock;       /**< labelToBlock[labelId - labelBase] = block index containing that label; -1 if unresolved. */
-    int  labelToBlockCap;    /**< Allocated capacity of labelToBlock. */
+    int  labelBase;
+    int *labelToBlock;
+    int  labelToBlockCap;
 
-    Operand *params;    /**< Formal-parameter operands (OPND_VAR), in declaration order. Populated by ir_buildFunction() for the ABI-register binding MOVs emitted right after the prologue. */
-    int      paramCount; /**< Number of entries in params. */
+    Operand *params;
+    int      paramCount;
+
+    /**
+     * @brief Structural-mutation counter for @c instrs[]/@c count.
+     *
+     * Bumped only when the instruction array is reindexed or rebuilt
+     * (ir_sweep() removing entries, LICM hoisting, SR's loop rewrite,
+     * global-variable lowering) — never for in-place operand edits (e.g.
+     * CP folding a variable use to a constant). VarMap's per-instruction
+     * id cache (see varmap_sync_cache()) uses this to know when cached
+     * ids, keyed by instruction index, are no longer aligned with the
+     * current array and must be recomputed.
+     */
+    int ver;
 } IRFunction;
-
 
 /**
  * @brief Descriptor for one global variable or array emitted to .data/.bss.

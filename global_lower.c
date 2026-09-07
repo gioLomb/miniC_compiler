@@ -327,10 +327,12 @@ void ir_lower_globals(IRFunction *f, Arena *arena) {
     }
 
     // replace the function's instruction array with the rebuilt one
-    free(f->instrs);
+        free(f->instrs);
     f->instrs   = e.buf;
     f->count    = e.count;
     f->capacity = e.cap;
+    f->ver++;   // reindexed: invalidate cached ids (defensive; runs before
+                // any VarMap/cache exists in the current pipeline order)
 
     remap_block_ranges(f, newStart, newEnd, e.count);
 }

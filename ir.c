@@ -113,10 +113,15 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
         compact_block(f, eliminate, b, &writeCursor);
 
     f->count         = writeCursor;
-    f->capacity      = f->capacity; // unchanged: buffer reused, just shorter logical length
+    f->capacity      = f->capacity;
     f->curBlockStart = 0;
 
-    return (writeCursor != nInstrs);
+    int changed = (writeCursor != nInstrs);
+    // Instruction indices shifted: any VarMap id cached against the old
+    // indices (varmap_sync_cache) is now misaligned and must be rebuilt.
+    if (changed) f->ver++;
+
+    return changed;
 }
 
 static inline void ir_close_block(IRFunction *f, int start, int end) {
@@ -596,41 +601,37 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     ir_resolve_cfg(f);
 
-   ir_lower_globals(f,arena);
+       ir_lower_globals(f,arena);
 
-svn_optimize(f);
+    svn_optimize(f);
 
-// Single VarMap shared by every cp_optimize/dce_optimize call below, for
-// the entire lifetime of this function's optimisation pipeline. Avoids
-// rebuilding the operand->id hash table from scratch on every iteration
-// of the fixed-point loops (previously the dominant compile-time cost —
-// see profiling notes). varmap_operand_id is get-or-create, so operands
-// introduced later by SR are transparently picked up without any explicit
-// rebuild step.
-VarMap sharedVarMap = varmap_init();
+    // Single VarMap shared by every cp_optimize/dce_optimize call for the
+    // whole pipeline of this function. Its per-instruction id cache
+    // (varmap_sync_cache, called internally by cp/dce) is rebuilt only
+    // when f->ver changes, instead of every call re-hashing every operand.
+    VarMap sharedVarMap = varmap_init();
 
-dce_optimize(f, &sharedVarMap, arena);
+    dce_optimize(f, &sharedVarMap, arena);
 
-int changed;
-do {
-    changed  = cp_optimize(f, &sharedVarMap, arena);
-    changed |= dce_optimize(f, &sharedVarMap, arena);
-} while (changed);
-
-changed  = licm_optimize(f,arena);
-changed |= sr_optimize(f,arena);
-
-if (changed) {
+    int changed;
     do {
         changed  = cp_optimize(f, &sharedVarMap, arena);
         changed |= dce_optimize(f, &sharedVarMap, arena);
     } while (changed);
-}
 
-varmap_destroy(&sharedVarMap);
+    changed  = licm_optimize(f,arena);
+    changed |= sr_optimize(f,arena);
 
-return f;
+    if (changed) {
+        do {
+            changed  = cp_optimize(f, &sharedVarMap, arena);
+            changed |= dce_optimize(f, &sharedVarMap, arena);
+        } while (changed);
+    }
 
+    varmap_destroy(&sharedVarMap);
+
+    return f;
 }
 
 /* =========================================================================

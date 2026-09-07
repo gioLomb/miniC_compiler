@@ -178,10 +178,10 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
 
 
 /** Context passed from liveness_computeIr to irExtract. */
-typedef struct {
-    IRFunction *f;
-    VarMap     *varMap;
-} IRLivenessCtx;
+// typedef struct {
+//     IRFunction *f;
+//     VarMap     *varMap;
+// } IRLivenessCtx;
 
 /**
  * @brief Extract use and def ids from IR instruction at @p instrIdx.
@@ -196,36 +196,36 @@ typedef struct {
  * Non-storage operands (constants, labels, function names) are silently
  * ignored — they have no VarMap id and cannot be live.
  */
-static void irExtract(void *ctxP, int instrIdx,
-                       int uses[LIVENESS_MAX_IDS], int *nUses,
-                       int defs[LIVENESS_MAX_IDS], int *nDefs) {
-    IRLivenessCtx *ctx = ctxP;
-    IRInstr *in = &ctx->f->instrs[instrIdx];
-    *nUses = 0; *nDefs = 0;
+// static void irExtract(void *ctxP, int instrIdx,
+//                        int uses[LIVENESS_MAX_IDS], int *nUses,
+//                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
+//     IRLivenessCtx *ctx = ctxP;
+//     IRInstr *in = &ctx->f->instrs[instrIdx];
+//     *nUses = 0; *nDefs = 0;
 
-    // src1 and src2 are always source operands — add them as uses.
-    if (ir_operand_is_storage(in->src1.kind)) {
-        int id = varmap_operand_id(ctx->varMap, in->src1);
-        if (id >= 0) uses[(*nUses)++] = id;
-    }
-    if (ir_operand_is_storage(in->src2.kind)) {
-        int id = varmap_operand_id(ctx->varMap, in->src2);
-        if (id >= 0) uses[(*nUses)++] = id;
-    }
+//     // src1 and src2 are always source operands — add them as uses.
+//     if (ir_operand_is_storage(in->src1.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->src1);
+//         if (id >= 0) uses[(*nUses)++] = id;
+//     }
+//     if (ir_operand_is_storage(in->src2.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->src2);
+//         if (id >= 0) uses[(*nUses)++] = id;
+//     }
 
-    // case IR_STORE_ARR  dst[src1] = src2
+//     // case IR_STORE_ARR  dst[src1] = src2
 
-    if (!ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
-        int id = varmap_operand_id(ctx->varMap, in->dst);
-        if (id >= 0) uses[(*nUses)++] = id;
-    }
+//     if (!ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->dst);
+//         if (id >= 0) uses[(*nUses)++] = id;
+//     }
 
-    // For all opcodes that write a result into dst, dst is a def.
-    if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
-        int id = varmap_operand_id(ctx->varMap, in->dst);
-        if (id >= 0) defs[(*nDefs)++] = id;
-    }
-}
+//     // For all opcodes that write a result into dst, dst is a def.
+//     if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
+//         int id = varmap_operand_id(ctx->varMap, in->dst);
+//         if (id >= 0) defs[(*nDefs)++] = id;
+//     }
+// }
 
 
 static void ir_populate_varmap(IRFunction *f, VarMap *varMap) {
@@ -245,29 +245,57 @@ static BasicBlock *ir_convert_blocks(IRFunction *f, Arena *arena) {
     return lb;
 }
 
+/** Context passed from liveness_computeIr to irExtract. */
+typedef struct {
+    IRFunction *f;
+    VarMap     *vm;
+} IRLivenessCtx;
+
+static void irExtract(void *ctxP, int instrIdx,
+                       int uses[LIVENESS_MAX_IDS], int *nUses,
+                       int defs[LIVENESS_MAX_IDS], int *nDefs) {
+    IRLivenessCtx *ctx = ctxP;
+    IRInstr *in = &ctx->f->instrs[instrIdx];
+    VarMap  *vm = ctx->vm;
+    *nUses = 0; *nDefs = 0;
+
+    // cached ids, gated by the operand's CURRENT kind (see varmap.h doc on
+    // why a stale-but-unused id after a CP fold is harmless here)
+    int s1 = ir_operand_is_storage(in->src1.kind) ? vm->src1Id[instrIdx] : -1;
+    int s2 = ir_operand_is_storage(in->src2.kind) ? vm->src2Id[instrIdx] : -1;
+    int d  = ir_operand_is_storage(in->dst.kind)  ? vm->dstId[instrIdx]  : -1;
+
+    if (s1 >= 0) uses[(*nUses)++] = s1;
+    if (s2 >= 0) uses[(*nUses)++] = s2;
+
+    if (!ir_defines_dst(in->op) && d >= 0) uses[(*nUses)++] = d;
+    if (ir_defines_dst(in->op)  && d >= 0) defs[(*nDefs)++] = d;
+}
+
+/* ir_populate_varmap() rimossa: sostituita da varmap_sync_cache(). */
+
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
                                     VarMap *sharedVarMap, Arena *arena) {
     LivenessResult r = {0};
 
-    // Reuse caller's VarMap (table pointer shared, mutations visible to
-    // caller) when given; otherwise own a fresh one, exactly as before.
-    r.varMap = sharedVarMap ? *sharedVarMap : varmap_init();
-    ir_populate_varmap(f, &r.varMap);
-    // Sync back the possibly-grown id counter so the caller's copy stays
-    // in lockstep (e.g. cp_optimize's next call sees the right nextId).
-    if (sharedVarMap) sharedVarMap->nextId = r.varMap.nextId;
+    VarMap  owned;
+    VarMap *vm = sharedVarMap;
+    if (!vm) { owned = varmap_init(); vm = &owned; }
 
-    int numVars = r.varMap.nextId;
+    // Registers any new operand and refreshes the per-instruction id cache
+    // only if f changed structurally since the last sync on this vm.
+    varmap_sync_cache(vm, f);
 
+    int numVars = vm->nextId;
     BasicBlock *lb = ir_convert_blocks(f, arena);
 
-    IRLivenessCtx ctx = { f, &r.varMap };
+    IRLivenessCtx ctx = { f, vm };
     r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
                                          irExtract, &ctx, arena);
     r.liveAfter = NULL;
+    r.varMap    = *vm; // vm is sharedVarMap (already updated in place) or &owned
     return r;
 }
-
 /* 
  * Machine-code front-end
 */

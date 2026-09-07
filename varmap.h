@@ -1,8 +1,9 @@
 #ifndef VARMAP_H
 #define VARMAP_H
 
+#include "ir.h"         
+
 #include <stdint.h>
-#include "ir.h"         /* Operand, OPND_VAR, OPND_TEMP */
 #include "hash_table.h"
 
 /**
@@ -48,9 +49,43 @@
  *            bitset index.
  */
 typedef struct {
-    Hash_Table *table;   /**< Hash table storing packed-key → id pairs. */
-    int         nextId;  /**< Next id to hand out; equals number of distinct operands seen so far. */
+    Hash_Table *table;
+    int         nextId;
+
+    /* --- per-instruction id cache (stage 2) ---
+     * dstId[i]/src1Id[i]/src2Id[i]: id of instrs[i]'s dst/src1/src2, or -1.
+     * Lazily allocated (cacheArena stays NULL until first sync). Consumers
+     * must still check the operand's CURRENT kind before trusting an id —
+     * an id stays cached even after CP folds that slot to a constant; only
+     * the kind check (ir_operand_is_storage) tells you it's no longer usable. */
+    Arena *cacheArena;
+    int   *dstId;
+    int   *src1Id;
+    int   *src2Id;
+    int    cacheCount;    /**< instrs[] length the cache currently covers */
+    int    cachedIrVer;   /**< IRFunction::ver the cache was built for; -1 = never built */
 } VarMap;
+
+/**
+ * @brief Ensure @p vm's per-instruction operand-id cache matches @p f's
+ *        current instruction array.
+ *
+ * Rebuilds the cache — one get-or-create VarMap lookup per operand slot
+ * (dst/src1/src2) of every instruction — only when @p f was structurally
+ * modified since the last sync (@c f->ver changed, or the instruction
+ * count changed as a defensive cross-check). Otherwise this is an O(1)
+ * no-op: the existing @c vm->dstId/src1Id/src2Id arrays are already valid.
+ *
+ * In-place operand rewrites that don't reindex the array (e.g. constant
+ * propagation folding a variable use into a literal) do NOT require a
+ * rebuild: callers must check the operand's current kind
+ * (ir_operand_is_storage) before trusting a cached id, since a slot that
+ * has since become a constant keeps a stale-but-harmless id in the cache.
+ *
+ * @param vm  VarMap to sync (and register any new operand into).
+ * @param f   IR function the cache must reflect.
+ */
+void varmap_sync_cache(VarMap *vm, IRFunction *f);
 
 /**
  * @brief Hash function for packed uint64_t keys, compatible with @c hash_func.

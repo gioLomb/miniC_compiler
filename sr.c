@@ -436,11 +436,10 @@ static int applyStrengthReduction(IRFunction *irFunction, Loop *targetLoop,
     irFunction->instrs   = newInstrs;
     irFunction->count    = newInstrCount;
     irFunction->capacity = newInstrCount;
+    irFunction->ver++;   // reindexed: invalidate cached ids
 
     remap_block_ranges(irFunction, preheaderblockIdx, preheaderInitStart, preheaderInitEnd, 
                        oldToNewIdxMap, totalOriginalInstrs, newInstrCount);
-
-    // Instr buffer changed underneath any "current block" cursor state.
     irFunction->curBlockStart = 0;
     return 1;
 }

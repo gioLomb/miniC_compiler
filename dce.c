@@ -124,40 +124,43 @@ static inline void mark_block_dead(IRFunction *f, int b, char *eliminate) {
 }
 
 /**
- * @brief Apply the backward-liveness transfer function to one instruction:
- *        decide whether it is dead, or advance @p live past it.
+ * @brief Return @p cachedId if @p kind is still a storage operand, -1 otherwise.
  *
- * @return 1 if @p in was marked dead in @p eliminate (live set left
- *         untouched — sources of dead code must not be kept alive
- *         artificially); 0 if @p in survives and @p live was updated.
+ * Guards against a stale-but-harmless cached id: an id stays in the cache
+ * even after CP folds that slot into a constant elsewhere; the kind check
+ * on the LIVE operand (not on the cache) is what makes that safe.
  */
+static inline int id_if_storage(OperandKind kind, int cachedId) {
+    return ir_operand_is_storage(kind) ? cachedId : -1;
+}
+
 static int dce_process_instr(IRInstr *in, int idx, BitSet *live,
                               VarMap *vm, char *eliminate) {
-    // opcode must write a dst AND dst must be a trackable storage location
-    // (OPND_VAR/OPND_TEMP); labels and function names are never defs
-    int def   = ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind);
-    int dstId = def ? varmap_operand_id(vm, in->dst) : -1; // skip lookup when not a def
+    int dstId = id_if_storage(in->dst.kind, vm->dstId[idx]);
+    int def   = ir_defines_dst(in->op) && dstId >= 0;
 
     // pure instruction whose destination is dead here: eliminate
-    if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && dstId >= 0 && !bitset_test(live, dstId)) {
+    if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && !bitset_test(live, dstId)) {
         eliminate[idx] = 1;
         return 1;
     }
 
-    /* order matters: sources added BEFORE dst is killed, so a self-
-     * referential "x = x + 1" still sees x live going further back */
-    mark_operand_live(live, in->src1, vm);
-    mark_operand_live(live, in->src2, vm);
+    /* order matters: sources added BEFORE dst is killed */
+    int s1 = id_if_storage(in->src1.kind, vm->src1Id[idx]);
+    int s2 = id_if_storage(in->src2.kind, vm->src2Id[idx]);
+    if (s1 >= 0) bitset_set(live, s1);
+    if (s2 >= 0) bitset_set(live, s2);
 
     // IR_STORE_ARR: dst is the array base, READ to form the address — a use
-    if (!ir_defines_dst(in->op))
-        mark_operand_live(live, in->dst, vm);
+    if (!ir_defines_dst(in->op) && dstId >= 0)
+        bitset_set(live, dstId);
 
-    if (def && dstId >= 0)
+    if (def)
         bitset_clr(live, dstId);
 
     return 0;
 }
+
 
 static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
                       Arena *arena, char *eliminate) {
@@ -213,8 +216,8 @@ int dce_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     memset(reachable, 0, (size_t)nBlocks);
     mark_reachable_blocks(f, reachable, arenaScratch);
 
-    // Shared vm: liveness_computeIr populates it in place instead of
-    // creating/destroying a private table on every call.
+    // shared vm: liveness_computeIr syncs its id cache in place instead of
+    // rebuilding a private VarMap from scratch on every call.
     LivenessResult liv = liveness_computeIr(f, reachable, vm, arenaScratch);
 
     char *eliminate = arena_alloc(arenaScratch, (size_t)f->count);
@@ -222,6 +225,6 @@ int dce_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
 
     int changed = ir_sweep(f, eliminate, nBlocks);
 
-    // vm is owned by the caller (ir.c): no varmap_destroy here anymore.
+    // vm owned by caller (ir.c): no varmap_destroy here anymore.
     return changed;
 }

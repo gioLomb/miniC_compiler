@@ -156,20 +156,20 @@ static inline int fold_binary_float(IROp op, float a, float b, float *res) {
  * IR_RETURN, IR_LABEL) have no effect on the map.
  */
 
- static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
+ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm, int i) {
     if (!ir_defines_dst(in->op))
         return;
 
-    int id = varmap_operand_id(vm, in->dst);
-    if (id < 0 || id >= map->size) return;
+    int dstId = vm->dstId[i];
+    if (dstId < 0 || dstId >= map->size) return;
 
-    LatVal result = lat_conflict(); // default
+    LatVal result = lat_conflict();
 
     if (in->op == IR_ASSIGN) {
-        result = lat_get_value_from_operand(map, in->src1, vm);
+        result = lat_get_value_by_id(map, in->src1, vm->src1Id[i]);
     } else if (is_binary_op(in->op)) {
-        LatVal lhs = lat_get_value_from_operand(map, in->src1, vm);
-        LatVal rhs = lat_get_value_from_operand(map, in->src2, vm);
+        LatVal lhs = lat_get_value_by_id(map, in->src1, vm->src1Id[i]);
+        LatVal rhs = lat_get_value_by_id(map, in->src2, vm->src2Id[i]);
         if (lhs.state == LAT_CONST && rhs.state == LAT_CONST) {
             if (!lhs.isFloat && !rhs.isFloat) {
                 int r;
@@ -184,13 +184,11 @@ static inline int fold_binary_float(IROp op, float a, float b, float *res) {
             }
         }
     } else if (in->op == IR_NEG || in->op == IR_NOT) {
-        result = fold_unary(in->op, lat_get_value_from_operand(map, in->src1, vm));
+        result = fold_unary(in->op, lat_get_value_by_id(map, in->src1, vm->src1Id[i]));
     }
 
-    map->vals[id] = result;
+    map->vals[dstId] = result;
 }
-
-
 
 /**
  * @brief Scan all instructions and assign a compact int id to every operand.
@@ -260,8 +258,10 @@ static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
 
             // compute new out[b] = transfer(in[b]) into tmp
             const_map_copy(tmp, &in[b]);
+            // cached ids: ogni iterazione del fixed-point prima ri-risolveva
+            // lo stesso operando via hash; ora è una lettura di array.
             for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++)
-                cp_transfer(&f->instrs[i], tmp, vm);
+                cp_transfer(&f->instrs[i], tmp, vm, i);
 
             // if out[b] changed, record it and keep iterating
             if (!const_map_equal(&out[b], tmp)) {
@@ -479,9 +479,9 @@ static int try_eliminate_redundant_jump(IRFunction *f, int b, int i, char *elimi
  * @param vm   VarMap for operand resolution.
  * @return     1 if the instruction was modified, 0 otherwise.
  */
-static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, VarMap *vm) {
+static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, int src1Id) {
     IRInstr *in  = &f->instrs[i];
-    Operand  cond = const_map_try_fold(in->src1, live, vm);
+    Operand  cond = const_map_try_fold_by_id(in->src1, live, src1Id);
 
     if (cond.kind != OPND_CONST_INT && cond.kind != OPND_CONST_FLOAT) {
         // not fully constant: keep only if the substitution actually changed something
@@ -520,11 +520,11 @@ static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, VarMap
  *
  * @return 1 if the instruction was modified (substitution and/or fold), 0 otherwise.
  */
-static int try_fold_generic_instr(IRInstr *in, ConstMap *live, VarMap *vm) {
+static int try_fold_generic_instr(IRInstr *in, ConstMap *live, int src1Id, int src2Id) {
     int modified = 0;
 
-    Operand ns1 = const_map_try_fold(in->src1, live, vm);
-    Operand ns2 = const_map_try_fold(in->src2, live, vm);
+    Operand ns1 = const_map_try_fold_by_id(in->src1, live, src1Id);
+    Operand ns2 = const_map_try_fold_by_id(in->src2, live, src2Id);
     if (!ir_is_same_operand(&ns1, &in->src1)) { in->src1 = ns1; modified = 1; }
     if (!ir_is_same_operand(&ns2, &in->src2)) { in->src2 = ns2; modified = 1; }
 
@@ -581,16 +581,15 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
             cp_is_redundant_jump(f, i)) {
             modified |= try_eliminate_redundant_jump(f, b, i, eliminate);
         } else if (in->op == IR_IF_FALSE) {
-            modified |= try_fold_if_false(f, b, i, &live, vm);
+            modified |= try_fold_if_false(f, b, i, &live, vm->src1Id[i]);
         } else {
-            modified |= try_fold_generic_instr(in, &live, vm);
+            modified |= try_fold_generic_instr(in, &live, vm->src1Id[i], vm->src2Id[i]);
         }
 
-        cp_transfer(in, &live, vm);  
+        cp_transfer(in, &live, vm, i);
     }
     return modified;
 }
-
 
 
 
@@ -617,7 +616,9 @@ int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     int nBlocks = f->blockCount;
     arena_reset(arenaScratch);
 
-    cp_register_operands(vm, f);
+    // Registers any new operand and refreshes the per-instruction id cache
+    // only if f changed structurally since the caller's last sync.
+    varmap_sync_cache(vm, f);
     int numVars = vm->nextId;
     PredList preds = ir_build_pred_list(f, arenaScratch);
 
@@ -642,6 +643,6 @@ int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     modified |= (cp_mark_orphan_labels(f, eliminate, arenaScratch) > 0);
     if (modified) modified = ir_sweep(f, eliminate, nBlocks);
 
-    // vm ownership stays with the caller (ir.c) — never destroyed here.
+    // vm ownership stays with the caller (ir.c): never destroyed here.
     return modified;
 }

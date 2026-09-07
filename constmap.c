@@ -188,51 +188,40 @@ LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm) {
  * OPND_CONST_FLOAT), so the instruction selector never needs to load it from
  * a variable slot.
  */
-Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm) {
-    if (op.kind != OPND_VAR && op.kind != OPND_TEMP) return op; // not a storage location
-    LatVal lv = const_map_get(m, op, vm);
-    if (lv.state != LAT_CONST) return op; // UNKNOWN or CONFLICT: cannot substitute
+LatVal lat_get_value_by_id(const ConstMap *map, Operand op, int cachedId) {
+    switch (op.kind) {
+    case OPND_CONST_INT:   return lat_set_const_int(op.data.intVal);
+    case OPND_CONST_FLOAT: return lat_set_const_float(op.data.floatVal);
+    case OPND_VAR:
+    case OPND_TEMP:
+        // id is only meaningful when op is still a storage operand;
+        // out-of-range/negative id (or a stale one from before a rebuild)
+        // is treated conservatively as CONFLICT.
+        return (cachedId < 0 || cachedId >= map->size) ? lat_conflict() : map->vals[cachedId];
+    default:
+        return lat_conflict();
+    }
+}
+
+Operand const_map_try_fold_by_id(Operand op, const ConstMap *m, int cachedId) {
+    if (op.kind != OPND_VAR && op.kind != OPND_TEMP) return op;
+    if (cachedId < 0 || cachedId >= m->size) return op;
+
+    LatVal lv = m->vals[cachedId];
+    if (lv.state != LAT_CONST) return op;
+
     if (lv.isFloat) {
         Operand o;
-        o.kind           = OPND_CONST_FLOAT;
-        o.data.floatVal  = lv.val.fval;
+        o.kind          = OPND_CONST_FLOAT;
+        o.data.floatVal = lv.val.fval;
         return o;
     } else {
         Operand o;
-        o.kind         = OPND_CONST_INT;
-        o.data.intVal  = lv.val.ival;
+        o.kind        = OPND_CONST_INT;
+        o.data.intVal = lv.val.ival;
         return o;
     }
 }
-
-/* =========================================================================
- * Transfer function helpers
- * =========================================================================
- * These are called by cp.c's transferInstr() to evaluate the constant value
- * an instruction would produce given fully constant inputs.  They are also
- * used by the rewriting phase to fold operations whose operands have been
- * substituted with constants by const_map_try_fold().
- * ========================================================================= */
-
-/**
- * @brief Lift an Operand to a LatVal, consulting @p map for variables.
- *
- * Literal operands (OPND_CONST_INT, OPND_CONST_FLOAT) are always CONST
- * regardless of the map; their values are available inline in the operand.
- * Variables and temporaries are looked up in @p map via @p vm.
- * All other kinds (label, function name, none) return CONFLICT because they
- * cannot carry a numeric constant that can be propagated.
- */
-LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm) {
-    switch (op.kind) {
-    case OPND_CONST_INT:   return lat_set_const_int(op.data.intVal);     // inline integer constant
-    case OPND_CONST_FLOAT: return lat_set_const_float(op.data.floatVal); // inline float constant
-    case OPND_VAR:
-    case OPND_TEMP:        return const_map_get(map, op, vm);         // look up in propagation state
-    default:               return lat_conflict();                     // label, func, none: not a value
-    }
-}
-
 
 
 

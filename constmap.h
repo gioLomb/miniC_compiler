@@ -213,45 +213,30 @@ void const_map_meet(ConstMap *dest, const ConstMap *src);
 LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm);
 
 /**
- * @brief If @p op has a known constant value in @p m, return a folded operand.
+ * @brief Like lat_get_value_from_operand(), but takes an already-resolved
+ *        VarMap id instead of doing the hash lookup itself.
  *
- * When @p op is a variable or temporary whose lattice value is CONST, returns
- * a new OPND_CONST_INT or OPND_CONST_FLOAT operand carrying the constant
- * inline.  Otherwise returns @p op unchanged.  Used by the CP rewriting phase
- * to substitute variables with their constant values in place.
+ * For OPND_VAR/OPND_TEMP the caller must have obtained @p cachedId from
+ * the operand's CURRENT kind (e.g. via VarMap's per-instruction id cache,
+ * guarded by ir_operand_is_storage on the live operand) — this function
+ * does not re-derive it. Literal operands ignore @p cachedId entirely.
  *
- * @param op  Operand to attempt folding.
- * @param m   ConstMap providing the current lattice state.
- * @param vm  VarMap for id resolution.
- * @return    A constant operand if folding succeeded, @p op otherwise.
+ * @param map        Current ConstMap.
+ * @param op         Operand to lift (its kind decides the strategy).
+ * @param cachedId   Precomputed id for @p op when it's VAR/TEMP; ignored otherwise.
+ * @return           Lattice value for @p op.
  */
-Operand const_map_try_fold(Operand op, const ConstMap *m, VarMap *vm);
-
-/* =========================================================================
- * Transfer function helpers
- * =========================================================================
- * These functions are called by cp.c's transferInstr() to evaluate whether
- * an IR instruction produces a constant result given the current ConstMap.
- * They are declared here (rather than being static in cp.c) so that dce.c
- * can reuse the folding kernels without duplicating the arithmetic logic.
- * ========================================================================= */
+LatVal lat_get_value_by_id(const ConstMap *map, Operand op, int cachedId);
 
 /**
- * @brief Lift an Operand to a LatVal, consulting @p map for variables.
+ * @brief Like const_map_try_fold(), but takes an already-resolved VarMap id.
  *
- * Dispatch rules:
- *   - OPND_CONST_INT   → CONST wrapping the inline integer value
- *   - OPND_CONST_FLOAT → CONST wrapping the inline float value
- *   - OPND_VAR / OPND_TEMP → const_map_get() lookup
- *   - anything else (label, func, none) → CONFLICT (not a constant source)
- *
- * @param map  Current ConstMap.
- * @param op   Operand to lift.
- * @param vm   VarMap for variable id resolution.
- * @return     The LatVal representing @p op's current compile-time value.
+ * @param op        Operand to attempt folding.
+ * @param m         ConstMap providing the current lattice state.
+ * @param cachedId  Precomputed id for @p op when it's VAR/TEMP; ignored otherwise.
+ * @return          A constant operand if folding succeeded, @p op otherwise.
  */
-LatVal lat_get_value_from_operand(const ConstMap *map, Operand op, VarMap *vm);
-
+Operand const_map_try_fold_by_id(Operand op, const ConstMap *m, int cachedId);
 
 /**
  * @brief Constant-fold a unary operation (NEG or NOT) on a LatVal.

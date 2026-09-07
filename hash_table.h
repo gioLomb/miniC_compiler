@@ -35,6 +35,8 @@
 #define MAX_KEY_LEN     (1 << 12)
 #define MAX_VALUE_SIZE  (1 << 20)
 #define HT_DEFAULT_CAPACITY 128   /* must stay a power of 2 */
+#define HT_MAX_LOAD_NUM 3  
+#define HT_MAX_LOAD_DEN 4
 
 /* No 'seed' parameter: the hash function is deterministic, consistent
    with compiler use (same keys must always produce the same hash, run
