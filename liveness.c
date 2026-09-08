@@ -177,7 +177,7 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
 }
 
 
-/** Context passed from liveness_computeIr to irExtract. */
+/** Context passed from liveness_computeIr to ir_extract. */
 // typedef struct {
 //     IRFunction *f;
 //     VarMap     *varMap;
@@ -196,7 +196,7 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
  * Non-storage operands (constants, labels, function names) are silently
  * ignored — they have no VarMap id and cannot be live.
  */
-// static void irExtract(void *ctxP, int instrIdx,
+// static void ir_extract(void *ctxP, int instrIdx,
 //                        int uses[LIVENESS_MAX_IDS], int *nUses,
 //                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
 //     IRLivenessCtx *ctx = ctxP;
@@ -245,13 +245,13 @@ static BasicBlock *ir_convert_blocks(IRFunction *f, Arena *arena) {
     return lb;
 }
 
-/** Context passed from liveness_computeIr to irExtract. */
+/** Context passed from liveness_computeIr to ir_extract. */
 typedef struct {
     IRFunction *f;
     VarMap     *vm;
 } IRLivenessCtx;
 
-static void irExtract(void *ctxP, int instrIdx,
+static void ir_extract(void *ctxP, int instrIdx,
                        int uses[LIVENESS_MAX_IDS], int *nUses,
                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
     IRLivenessCtx *ctx = ctxP;
@@ -290,7 +290,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
 
     IRLivenessCtx ctx = { f, vm };
     r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
-                                         irExtract, &ctx, arena);
+                                         ir_extract, &ctx, arena);
     r.liveAfter = NULL;
     r.varMap    = *vm;
     return r;
@@ -299,7 +299,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
  * Machine-code front-end
 */
 
-/** Context passed from liveness_computeMach to machExtract. */
+/** Context passed from liveness_computeMach to mach_extract. */
 typedef struct {
     const MachFunction *f;
     int   nextVreg; // base offset: phys reg P → id nextVreg + P
@@ -316,7 +316,7 @@ typedef struct {
  *   - IDIV: reads RAX and RDX (dividend), writes RAX (quotient) and RDX (remainder).
  *   - CQO:  reads RAX, writes RDX (sign extension).
  */
-static void machExtract(void *ctxP, int instrIdx,
+static void mach_extract(void *ctxP, int instrIdx,
                          int uses[LIVENESS_MAX_IDS], int *nUses,
                          int defs[LIVENESS_MAX_IDS], int *nDefs) {
     MachLivenessCtx *ctx = ctxP;
@@ -350,13 +350,13 @@ LivenessResult liveness_computeMach(const MachFunction *f,
 
     // Run the backward dataflow engine
     r.blockSets = liveness_computeCore(nBlocks, blocks, numVars, NULL,
-                                         machExtract, &ctx, arena);
+                                         mach_extract, &ctx, arena);
 
     // Compute per-instruction liveAfter[] needed by ig_build().
     // This is a single additional backward sweep seeded with the fixed-point
     // LiveOut[] from the engine above.
     r.liveAfter = liveness_computePerInstr(nBlocks, blocks, f->count, numVars,
                                               r.blockSets.LiveOut,
-                                              machExtract, &ctx, arena);
+                                              mach_extract, &ctx, arena);
     return r;
 }

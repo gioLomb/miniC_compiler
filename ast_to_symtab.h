@@ -51,10 +51,10 @@
  * Only the first character is examined for speed — the parser guarantees
  * that only valid type keywords reach here.
  *
- * @param typeName  Null-terminated type keyword string (e.g. "int", "float").
+ * @param type_name  Null-terminated type keyword string (e.g. "int", "float").
  * @return          Corresponding DataType value; T_VOID on unrecognised input.
  */
-DataType st_resolve_type(const char *typeName);
+DataType st_resolve_type(const char *type_name);
 
 /* =========================================================================
  * Declaration text parsing

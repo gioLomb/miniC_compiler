@@ -21,7 +21,7 @@
 #define DYNAMIC_ARRAY_H
 
 /** Initial capacity on the first push (avoids realloc on every early push). */
-#define INT_VECTOR_INITIAL_CAP 4
+#define INT_VECTOR_INITIAL_CAP 16
 
 /**
  * @brief Resizable array of @c int values.

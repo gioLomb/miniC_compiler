@@ -41,7 +41,7 @@
  * Uses the shared error collector (error_collector.h) instead of a
  * parser-private module: ec_report_cascading() suppresses repeated
  * diagnostics for the same erroneous statement (same role the old
- * parser/error.h reportError played), ec_pending_error()/ec_clear_pending()
+ * parser/error.h report_error played), ec_pending_error()/ec_clear_pending()
  * drive panic-mode recovery in synchronize().
  */
 

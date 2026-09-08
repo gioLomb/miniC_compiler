@@ -4,8 +4,8 @@
  * associativa, forzando spill anche su valori float (che in questo backend
  * sono spostati come pattern di bit a 64 bit — vedi load_operand/mo_imm in
  * instr_selector.c, nessun registro SSE). Verifica anche che
- * optimize_ast NON ribilanci la catena '+' (containsFloatLiteral blocca
- * balanceAssocChain per preservare la semantica IEEE 754), quindi l'albero
+ * optimize_ast NON ribilanci la catena '+' (contains_float_literal blocca
+ * balance_assoc_chain per preservare la semantica IEEE 754), quindi l'albero
  * resta sbilanciato: piu' pressione sui registri rispetto a una somma
  * intera equivalente, utile a stressare lo spilling float.
  */

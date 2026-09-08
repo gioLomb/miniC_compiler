@@ -10,18 +10,18 @@
 #define FLOAT_BUF_SIZE (DECIMAL_DIG + 8)
 #define NUM_BUF_SIZE   (FLOAT_BUF_SIZE > INT_BUF_SIZE ? FLOAT_BUF_SIZE : INT_BUF_SIZE)
 
-static ASTNode *rewriteExpr(Arena *arena, ASTNode *expr);
-static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt);
-static inline int isIntLiteral(ASTNode *n)     { return n && n->kind == ND_NUM_INT; }
-static inline int isFloatLiteral(ASTNode *n)   { return n && n->kind == ND_NUM_FLOAT; }
-static inline int isNumericLiteral(ASTNode *n) { return isIntLiteral(n) || isFloatLiteral(n); }
+static ASTNode *rewrite_expr(Arena *arena, ASTNode *expr);
+static ASTNode *rewrite_stmt(Arena *arena, ASTNode *stmt);
+static inline int is_int_literal(ASTNode *n)     { return n && n->kind == ND_NUM_INT; }
+static inline int is_float_literal(ASTNode *n)   { return n && n->kind == ND_NUM_FLOAT; }
+static inline int is_numeric_literal(ASTNode *n) { return is_int_literal(n) || is_float_literal(n); }
 
-static inline long   literalAsLong(ASTNode *n)   { return atol(n->text); }
-static inline double literalAsDouble(ASTNode *n) { return atof(n->text); }
-static inline int    literalIsZero(ASTNode *n)   { return literalAsDouble(n) == 0.0; }
+static inline long   literal_as_long(ASTNode *n)   { return atol(n->text); }
+static inline double literal_as_double(ASTNode *n) { return atof(n->text); }
+static inline int    literal_is_zero(ASTNode *n)   { return literal_as_double(n) == 0.0; }
 
-static inline int literalIntEquals(ASTNode *n, long v) {
-    return isIntLiteral(n) && literalAsLong(n) == v;
+static inline int literal_int_equals(ASTNode *n, long v) {
+    return is_int_literal(n) && literal_as_long(n) == v;
 }
 
 
@@ -39,7 +39,7 @@ static inline int literalIntEquals(ASTNode *n, long v) {
  * @param expr Pointer to the AST expression node to analyze.
  * @return 1 if the expression contains side effects; 0 if it is side-effect-free.
  */
-static int hasSideEffect(ASTNode *expr) {
+static int has_side_effect(ASTNode *expr) {
     if (!expr) return 0;
 
     switch (expr->kind) {
@@ -60,7 +60,7 @@ static int hasSideEffect(ASTNode *expr) {
 
     // Recursively check child expressions
     for (int i = 0; i < expr->nchildren; i++) {
-        if (hasSideEffect(expr->children[i])) return 1;
+        if (has_side_effect(expr->children[i])) return 1;
     }
 
     return 0;
@@ -72,8 +72,8 @@ static int hasSideEffect(ASTNode *expr) {
  */
 static ASTNode *fold_comparison_and_logic(Arena *arena, unsigned short key,
                                           ASTNode *sx, ASTNode *dx) {
-    double a = literalAsDouble(sx);
-    double b = literalAsDouble(dx);
+    double a = literal_as_double(sx);
+    double b = literal_as_double(dx);
     int result;
 
     switch (key) {
@@ -97,11 +97,11 @@ static ASTNode *fold_comparison_and_logic(Arena *arena, unsigned short key,
  * @brief Folds integer modulo operation safely at compile time.
  */
 static ASTNode *fold_modulo(Arena *arena, ASTNode *sx, ASTNode *dx) {
-    long b = literalAsLong(dx);
+    long b = literal_as_long(dx);
     if (b == 0) return NULL; // Abort folding to defer exception to runtime
 
     char buf[NUM_BUF_SIZE];
-    snprintf(buf, sizeof(buf), "%ld", literalAsLong(sx) % b);
+    snprintf(buf, sizeof(buf), "%ld", literal_as_long(sx) % b);
     return newNode(arena, ND_NUM_INT, buf);
 }
 
@@ -112,15 +112,15 @@ static ASTNode *fold_division(Arena *arena, ASTNode *sx, ASTNode *dx, int bothIn
     char buf[NUM_BUF_SIZE];
 
     if (bothInt) {
-        long b = literalAsLong(dx);
+        long b = literal_as_long(dx);
         if (b == 0) return NULL; // Abort folding
-        snprintf(buf, sizeof(buf), "%ld", literalAsLong(sx) / b);
+        snprintf(buf, sizeof(buf), "%ld", literal_as_long(sx) / b);
         return newNode(arena, ND_NUM_INT, buf);
     }
 
-    double b = literalAsDouble(dx);
+    double b = literal_as_double(dx);
     if (b == 0.0) return NULL; // Abort folding
-    snprintf(buf, sizeof(buf), "%g", literalAsDouble(sx) / b);
+    snprintf(buf, sizeof(buf), "%g", literal_as_double(sx) / b);
     return newNode(arena, ND_NUM_FLOAT, buf);
 }
 
@@ -132,8 +132,8 @@ static ASTNode *fold_arithmetic(Arena *arena, unsigned short key,
     char buf[NUM_BUF_SIZE];
 
     if (bothInt) {
-        long a = literalAsLong(sx);
-        long b = literalAsLong(dx);
+        long a = literal_as_long(sx);
+        long b = literal_as_long(dx);
         long r;
         switch (key) {
             case OP_KEY('+', 0): r = a + b; break;
@@ -144,8 +144,8 @@ static ASTNode *fold_arithmetic(Arena *arena, unsigned short key,
         return newNode(arena, ND_NUM_INT, buf);
     }
 
-    double a = literalAsDouble(sx);
-    double b = literalAsDouble(dx);
+    double a = literal_as_double(sx);
+    double b = literal_as_double(dx);
     double r;
     switch (key) {
         case OP_KEY('+', 0): r = a + b; break;
@@ -165,7 +165,7 @@ static ASTNode *fold_arithmetic(Arena *arena, unsigned short key,
  * @param dx    Pointer to the right-hand operand AST node (must be numeric literal).
  * @return Pointer to a new folded AST node, or `NULL` if folding cannot be performed safely.
  */
-static ASTNode *foldBinopLiterals(Arena *arena, const char *op, ASTNode *sx, ASTNode *dx) {
+static ASTNode *fold_binop_literals(Arena *arena, const char *op, ASTNode *sx, ASTNode *dx) {
     unsigned short key = OP_KEY(op[0], op[1]);
 
     // Comparison and logical operators
@@ -177,7 +177,7 @@ static ASTNode *foldBinopLiterals(Arena *arena, const char *op, ASTNode *sx, AST
         return fold_modulo(arena, sx, dx);
     }
 
-    int bothInt = isIntLiteral(sx) && isIntLiteral(dx);
+    int bothInt = is_int_literal(sx) && is_int_literal(dx);
 
     // Division operator
     if (key == OP_KEY('/', 0)) {
@@ -196,22 +196,22 @@ static ASTNode *foldBinopLiterals(Arena *arena, const char *op, ASTNode *sx, AST
  * @param child Pointer to the literal child operand AST node.
  * @return Pointer to a new folded AST node, or `NULL` if not foldable.
  */
-static ASTNode *foldUnaryLiteral(Arena *arena, const char *op, ASTNode *child) {
+static ASTNode *fold_unary_literal(Arena *arena, const char *op, ASTNode *child) {
     char buf[NUM_BUF_SIZE];
 
     // Arithmetic negation (-)
     if (op[0] == '-') {
-        if (isIntLiteral(child)) {
-            snprintf(buf, sizeof(buf), "%ld", -literalAsLong(child));
+        if (is_int_literal(child)) {
+            snprintf(buf, sizeof(buf), "%ld", -literal_as_long(child));
             return newNode(arena, ND_NUM_INT, buf);
         }
-        snprintf(buf, sizeof(buf), "%g", -literalAsDouble(child));
+        snprintf(buf, sizeof(buf), "%g", -literal_as_double(child));
         return newNode(arena, ND_NUM_FLOAT, buf);
     }
 
     // Logical NOT (!)
     if (op[0] == '!') {
-        snprintf(buf, sizeof(buf), "%d", literalIsZero(child) ? 1 : 0);
+        snprintf(buf, sizeof(buf), "%d", literal_is_zero(child) ? 1 : 0);
         return newNode(arena, ND_NUM_INT, buf);
     }
     return NULL;
@@ -229,12 +229,12 @@ static ASTNode *foldUnaryLiteral(Arena *arena, const char *op, ASTNode *child) {
  * @param n Pointer to the AST node to check.
  * @return 1 if floating-point literals exist in the subtree; 0 otherwise.
  */
-static int containsFloatLiteral(ASTNode *n) {
+static int contains_float_literal(ASTNode *n) {
     if (!n) return 0;
     if (n->kind == ND_NUM_FLOAT) return 1;
 
     for (int i = 0; i < n->nchildren; i++) {
-        if (containsFloatLiteral(n->children[i])) return 1;
+        if (contains_float_literal(n->children[i])) return 1;
     }
     return 0;
 }
@@ -248,11 +248,11 @@ static int containsFloatLiteral(ASTNode *n) {
  * @param count  Pointer to the current count of collected leaf nodes in the array.
  * @param cap    Pointer to the current capacity of the `leaves` array.
  */
-static void flattenChain(ASTNode *node, unsigned short opKey,
+static void flatten_chain(ASTNode *node, unsigned short opKey,
                          ASTNode ***leaves, int *count, int *cap) {
     if (node->kind == ND_BINOP && OP_KEY(node->text[0], node->text[1]) == opKey) {
-        flattenChain(node->children[0], opKey, leaves, count, cap);
-        flattenChain(node->children[1], opKey, leaves, count, cap);
+        flatten_chain(node->children[0], opKey, leaves, count, cap);
+        flatten_chain(node->children[1], opKey, leaves, count, cap);
         // 'node' itself (the binary wrapper) is abandoned in the arena here
     } else {
         if (*count == *cap) {
@@ -272,7 +272,7 @@ static void flattenChain(ASTNode *node, unsigned short opKey,
  * @param opChar   Operator character (`+` or `*`) used for connecting the pairs.
  * @return Pointer to the root node of the freshly built, height-balanced AST subtree.
  */
-static ASTNode *buildBalanced(Arena *arena, ASTNode **leaves, int count, char opChar) {
+static ASTNode *build_balanced_tree(Arena *arena, ASTNode **leaves, int count, char opChar) {
     while (count > 1) {
         int writeIdx = 0, i = 0;
         for (; i + 1 < count; i += 2) {
@@ -280,9 +280,9 @@ static ASTNode *buildBalanced(Arena *arena, ASTNode **leaves, int count, char op
             ASTNode *dx = leaves[i + 1];
 
             // Attempt immediate constant folding on adjacent literal pair
-            if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
+            if (is_numeric_literal(sx) && is_numeric_literal(dx)) {
                 char opStr[3] = { opChar, '\0', '\0' };
-                ASTNode *folded = foldBinopLiterals(arena, opStr, sx, dx);
+                ASTNode *folded = fold_binop_literals(arena, opStr, sx, dx);
                 if (folded) {
                     // sx/dx abandoned in the arena, replaced by the folded literal
                     leaves[writeIdx++] = folded;
@@ -310,10 +310,10 @@ static ASTNode *buildBalanced(Arena *arena, ASTNode **leaves, int count, char op
  * @param expr  Pointer to the root node of the binary operation expression to balance.
  * @return Pointer to the rebalanced (and possibly partially folded) AST expression root.
  */
-static ASTNode *balanceAssocChain(Arena *arena, ASTNode *expr) {
+static ASTNode *balance_assoc_chain(Arena *arena, ASTNode *expr) {
     if (expr->text[0] != '+' && expr->text[0] != '*') return expr;
     if (expr->text[1] != '\0') return expr;
-    if (containsFloatLiteral(expr)) return expr; // Preserve IEEE 754 precision
+    if (contains_float_literal(expr)) return expr; // Preserve IEEE 754 precision
 
     char opChar = expr->text[0];
     unsigned short opKey = OP_KEY(opChar, 0);
@@ -321,8 +321,8 @@ static ASTNode *balanceAssocChain(Arena *arena, ASTNode *expr) {
     ASTNode **leaves = NULL;
     int count = 0, cap = 0;
 
-    flattenChain(expr, opKey, &leaves, &count, &cap);
-    ASTNode *result = buildBalanced(arena, leaves, count, opChar);
+    flatten_chain(expr, opKey, &leaves, &count, &cap);
+    ASTNode *result = build_balanced_tree(arena, leaves, count, opChar);
 
     free(leaves);
     return result;
@@ -341,35 +341,35 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
                                             ASTNode *sx, ASTNode *dx) {
     switch (key) {
         case OP_KEY('+', 0):
-            if (literalIntEquals(dx, 0)) return sx; // x + 0 -> x
-            if (literalIntEquals(sx, 0)) return dx; // 0 + x -> x
+            if (literal_int_equals(dx, 0)) return sx; // x + 0 -> x
+            if (literal_int_equals(sx, 0)) return dx; // 0 + x -> x
             break;
 
         case OP_KEY('-', 0):
-            if (literalIntEquals(dx, 0)) return sx; // x - 0 -> x
+            if (literal_int_equals(dx, 0)) return sx; // x - 0 -> x
             break;
 
         case OP_KEY('*', 0):
-            if (literalIntEquals(dx, 1)) return sx; // x * 1 -> x
-            if (literalIntEquals(sx, 1)) return dx; // 1 * x -> x
+            if (literal_int_equals(dx, 1)) return sx; // x * 1 -> x
+            if (literal_int_equals(sx, 1)) return dx; // 1 * x -> x
 
             // x * 0 -> 0 (Valid only if operand has no side effects)
-            if (literalIntEquals(dx, 0) && !hasSideEffect(sx)) {
+            if (literal_int_equals(dx, 0) && !has_side_effect(sx)) {
                 return newNode(arena, ND_NUM_INT, "0");
             }
-            if (literalIntEquals(sx, 0) && !hasSideEffect(dx)) {
+            if (literal_int_equals(sx, 0) && !has_side_effect(dx)) {
                 return newNode(arena, ND_NUM_INT, "0");
             }
             break;
 
         case OP_KEY('&','&'):
-            if (literalIntEquals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); // 0 && x -> 0
-            if (literalIntEquals(sx, 1)) return dx;                               // 1 && x -> x
+            if (literal_int_equals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); // 0 && x -> 0
+            if (literal_int_equals(sx, 1)) return dx;                               // 1 && x -> x
             break;
 
         case OP_KEY('|','|'):
-            if (literalIntEquals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); // 1 || x -> 1
-            if (literalIntEquals(sx, 0)) return dx;                               // 0 || x -> x
+            if (literal_int_equals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); // 1 || x -> 1
+            if (literal_int_equals(sx, 0)) return dx;                               // 0 || x -> x
             break;
 
         default:
@@ -382,11 +382,11 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
  * @brief Handles rewrite and optimizations for unary expression nodes.
  */
 static ASTNode *rewrite_unary_expr(Arena *arena, ASTNode *expr) {
-    expr->children[0] = rewriteExpr(arena, expr->children[0]);
+    expr->children[0] = rewrite_expr(arena, expr->children[0]);
     ASTNode *child = expr->children[0];
 
-    if (isNumericLiteral(child)) {
-        ASTNode *folded = foldUnaryLiteral(arena, expr->text, child);
+    if (is_numeric_literal(child)) {
+        ASTNode *folded = fold_unary_literal(arena, expr->text, child);
         if (folded) return folded;
     }
     return expr;
@@ -397,14 +397,14 @@ static ASTNode *rewrite_unary_expr(Arena *arena, ASTNode *expr) {
  *        and tree rebalancing for binary operation nodes.
  */
 static ASTNode *rewrite_binop_expr(Arena *arena, ASTNode *expr) {
-    expr->children[0] = rewriteExpr(arena, expr->children[0]);
-    expr->children[1] = rewriteExpr(arena, expr->children[1]);
+    expr->children[0] = rewrite_expr(arena, expr->children[0]);
+    expr->children[1] = rewrite_expr(arena, expr->children[1]);
     ASTNode *sx = expr->children[0];
     ASTNode *dx = expr->children[1];
 
     // Fold binary operations on constant literal pair
-    if (isNumericLiteral(sx) && isNumericLiteral(dx)) {
-        ASTNode *folded = foldBinopLiterals(arena, expr->text, sx, dx);
+    if (is_numeric_literal(sx) && is_numeric_literal(dx)) {
+        ASTNode *folded = fold_binop_literals(arena, expr->text, sx, dx);
         if (folded) return folded;
     }
 
@@ -414,7 +414,7 @@ static ASTNode *rewrite_binop_expr(Arena *arena, ASTNode *expr) {
     if (simplified) return simplified;
 
     // Balance associative operator tree chains
-    return balanceAssocChain(arena, expr);
+    return balance_assoc_chain(arena, expr);
 }
 
 /**
@@ -424,7 +424,7 @@ static ASTNode *rewrite_binop_expr(Arena *arena, ASTNode *expr) {
  * @param expr  Pointer to the AST expression node to optimize.
  * @return Pointer to the optimized AST expression node (or a newly folded node).
  */
-static ASTNode *rewriteExpr(Arena *arena, ASTNode *expr) {
+static ASTNode *rewrite_expr(Arena *arena, ASTNode *expr) {
     if (!expr) return NULL;
 
     switch (expr->kind) {
@@ -441,18 +441,18 @@ static ASTNode *rewriteExpr(Arena *arena, ASTNode *expr) {
         return rewrite_binop_expr(arena, expr);
 
     case ND_ASSIGN:
-        expr->children[0] = rewriteExpr(arena, expr->children[0]);
-        expr->children[1] = rewriteExpr(arena, expr->children[1]);
+        expr->children[0] = rewrite_expr(arena, expr->children[0]);
+        expr->children[1] = rewrite_expr(arena, expr->children[1]);
         return expr;
 
     case ND_CALL:
         for (int i = 0; i < expr->nchildren; i++) {
-            expr->children[i] = rewriteExpr(arena, expr->children[i]);
+            expr->children[i] = rewrite_expr(arena, expr->children[i]);
         }
         return expr;
 
     case ND_ARRAY_ACCESS:
-        expr->children[0] = rewriteExpr(arena, expr->children[0]);
+        expr->children[0] = rewrite_expr(arena, expr->children[0]);
         return expr;
 
     default:
@@ -476,7 +476,7 @@ static ASTNode *rewrite_block_stmt(Arena *arena, ASTNode *stmt) {
     stmt->capacity  = oldCount;
 
     for (int i = 0; i < oldCount; i++) {
-        ASTNode *result = rewriteStmt(arena, oldChildren[i]);
+        ASTNode *result = rewrite_stmt(arena, oldChildren[i]);
         if (!result) continue;
 
         if (result->kind == ND_BLOCK) {
@@ -494,27 +494,27 @@ static ASTNode *rewrite_block_stmt(Arena *arena, ASTNode *stmt) {
  * @brief Optimizes 'if' statements by evaluating constant conditions and pruning unreachable branches.
  */
 static ASTNode *rewrite_if_stmt(Arena *arena, ASTNode *stmt) {
-    stmt->children[0] = rewriteExpr(arena, stmt->children[0]);
+    stmt->children[0] = rewrite_expr(arena, stmt->children[0]);
     ASTNode *cond = stmt->children[0];
 
     // Prune unreachable branches when condition is known at compile time
-    if (isNumericLiteral(cond)) {
-        int condTrue    = !literalIsZero(cond);
+    if (is_numeric_literal(cond)) {
+        int condTrue    = !literal_is_zero(cond);
         ASTNode *thenBr = stmt->children[1];
         ASTNode *elseBr = (stmt->nchildren > 2) ? stmt->children[2] : NULL;
 
         ASTNode *survivor = condTrue ? thenBr : elseBr;
-        return survivor ? rewriteStmt(arena, survivor) : NULL;
+        return survivor ? rewrite_stmt(arena, survivor) : NULL;
     }
 
     // Optimize reachable branches for dynamic condition
-    stmt->children[1] = rewriteStmt(arena, stmt->children[1]);
+    stmt->children[1] = rewrite_stmt(arena, stmt->children[1]);
     if (!stmt->children[1]) {
         stmt->children[1] = newNode(arena, ND_BLOCK, NULL);
     }
 
     if (stmt->nchildren > 2) {
-        stmt->children[2] = rewriteStmt(arena, stmt->children[2]);
+        stmt->children[2] = rewrite_stmt(arena, stmt->children[2]);
         if (!stmt->children[2]) {
             stmt->children[2] = newNode(arena, ND_BLOCK, NULL);
         }
@@ -526,15 +526,15 @@ static ASTNode *rewrite_if_stmt(Arena *arena, ASTNode *stmt) {
  * @brief Optimizes 'while' loops, eliminating dead loops with constant zero conditions.
  */
 static ASTNode *rewrite_while_stmt(Arena *arena, ASTNode *stmt) {
-    stmt->children[0] = rewriteExpr(arena, stmt->children[0]);
+    stmt->children[0] = rewrite_expr(arena, stmt->children[0]);
     ASTNode *cond = stmt->children[0];
 
     // Eliminate while loop entirely if condition is constant zero (false)
-    if (isNumericLiteral(cond) && literalIsZero(cond)) {
+    if (is_numeric_literal(cond) && literal_is_zero(cond)) {
         return NULL;
     }
 
-    stmt->children[1] = rewriteStmt(arena, stmt->children[1]);
+    stmt->children[1] = rewrite_stmt(arena, stmt->children[1]);
     if (!stmt->children[1]) {
         stmt->children[1] = newNode(arena, ND_BLOCK, NULL);
     }
@@ -548,14 +548,14 @@ static ASTNode *rewrite_while_stmt(Arena *arena, ASTNode *stmt) {
  * @param stmt  Pointer to the AST statement node to optimize.
  * @return Pointer to the optimized statement node, a replacement node, or `NULL` if eliminated.
  */
-static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
+static ASTNode *rewrite_stmt(Arena *arena, ASTNode *stmt) {
     if (!stmt) return NULL;
 
     switch (stmt->kind) {
 
     case ND_VAR_DECL:
         for (int i = 0; i < stmt->nchildren; i++) {
-            stmt->children[i] = rewriteExpr(arena, stmt->children[i]);
+            stmt->children[i] = rewrite_expr(arena, stmt->children[i]);
         }
         return stmt;
 
@@ -567,7 +567,7 @@ static ASTNode *rewriteStmt(Arena *arena, ASTNode *stmt) {
 
     case ND_RETURN:
     case ND_EXPR_STMT:
-        stmt->children[0] = rewriteExpr(arena, stmt->children[0]);
+        stmt->children[0] = rewrite_expr(arena, stmt->children[0]);
         return stmt;
 
     default:
@@ -586,7 +586,7 @@ void optimize_ast(ASTNode *program, Arena *astArena) {
         if (decl->kind == ND_FUNC_DECL) {
             // Optimize function body statements
             ASTNode *body = decl->children[decl->nchildren - 1];
-            ASTNode *optimizedBody = rewriteStmt(astArena, body);
+            ASTNode *optimizedBody = rewrite_stmt(astArena, body);
             if (!optimizedBody) {
                 optimizedBody = newNode(astArena, ND_BLOCK, NULL);
             }
@@ -595,7 +595,7 @@ void optimize_ast(ASTNode *program, Arena *astArena) {
         } else if (decl->kind == ND_VAR_DECL) {
             // Optimize global variable initialization expressions
             for (int c = 0; c < decl->nchildren; c++) {
-                decl->children[c] = rewriteExpr(astArena, decl->children[c]);
+                decl->children[c] = rewrite_expr(astArena, decl->children[c]);
             }
         }
     }

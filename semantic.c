@@ -6,8 +6,8 @@
 #include "ast_to_symtab.h"
 #include "parser/errorCollector.h"
 
-static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors);
-static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
+static DataType check_expr_type(ASTNode *expr, Scope *scope, int *errors);
+static void     check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                            Arena *arena, int *errors);
 
 
@@ -24,7 +24,7 @@ static void     checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
  * @param fmt    Format string (printf-style).
  * @param ...    Variadic arguments matching the format string.
  */
-static void reportError(int *errors, const char *fmt, ...) {
+static void report_error(int *errors, const char *fmt, ...) {
     if (errors) (*errors)++;
     va_list args;
     va_start(args, fmt);
@@ -37,7 +37,7 @@ static void reportError(int *errors, const char *fmt, ...) {
  * @param t  Data type to stringify.
  * @return   "int", "float", "void", or "?" for unknown values.
  */
-static inline const char *typeName(DataType t) {
+static inline const char *type_name(DataType t) {
     switch (t) {
         case T_INT:   return "int";
         case T_FLOAT: return "float";
@@ -60,7 +60,7 @@ static inline const char *typeName(DataType t) {
  * @param value   Type of the expression being supplied (rhs / argument).
  * @return        1 if the assignment is legal, 0 otherwise.
  */
-static inline int isTypeCompatible(DataType target, DataType value) {
+static inline int is_type_compatible(DataType target, DataType value) {
     if (target == value)                    return 1; // identity: always ok
     if (target == T_FLOAT && value == T_INT) return 1; // widening: int → float
     return 0;
@@ -90,26 +90,26 @@ static inline int isTypeCompatible(DataType target, DataType value) {
  * @param errors     Incremented once per error found.
  * @return           DataType of the symbol, or T_VOID on any error.
  */
-static DataType resolveNameUse(ASTNode *expr, Scope *scope, int wantArray,
+static DataType resolve_name_use(ASTNode *expr, Scope *scope, int wantArray,
                               Symbol *outSym, int *errors) {
     Symbol sym;
     if (!sym_resolve(scope, expr->text, &sym)) {
-        reportError(errors, "Errore: '%s' non e' stato dichiarato\n", expr->text);
+        report_error(errors, "Errore: '%s' non e' stato dichiarato\n", expr->text);
         return T_VOID;
     }
     if (sym.kind != SYM_VAR) {
         // Function names are valid only in ND_CALL, not as plain identifiers.
-        reportError(errors, "Errore: '%s' e' una funzione, non una variabile\n", expr->text);
+        report_error(errors, "Errore: '%s' e' una funzione, non una variabile\n", expr->text);
         return T_VOID;
     }
     if (wantArray && !sym.isArray) {
-        reportError(errors, "Errore: '%s' non e' un array, non si puo' usare con []\n", expr->text);
+        report_error(errors, "Errore: '%s' non e' un array, non si puo' usare con []\n", expr->text);
         return T_VOID;
     }
     if (!wantArray && sym.isArray) {
         // An array name used without [] would decay to a pointer in C, but
         // this language does not support pointer arithmetic — reject it.
-        reportError(errors, "Errore: '%s' e' un array, va usato con [] e non da solo\n", expr->text);
+        report_error(errors, "Errore: '%s' e' un array, va usato con [] e non da solo\n", expr->text);
         return T_VOID;
     }
 
@@ -144,7 +144,7 @@ static DataType resolveNameUse(ASTNode *expr, Scope *scope, int wantArray,
  * @param out   Receives the integer value when the function returns 1.
  * @return      1 if @p expr evaluates to a known constant integer, 0 otherwise.
  */
-static int tryEvalConstant(ASTNode *expr, long *out) {
+static int try_eval_constant(ASTNode *expr, long *out) {
     if (expr->kind == ND_NUM_INT) {
         *out = atol(expr->text);
         return 1;
@@ -153,7 +153,7 @@ static int tryEvalConstant(ASTNode *expr, long *out) {
     // Unary minus: recurse and negate.
     if (expr->kind == ND_UNARY && expr->text[0] == '-' && expr->text[1] == '\0') {
         long inner;
-        if (tryEvalConstant(expr->children[0], &inner)) {
+        if (try_eval_constant(expr->children[0], &inner)) {
             *out = -inner;
             return 1;
         }
@@ -162,8 +162,8 @@ static int tryEvalConstant(ASTNode *expr, long *out) {
 
     if (expr->kind == ND_BINOP) {
         long a, b;
-        if (!tryEvalConstant(expr->children[0], &a)) return 0;
-        if (!tryEvalConstant(expr->children[1], &b)) return 0;
+        if (!try_eval_constant(expr->children[0], &a)) return 0;
+        if (!try_eval_constant(expr->children[1], &b)) return 0;
 
         // All arithmetic operators are a single character: use direct switch.
         switch (expr->text[0]) {
@@ -190,9 +190,9 @@ static int tryEvalConstant(ASTNode *expr, long *out) {
  */
 static void check_array_bounds(ASTNode *expr, ASTNode *idx, const Symbol *sym, int *errors) {
     long constValue;
-    if (tryEvalConstant(idx, &constValue)) {
+    if (try_eval_constant(idx, &constValue)) {
         if (constValue < 0 || constValue >= sym->arraySize) {
-            reportError(errors, "Errore: indice %ld fuori dai limiti di '%s' (dimensione %d)\n",
+            report_error(errors, "Errore: indice %ld fuori dai limiti di '%s' (dimensione %d)\n",
                         constValue, expr->text, sym->arraySize);
         }
     }
@@ -209,12 +209,12 @@ static void check_array_bounds(ASTNode *expr, ASTNode *idx, const Symbol *sym, i
  */
 static void check_call_arguments(ASTNode *expr, Scope *scope, const Symbol *sym, int checkLimit, int *errors) {
     for (int i = 0; i < expr->nchildren; i++) {
-        DataType argType = checkExprType(expr->children[i], scope, errors);
+        DataType argType = check_expr_type(expr->children[i], scope, errors);
         if (i < checkLimit) {
             DataType paramType = symtab_unpack_param_type(sym->paramTypes, i);
-            if (argType != T_VOID && !isTypeCompatible(paramType, argType)) {
-                reportError(errors, "Errore: argomento %d di '%s' e' %s, atteso %s\n",
-                            i + 1, expr->text, typeName(argType), typeName(paramType));
+            if (argType != T_VOID && !is_type_compatible(paramType, argType)) {
+                report_error(errors, "Errore: argomento %d di '%s' e' %s, atteso %s\n",
+                            i + 1, expr->text, type_name(argType), type_name(paramType));
             }
         }
     }
@@ -235,24 +235,24 @@ static void check_variable_init(ASTNode *stmt, Scope *scope, DataType declType,
                                 const char *varName, int isArray, int arraySize, int *errors) {
     if (!isArray) {
         // Scalar initializer: exactly one expression child.
-        DataType t = checkExprType(stmt->children[0], scope, errors);
-        if (t != T_VOID && !isTypeCompatible(declType, t)) {
-            reportError(errors, "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
-                        varName, typeName(declType), typeName(t));
+        DataType t = check_expr_type(stmt->children[0], scope, errors);
+        if (t != T_VOID && !is_type_compatible(declType, t)) {
+            report_error(errors, "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
+                        varName, type_name(declType), type_name(t));
         }
         return;
     }
 
     // Array initializer list.
     if (stmt->nchildren > arraySize) {
-        reportError(errors, "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
+        report_error(errors, "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
                     varName, stmt->nchildren, arraySize);
     }
     for (int i = 0; i < stmt->nchildren; i++) {
-        DataType t = checkExprType(stmt->children[i], scope, errors);
-        if (t != T_VOID && !isTypeCompatible(declType, t)) {
-            reportError(errors, "Errore: elemento %d dell'inizializzatore di '%s' e' %s, atteso %s\n",
-                        i, varName, typeName(t), typeName(declType));
+        DataType t = check_expr_type(stmt->children[i], scope, errors);
+        if (t != T_VOID && !is_type_compatible(declType, t)) {
+            report_error(errors, "Errore: elemento %d dell'inizializzatore di '%s' e' %s, atteso %s\n",
+                        i, varName, type_name(t), type_name(declType));
         }
     }
 }
@@ -274,7 +274,7 @@ static void check_variable_init(ASTNode *stmt, Scope *scope, DataType declType,
  * @param errors  Incremented once per semantic error found.
  * @return        Inferred DataType of the expression, or T_VOID on error.
  */
-static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
+static DataType check_expr_type(ASTNode *expr, Scope *scope, int *errors) {
     if (!expr) return T_VOID;
 
     switch (expr->kind) {
@@ -286,21 +286,21 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         return T_FLOAT;
 
     case ND_ID:
-        return resolveNameUse(expr, scope, 0, NULL, errors);
+        return resolve_name_use(expr, scope, 0, NULL, errors);
 
     /* ---- Array element access: arr[idx] --------------------------------- */
     case ND_ARRAY_ACCESS: {
         ASTNode *idx = expr->children[0];
-        DataType idxType = checkExprType(idx, scope, errors);
+        DataType idxType = check_expr_type(idx, scope, errors);
 
         // Index must be integral; T_VOID means an earlier error already fired.
         if (idxType != T_VOID && idxType != T_INT) {
-            reportError(errors, "Errore: l'indice di '%s[]' deve essere int, non %s\n",
-                        expr->text, typeName(idxType));
+            report_error(errors, "Errore: l'indice di '%s[]' deve essere int, non %s\n",
+                        expr->text, type_name(idxType));
         }
 
         Symbol sym;
-        DataType elemType = resolveNameUse(expr, scope, /*wantArray=*/1, &sym, errors);
+        DataType elemType = resolve_name_use(expr, scope, /*wantArray=*/1, &sym, errors);
 
         if (elemType != T_VOID) {
             check_array_bounds(expr, idx, &sym, errors);
@@ -315,12 +315,12 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         int found = sym_resolve(scope, expr->text, &sym);
 
         if (!found) {
-            reportError(errors, "Errore: funzione '%s' non e' stata dichiarata\n", expr->text);
+            report_error(errors, "Errore: funzione '%s' non e' stata dichiarata\n", expr->text);
         } else if (sym.kind != SYM_FUNC) {
-            reportError(errors, "Errore: '%s' non e' una funzione\n", expr->text);
+            report_error(errors, "Errore: '%s' non e' una funzione\n", expr->text);
             found = 0; // disable per-argument checking below
         } else if (expr->nchildren != sym.paramCount) {
-            reportError(errors, "Errore: '%s' chiamata con %d argomenti, ne servono %d\n",
+            report_error(errors, "Errore: '%s' chiamata con %d argomenti, ne servono %d\n",
                         expr->text, expr->nchildren, sym.paramCount);
             // Do not set found=0: still type-check the arguments supplied.
         }
@@ -340,32 +340,32 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
         // The parser accepts "1 = 2;" syntactically — reject it here at the
         // semantic level where we have enough context to diagnose it clearly.
         if (lvalue->kind != ND_ID && lvalue->kind != ND_ARRAY_ACCESS) {
-            reportError(errors, "Errore: il lato sinistro di '=' non e' una variabile valida\n");
-            checkExprType(rvalue, scope, errors); // still visit rhs for further errors
+            report_error(errors, "Errore: il lato sinistro di '=' non e' una variabile valida\n");
+            check_expr_type(rvalue, scope, errors); // still visit rhs for further errors
             return T_VOID;
         }
 
-        DataType lt = checkExprType(lvalue, scope, errors);
-        DataType rt = checkExprType(rvalue, scope, errors);
+        DataType lt = check_expr_type(lvalue, scope, errors);
+        DataType rt = check_expr_type(rvalue, scope, errors);
 
         // T_VOID on either side means an error was already reported; skip the
         // type-mismatch check to avoid cascading "can't assign void to void".
-        if (lt != T_VOID && rt != T_VOID && !isTypeCompatible(lt, rt)) {
-            reportError(errors, "Errore: non si puo' assegnare %s a una variabile %s\n",
-                        typeName(rt), typeName(lt));
+        if (lt != T_VOID && rt != T_VOID && !is_type_compatible(lt, rt)) {
+            report_error(errors, "Errore: non si puo' assegnare %s a una variabile %s\n",
+                        type_name(rt), type_name(lt));
         }
         return lt; // assignment expression has the type of the lhs
     }
 
     /* ---- Binary operators ------------------------------------------------ */
     case ND_BINOP: {
-        DataType lt = checkExprType(expr->children[0], scope, errors);
-        DataType rt = checkExprType(expr->children[1], scope, errors);
+        DataType lt = check_expr_type(expr->children[0], scope, errors);
+        DataType rt = check_expr_type(expr->children[1], scope, errors);
 
         // '%' requires integer operands on both sides (no float modulo).
         if (expr->text[0] == '%' && expr->text[1] == '\0') {
             if ((lt != T_VOID && lt != T_INT) || (rt != T_VOID && rt != T_INT)) {
-                reportError(errors, "Errore: l'operatore %% richiede operandi interi\n");
+                report_error(errors, "Errore: l'operatore %% richiede operandi interi\n");
             }
             return T_INT;
         }
@@ -387,13 +387,13 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
     case ND_UNARY:
         // '!' always yields int (boolean); unary '-' preserves operand type.
         if (expr->text[0] == '!' && expr->text[1] == '\0') {
-            checkExprType(expr->children[0], scope, errors);
+            check_expr_type(expr->children[0], scope, errors);
             return T_INT;
         }
-        return checkExprType(expr->children[0], scope, errors);
+        return check_expr_type(expr->children[0], scope, errors);
 
     default:
-        reportError(errors, "Errore interno: nodo inatteso in un'espressione\n");
+        report_error(errors, "Errore interno: nodo inatteso in un'espressione\n");
         return T_VOID;
     }
 }
@@ -415,7 +415,7 @@ static DataType checkExprType(ASTNode *expr, Scope *scope, int *errors) {
  *                    (st_bind_symbol, st_elaborate_decl).
  * @param errors      Incremented once per semantic error found.
  */
-static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
+static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                        Arena *arena, int *errors) {
     if (!stmt) return;
 
@@ -434,11 +434,11 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
 
         // Parse the declaration text to retrieve the declared type for
         // initializer compatibility checking.
-        char *typeNameBuf, *varName;
+        char *type_nameBuf, *varName;
         int isArray, arraySize;
-        st_elaborate_decl(arena, stmt->text, &typeNameBuf, &varName,
+        st_elaborate_decl(arena, stmt->text, &type_nameBuf, &varName,
                                 &isArray, &arraySize);
-        DataType declType = st_resolve_type(typeNameBuf);
+        DataType declType = st_resolve_type(type_nameBuf);
 
         check_variable_init(stmt, scope, declType, varName, isArray, arraySize, errors);
         break;
@@ -450,7 +450,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
         // outer ones but do not persist beyond the closing brace.
         Scope *blockScope = sym_scopeCreate(scope);
         for (int i = 0; i < stmt->nchildren; i++)
-            checkStmt(stmt->children[i], blockScope, returnType, arena, errors);
+            check_stmt(stmt->children[i], blockScope, returnType, arena, errors);
         // blockScope remains alive as a child of scope; freed by
         // sym_finalize() at the end of compilation.
         break;
@@ -458,31 +458,31 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
 
     /* ---- if / if-else ---------------------------------------------------- */
     case ND_IF:
-        checkExprType(stmt->children[0], scope, errors);                         // condition
-        checkStmt(stmt->children[1], scope, returnType, arena, errors);      // then-branch
+        check_expr_type(stmt->children[0], scope, errors);                         // condition
+        check_stmt(stmt->children[1], scope, returnType, arena, errors);      // then-branch
         if (stmt->nchildren > 2)
-            checkStmt(stmt->children[2], scope, returnType, arena, errors);  // else-branch
+            check_stmt(stmt->children[2], scope, returnType, arena, errors);  // else-branch
         break;
 
     /* ---- while ----------------------------------------------------------- */
     case ND_WHILE:
-        checkExprType(stmt->children[0], scope, errors);                     // loop condition
-        checkStmt(stmt->children[1], scope, returnType, arena, errors);  // loop body
+        check_expr_type(stmt->children[0], scope, errors);                     // loop condition
+        check_stmt(stmt->children[1], scope, returnType, arena, errors);  // loop body
         break;
 
     /* ---- return expr; ---------------------------------------------------- */
     case ND_RETURN: {
-        DataType t = checkExprType(stmt->children[0], scope, errors);
-        if (t != T_VOID && !isTypeCompatible(returnType, t)) {
-            reportError(errors, "Errore: return di tipo %s non compatibile col tipo %s della funzione\n",
-                        typeName(t), typeName(returnType));
+        DataType t = check_expr_type(stmt->children[0], scope, errors);
+        if (t != T_VOID && !is_type_compatible(returnType, t)) {
+            report_error(errors, "Errore: return di tipo %s non compatibile col tipo %s della funzione\n",
+                        type_name(t), type_name(returnType));
         }
         break;
     }
 
     /* ---- Expression statement: call(), assignment as statement, etc. ----- */
     case ND_EXPR_STMT:
-        checkExprType(stmt->children[0], scope, errors);
+        check_expr_type(stmt->children[0], scope, errors);
         break;
 
     default:
@@ -497,7 +497,7 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
  * @brief Type-check a single function declaration end-to-end.
  *
  * Creates a function-level scope as a direct child of @p global, declares
- * all parameters in it, then hands off the body block to checkStmt().
+ * all parameters in it, then hands off the body block to check_stmt().
  * The declared return type is extracted from the declaration text and
  * threaded into the recursive walk so that ND_RETURN nodes can be
  * validated against it.
@@ -512,16 +512,16 @@ static void checkStmt(ASTNode *stmt, Scope *scope, DataType returnType,
  * @param arena   Scratch arena for declaration parsing (caller owns it).
  * @param errors  Incremented for each semantic error found.
  */
-static void checkFunctionBody(ASTNode *decl, Scope *global,
+static void check_function_body(ASTNode *decl, Scope *global,
                                Arena *arena, int *errors) {
     // Extract return type and function name from the declaration text
     // (format: "retType funcName", e.g. "int main" or "float compute").
-    char *typeNameBuf, *funcName;
+    char *type_nameBuf, *funcName;
     int isArray, arraySize;
-    st_elaborate_decl(arena, decl->text, &typeNameBuf, &funcName,
+    st_elaborate_decl(arena, decl->text, &type_nameBuf, &funcName,
                             &isArray, &arraySize);
 
-    DataType returnType = st_resolve_type(typeNameBuf);
+    DataType returnType = st_resolve_type(type_nameBuf);
 
     // Parameter scope is a direct child of global so forward references to
     // other top-level functions are visible from inside the body.
@@ -536,7 +536,7 @@ static void checkFunctionBody(ASTNode *decl, Scope *global,
 
     // The last child is always the body block.
     ASTNode *body = decl->children[decl->nchildren - 1];
-    checkStmt(body, fnScope, returnType, arena, errors);
+    check_stmt(body, fnScope, returnType, arena, errors);
 }
 
 
@@ -556,7 +556,7 @@ int semantic_check(ASTNode *program, Scope *global) {
         // Global variable declarations were fully handled by Pass 1
         // (st_resolve_global_namespace); only function bodies need walking here.
         if (decl->kind == ND_FUNC_DECL) {
-            checkFunctionBody(decl, global, arena, &errors);
+            check_function_body(decl, global, arena, &errors);
         }
     }
 

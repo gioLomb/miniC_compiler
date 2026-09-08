@@ -8,3 +8,6 @@ theory/*
 theory/
 all.txt
 perf*
+report/
+report/*
+heap*

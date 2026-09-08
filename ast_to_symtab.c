@@ -28,11 +28,11 @@
  * Type resolution
  * ========================================================================= */
 
-DataType st_resolve_type(const char *typeName) {
-    if (!typeName) return T_VOID;
+DataType st_resolve_type(const char *type_name) {
+    if (!type_name) return T_VOID;
 
     // single-character dispatch: 'i'→int, 'f'→float, anything else→void
-    switch (typeName[0]) {
+    switch (type_name[0]) {
     case 'i': return T_INT;
     case 'f': return T_FLOAT;
     default:  return T_VOID;
@@ -85,16 +85,16 @@ void st_elaborate_decl(Arena *arena, const char *text,
  * ========================================================================= */
 
 int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
-    char *typeName, *name;
+    char *type_name, *name;
     int   isArray, arraySize;
 
     // parse the compact declaration string stored in the AST node
-    st_elaborate_decl(arena, node->text, &typeName, &name, &isArray, &arraySize);
+    st_elaborate_decl(arena, node->text, &type_name, &name, &isArray, &arraySize);
 
     // build the Symbol descriptor; offset = next free slot in this scope
     Symbol sym = {
         .kind       = SYM_VAR,
-        .dataType   = st_resolve_type(typeName),
+        .dataType   = st_resolve_type(type_name),
         .isArray    = isArray,
         .arraySize  = arraySize,
         .scopeLevel = scope->level,
@@ -130,12 +130,12 @@ static int st_process_func_decl(Arena *arena, ASTNode *decl, Symbol *sym, const 
 
     // pack each parameter's DataType into the 2-bit-per-param bitmask
     for (int p = 0; p < paramCount; p++) {
-        char *ptypeName, *pname;
+        char *ptype_name, *pname;
         int   pIsArray, pArraySize;
         st_elaborate_decl(arena, decl->children[p]->text,
-                          &ptypeName, &pname, &pIsArray, &pArraySize);
+                          &ptype_name, &pname, &pIsArray, &pArraySize);
 
-        DataType pType = st_resolve_type(ptypeName);
+        DataType pType = st_resolve_type(ptype_name);
         symtab_pack_param_type(&sym->paramTypes, p, pType);
     }
 
@@ -174,12 +174,12 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
 
-        char *typeName, *name;
+        char *type_name, *name;
         int   isArray, arraySize;
-        st_elaborate_decl(arena, decl->text, &typeName, &name, &isArray, &arraySize);
+        st_elaborate_decl(arena, decl->text, &type_name, &name, &isArray, &arraySize);
 
         Symbol sym = {0};
-        sym.dataType = st_resolve_type(typeName);
+        sym.dataType = st_resolve_type(type_name);
 
         switch (decl->kind) {
             case ND_FUNC_DECL:

@@ -6,18 +6,18 @@
  *
  * Internal organization
  * ---------------------
- *  foldInt                  - Integer constant folding helper.
+ *  fold_int                  - Integer constant folding helper.
  *  count_variable_definitions- Counts variable write frequencies within a loop.
  *  collect_base_induction_vars- Filters and extracts basic induction variables.
  *  findInductionBase        - Identifies basic induction variables (i = i +/- c).
  *  try_match_derived_iv     - Matches instructions against the derived IV pattern.
- *  findDerived              - Identifies derived induction variables (t = i * d).
+ *  find_derived_induction_vars              - Identifies derived induction variables (t = i * d).
  *  make_instr               - IR instruction factory helper.
  *  emit_preheader_inits     - Emits "t_sr = i * mult" for every derived IV.
  *  patch_body_instruction   - Replaces/appends instructions during body rewrite.
  *  rewrite_loop_body        - Rewrites the body, splicing stride updates in place.
  *  remap_block_ranges       - Recomputes block [start,end) after the rewrite.
- *  applyStrengthReduction   - Orchestrates the rewrite steps for one loop.
+ *  apply_strength_reduction   - Orchestrates the rewrite steps for one loop.
  *  sr_optimize              - Driver function for the pass.
  *
  * Why no dominance check is needed (unlike LICM)
@@ -54,7 +54,7 @@
  * @param res Output pointer for the result.
  * @return 1 if folding succeeded, 0 otherwise.
  */
-static inline int foldInt(IROp operation, int operandA, int operandB, int *result) {
+static inline int fold_int(IROp operation, int operandA, int operandB, int *result) {
     switch (operation) {
     // only these 3 ops foldable
     case IR_MUL: *result = operandA * operandB; return 1;
@@ -198,7 +198,7 @@ static int try_match_derived_iv(const IRInstr *currentInstr, int instructionIdx,
         if (!match_iv_mul_const(currentInstr, baseVar->variable, &constantFactor)) continue;
 
         int calculatedStride; // stride = step(i) * multiplier
-        if (!foldInt(IR_MUL, baseVar->stepValue, constantFactor, &calculatedStride)) continue;
+        if (!fold_int(IR_MUL, baseVar->stepValue, constantFactor, &calculatedStride)) continue;
 
         int destId = varmap_operand_id(variableMap, currentInstr->dst);
         if (destId < 0) continue;
@@ -222,7 +222,7 @@ static int try_match_derived_iv(const IRInstr *currentInstr, int instructionIdx,
 /**
  * @brief Scans a loop body for derived induction variables based on basic IVs.
  */
-static int findDerived(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
+static int find_derived_induction_vars(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
                        InductionBase *baseVars, int baseVarCount,
                        InductionDerived *derivedVars, int *nextTempId) {
     int derivedCount = 0;
@@ -385,7 +385,7 @@ static void remap_block_ranges(IRFunction *irFunction, int preheaderblockIdx, in
 /**
  * @brief Performs the strength reduction rewrite on loop instructions.
  */
-static int applyStrengthReduction(IRFunction *irFunction, Loop *targetLoop,
+static int apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
                                    InductionBase *baseVars, int baseVarCount,
                                    InductionDerived *derivedVars, int derivedVarCount,
                                    Arena *arena) {
@@ -494,11 +494,11 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
         if (baseVarCount == 0) continue;
 
         // No derived IV -> no mul to replace, skip loop.
-        int derivedVarCount = findDerived(irFunction, targetLoop, variableMap, baseVars, 
+        int derivedVarCount = find_derived_induction_vars(irFunction, targetLoop, variableMap, baseVars, 
                                                baseVarCount, derivedVars, &nextTempId);
         if (derivedVarCount == 0) continue;
 
-        totalTransformationsApplied += applyStrengthReduction(irFunction, targetLoop, baseVars, baseVarCount,
+        totalTransformationsApplied += apply_strength_reduction(irFunction, targetLoop, baseVars, baseVarCount,
                                                               derivedVars, derivedVarCount, arenaScratch);
     }
 

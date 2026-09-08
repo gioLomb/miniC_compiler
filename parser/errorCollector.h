@@ -36,8 +36,7 @@ void ec_report(const char *fmt, ...);
 /**
  * @brief Same as ec_report() but takes an already-started va_list.
  *
- * Lets a phase-local wrapper (e.g. semantic.c's reportError, which also
- * bumps a local per-call counter) forward its varargs here instead of
+ * Lets a phase-local wrapper forward its varargs here instead of
  * duplicating the print logic.
  */
 void ec_reportv(const char *fmt, va_list args);
