@@ -49,15 +49,16 @@ void buckets_free() {
     }
 }
 
+
 void bucket_insert(Buckets *b, int node, int degree) {
     // Prepend node to the doubly-linked list of bucket degree.
+    int h = b->head[degree];
     b->prev[node] = -1;
-    b->next[node] = b->head[degree];
-    if (b->head[degree] >= 0)
-        b->prev[b->head[degree]] = node;   // update old head's back-pointer
-    b->head[degree]     = node;
-    b->inBucket[node]   = 1;
-    b->nonempty        |= (1u << degree);  // mark bucket degree as non-empty
+    b->next[node] = h;
+    if (h >= 0) b->prev[h] = node; // update old head's back-pointer
+    b->head[degree] = node;
+    b->inBucket[node] = 1;
+    b->nonempty |= (1u << degree); // mark bucket degree as non-empty
 }
 
 void bucket_remove(Buckets *b, int node, int degree) {

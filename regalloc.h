@@ -13,7 +13,7 @@
  * @file regalloc.h
  * @brief Register allocation via graph coloring (Chaitin-Briggs, EaC §13.4).
  *
- * @pre  @p mp is the result of isel_select() followed by sched_schedule():
+ * @pre  @p mp is the result of is_isel_select() followed by sched_schedule():
  *       every value lives in a virtual register (MO_VREG) and frame size
  *       is not yet finalised.
  * @post Every MO_VREG has been replaced by MO_PHYS (physical register) or
@@ -41,7 +41,7 @@
  * Functions are modified in place.
  *
  * @param mp  Machine-level program to allocate registers for; must be the
- *            output of isel_select() + sched_schedule() (see @pre above).
+ *            output of is_isel_select() + sched_schedule() (see @pre above).
  */
 void regalloc(MachProgram *mp);
 

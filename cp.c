@@ -612,6 +612,5 @@ int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     modified |= (cp_mark_orphan_labels(f, eliminate, arenaScratch) > 0);
     if (modified) modified = ir_sweep(f, eliminate, nBlocks);
 
-    // vm ownership stays with the caller (ir.c): never destroyed here.
     return modified;
 }

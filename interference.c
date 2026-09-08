@@ -69,9 +69,6 @@ void ig_free(IGraph *g) {
 }
 
 
-/* =========================================================================
- * ig_build — helpers (allocation, precoloring, per-instruction processing)
- * ========================================================================= */
 
 /**
  * @brief Allocate and default-initialise every parallel array of @p g.
@@ -209,9 +206,6 @@ static void ig_apply_constraint_masks(IGraph *g, const MachInstr *in,
     }
 }
 
-/* =========================================================================
- * ig_build — main graph construction (orchestration only)
- * ========================================================================= */
 
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
                 int nextVreg, const LiveSet *liveAfter, int firstSpillVreg,

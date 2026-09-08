@@ -2,7 +2,7 @@
  * @file sched.c
  * @brief Local list instruction scheduler (per-block, forward, height-ordered).
  *
- * Pipeline: isel_select() -> sched_schedule() -> regalloc(). See sched.h.
+ * Pipeline: is_isel_select() -> sched_schedule() -> regalloc(). See sched.h.
  *
  * Algorithm per basic block (schedule_block):
  *   1. build_dag()           — dependency DAG with RAW/WAR/WAW + ordering edges

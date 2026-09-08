@@ -20,7 +20,7 @@ void int_vector_init(IntVector *v, int capacity) {
     }
 
     // Eager path: single malloc at the requested capacity, skipping the
-    // early doubling steps (4->8->16...) that int_vector_push would
+    // early doubling steps that int_vector_push would
     // otherwise perform.
     v->data = malloc((size_t)capacity * sizeof(*v->data));
     if (!v->data) abort(); // OOM: consistent with the compiler-wide policy
@@ -36,7 +36,7 @@ void int_vector_push(IntVector *v, int value) {
         // starting from an empty (lazy-initialised) vector.
         int newCap = v->cap ? v->cap * 2 : INT_VECTOR_INITIAL_CAP;
         int *newData = realloc(v->data, (size_t)newCap * sizeof(*newData));
-        if (!newData) abort(); // OOM: consistent with compiler-wide policy
+        if (!newData) abort(); 
         v->data = newData;
         v->cap  = newCap;
     }

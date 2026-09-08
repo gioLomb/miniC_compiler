@@ -10,6 +10,7 @@
 #include "block.h"
 #include <stdlib.h>
 #include "symbol_table.h"
+#include "parser/errorCollector.h"
 //#include "varmap.h"
 
 #define IR_INITIAL_CAPACITY 64  /**< Initial instrs[] capacity for a fresh IRFunction. */

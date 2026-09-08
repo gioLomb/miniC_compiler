@@ -12,7 +12,7 @@
  *
  * Algorithm — four sequential phases
  * ------------------------------------
- *  1. Reachability  (mark_reachable_blocks)
+ *  1. Reachability  (dce_mark_reachable_blocks)
  *     Depth-first search from the entry block (index 0) over CFG successor
  *     edges to identify unreachable blocks.  All instructions inside an
  *     unreachable block are unconditionally marked for elimination; no
@@ -78,7 +78,7 @@
  * @param f          IR function whose CFG is traversed.
  * @param reachable  Output array of length @c f->blockCount (caller-zeroed).
  */
-static void mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) {
+static void dce_mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) {
     if (f->blockCount == 0) return;
 
     // worst case: every block on the stack once → blockCount entries suffice
@@ -109,7 +109,7 @@ static void mark_reachable_blocks(IRFunction *f, char *reachable, Arena *arena) 
  * Constants, labels, and function names carry no VarMap id and are
  * silently skipped.
  */
-static inline void mark_operand_live(BitSet *live, Operand op, VarMap *vm) {
+static inline void dce_mark_operand_live(BitSet *live, Operand op, VarMap *vm) {
     if (!ir_operand_is_storage(op.kind)) return;
     int id = varmap_operand_id(vm, op);
     if (id >= 0) bitset_set(live, id);
@@ -118,27 +118,18 @@ static inline void mark_operand_live(BitSet *live, Operand op, VarMap *vm) {
 /**
  * @brief Mark every instruction in block @p b as dead (unreachable block).
  */
-static inline void mark_block_dead(IRFunction *f, int b, char *eliminate) {
+static inline void dce_mark_block_dead(IRFunction *f, int b, char *eliminate) {
     for (int i = f->blocks[b].bb.range.start; i < f->blocks[b].bb.range.end; i++)
         eliminate[i] = 1;
 }
 
-/**
- * @brief Return @p cachedId if @p kind is still a storage operand, -1 otherwise.
- *
- * Guards against a stale-but-harmless cached id: an id stays in the cache
- * even after CP folds that slot into a constant elsewhere; the kind check
- * on the LIVE operand (not on the cache) is what makes that safe.
- */
-static inline int id_if_storage(OperandKind kind, int cachedId) {
-    return ir_operand_is_storage(kind) ? cachedId : -1;
-}
 
 static int dce_process_instr(IRInstr *in, int idx, BitSet *live,
                               VarMap *vm, char *eliminate) {
     int dstId = varmap_operand_id(vm, in->dst);
     int def   = ir_defines_dst(in->op) && dstId >= 0;
 
+    // dead store: pure, defines dst, dst not live after -> eliminate
     if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && !bitset_test(live, dstId)) {
         eliminate[idx] = 1;
         return 1;
@@ -149,11 +140,12 @@ static int dce_process_instr(IRInstr *in, int idx, BitSet *live,
     if (s1 >= 0) bitset_set(live, s1);
     if (s2 >= 0) bitset_set(live, s2);
 
+    // STORE_ARR's dst is a base address read, not a write
     if (!ir_defines_dst(in->op) && dstId >= 0)
         bitset_set(live, dstId);
 
     if (def)
-        bitset_clr(live, dstId);
+        bitset_clr(live, dstId); // def kills liveness going further backward
 
     return 0;
 }
@@ -166,40 +158,19 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
 
     for (int b = 0; b < nBlocks; b++) {
         if (!reachable[b]) {
-            mark_block_dead(f, b, eliminate);
+            dce_mark_block_dead(f, b, eliminate);
             continue;
         }
 
         BitSet live = bitset_new(arena, words);
         bitset_copy(&live, &liv->blockSets.LiveOut[b]);
 
+        // reverse scan: liveness is a backward dataflow
         for (int i = f->blocks[b].bb.range.end - 1; i >= f->blocks[b].bb.range.start; i--)
             dce_process_instr(&f->instrs[i], i, &live, &liv->varMap, eliminate);
     }
 }
 
-
-/**
- * @brief Run one DCE iteration over @p f, returning whether anything changed.
- *
- * Orchestrates the four phases in order:
- *   1. Reachability  — identify blocks that can never execute.
- *   2. Liveness      — backward dataflow to determine live variables.
- *   3. Mark          — flag pure instructions with dead destinations.
- *   4. Sweep         — compact the instruction array, update block indices.
- *
- * All liveness data is allocated in a local arena that is destroyed on
- * return.  The VarMap embedded in the LivenessResult owns a hash table and
- * must be destroyed explicitly before the arena, as the hash table's backing
- * memory was allocated with malloc (not in the arena).
- *
- * @pre  @p f must have a valid, fully resolved CFG (succ[] filled for all blocks).
- * @post Unreachable instructions and dead pure instructions have been removed.
- *       All block start/end indices are consistent with the new layout.
- *
- * @param f  IR function to optimise (modified in place).
- * @return   1 if at least one instruction was eliminated, 0 if IR is unchanged.
- */
 int dce_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
@@ -207,17 +178,14 @@ int dce_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     arena_reset(arenaScratch);
     char *reachable = arena_alloc(arenaScratch, (size_t)nBlocks);
     memset(reachable, 0, (size_t)nBlocks);
-    mark_reachable_blocks(f, reachable, arenaScratch);
+    dce_mark_reachable_blocks(f, reachable, arenaScratch);
 
-    // shared vm: liveness_computeIr syncs its id cache in place instead of
-    // rebuilding a private VarMap from scratch on every call.
     LivenessResult liv = liveness_computeIr(f, reachable, vm, arenaScratch);
 
     char *eliminate = arena_alloc(arenaScratch, (size_t)f->count);
     dce_mark(f, reachable, &liv, arenaScratch, eliminate);
 
-    int changed = ir_sweep(f, eliminate, nBlocks);
+    int changed = ir_sweep(f, eliminate, nBlocks); // compact + fix block ranges
 
-    // vm owned by caller (ir.c): no varmap_destroy here anymore.
     return changed;
 }

@@ -145,7 +145,7 @@ static void ir_register_label(IRFunction *f, int labelId, int futureBlockIdx) {
         int newCap = f->labelToBlockCap ? f->labelToBlockCap : 8;
         while (newCap <= idx) newCap <<= 1; // grow until idx fits
         int *newTable = realloc(f->labelToBlock, (size_t)newCap * sizeof(int));
-        if (!newTable) { fprintf(stderr, "OOM in ir_register_label\n"); exit(1); }
+        if (!newTable) { ec_report("OOM in ir_register_label\n"); exit(1); }
         f->labelToBlock = newTable;
         // newly grown slots must start as "unresolved" (-1)
         memset(f->labelToBlock + f->labelToBlockCap, -1,
@@ -241,9 +241,7 @@ static void ir_resolve_cfg(IRFunction *f) {
     f->labelToBlockCap = 0;
 }
 
-/* =========================================================================
- * Expression code generation — forward declarations
- * ========================================================================= */
+
 
 static Operand ir_emit_expr(ASTNode *expr, IRFunction *out);
 static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest);
@@ -275,9 +273,6 @@ static inline IROp ir_binop_to_irop(const char *op) {
     }
 }
 
-/* =========================================================================
- * Short-circuit Boolean code generation
- * ========================================================================= */
 
 /**
  * @brief Emit code that jumps to @p falseLbl iff @p cond evaluates to false,
@@ -392,9 +387,6 @@ static Operand ir_emit_call(ASTNode *expr, IRFunction *out) {
     return result;
 }
 
-/* =========================================================================
- * ir_emit_expr — evaluate an expression, returning the operand holding its value
- * ========================================================================= */
 
 static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {

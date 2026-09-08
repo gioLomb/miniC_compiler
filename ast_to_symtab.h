@@ -38,9 +38,6 @@
 #include "parser/ast.h"
 #include "symbol_table.h"
 
-/* =========================================================================
- * Type resolution
- * ========================================================================= */
 
 /**
  * @brief Map a textual type name from the AST to its DataType enum value.
@@ -108,9 +105,6 @@ void st_elaborate_decl(Arena *arena, const char *text,
  */
 int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
 
-/* =========================================================================
- * Pass 1 — global namespace population
- * ========================================================================= */
 
 /**
  * @brief Populate @p global with every top-level declaration in @p program.

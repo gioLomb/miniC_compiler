@@ -30,32 +30,16 @@
 #include <string.h>
 
 
-LatVal lat_unknown(void) {
-    LatVal v = {0};
-    v.state = LAT_UNKNOWN;
-    return v;
-}
-
 LatVal lat_set_const_int(int ival) {
-    LatVal v = {0};
-    v.state      = LAT_CONST;
-    v.isFloat    = 0;
-    v.val.ival   = ival;
-    return v;
+    return (LatVal){.state = LAT_CONST,.isFloat = 0, .val.ival = ival};
 }
 
 LatVal lat_set_const_float(float fval) {
-    LatVal v = {0};
-    v.state      = LAT_CONST;
-    v.isFloat    = 1;
-    v.val.fval   = fval;
-    return v;
+    return (LatVal){.state = LAT_CONST,.isFloat = 1, .val.fval = fval};
 }
 
 LatVal lat_conflict(void) {
-    LatVal v = {0};
-    v.state = LAT_CONFLICT;
-    return v;
+    return (LatVal){.state = LAT_CONFLICT};
 }
 
 
@@ -114,9 +98,6 @@ int lat_equal(LatVal a, LatVal b) {
     return a.isFloat ? (a.val.fval == b.val.fval) : (a.val.ival == b.val.ival);
 }
 
-/* =========================================================================
- * ConstMap operations
- * ========================================================================= */
 
 /**
  * @brief Initialise a ConstMap, setting all entries to UNKNOWN.
@@ -128,7 +109,7 @@ void const_map_init(ConstMap *m, int size, Arena *arena) {
     m->size = size;
     m->vals = arena_alloc(arena, (size_t)size * sizeof(LatVal));
     // initialise every entry to UNKNOWN: no definitions seen yet on any path
-    for (int i = 0; i < size; i++) m->vals[i] = lat_unknown();
+    for (int i = 0; i < size; i++) m->vals[i] = (LatVal){.state = LAT_UNKNOWN};
 }
 
 void const_map_copy(ConstMap *dst, const ConstMap *src) {

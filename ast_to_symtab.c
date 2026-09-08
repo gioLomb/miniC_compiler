@@ -23,10 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ast_to_symtab.h"
-
-/* =========================================================================
- * Type resolution
- * ========================================================================= */
+#include "parser/errorCollector.h"
 
 DataType st_resolve_type(const char *type_name) {
     if (!type_name) return T_VOID;
@@ -102,12 +99,10 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
     };
 
     if (!sym_bind(scope, name, &sym)) {
-        fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
+        ec_report("Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
         return 0;
     }
 
-    // stamp the AST node so ir_generate() can resolve this variable without
-    // a second symbol-table lookup
     node->scopeLevel = sym.scopeLevel;
     node->offset     = sym.offset;
     return 1;
@@ -120,8 +115,7 @@ static int st_process_func_decl(Arena *arena, ASTNode *decl, Symbol *sym, const 
     // last child is the body block; all preceding children are params
     int paramCount = decl->nchildren - 1;
     if (paramCount > SYM_MAX_PARAMS) {
-        fprintf(stderr,
-                "Errore: '%s' ha %d parametri, il massimo supportato e' %d\n",
+        ec_report("Errore: '%s' ha %d parametri, il massimo supportato e' %d\n",
                 name, paramCount, SYM_MAX_PARAMS);
         paramCount = SYM_MAX_PARAMS;
         errors++;
@@ -150,15 +144,11 @@ static inline void st_init_var_symbol(Symbol *sym, int isArray, int arraySize) {
 }
 
 static inline int st_bind_global_symbol(Scope *global, const char *name, Symbol *sym) {
-    // assign sequential offset BEFORE sym_bind so it equals the current
-    // table size (number of entries already inserted).  Both vars and
-    // funcs consume one slot so that ir_generate()'s symOffset counter
-    // stays in sync with this ordering.
     sym->scopeLevel = global->level;             // always 0 for global scope
     sym->offset     = (int)global->table->size;  // next available slot
 
     if (!sym_bind(global, name, sym)) {
-        fprintf(stderr, "Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
+        ec_report("Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
         return 1;
     }
     return 0;

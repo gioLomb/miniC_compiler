@@ -88,8 +88,6 @@ typedef struct {
  * Lattice constructors
  * ========================================================================= */
 
-/** @brief Return the UNKNOWN (⊤) lattice element. */
-LatVal lat_unknown(void);
 
 /** @brief Return a CONST lattice element wrapping the integer @p ival. */
 LatVal lat_set_const_int(int ival);

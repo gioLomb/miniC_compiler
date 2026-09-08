@@ -259,9 +259,6 @@ static void remap_block_ranges(IRFunction *f, const int *newStart,
     f->curBlockStart = 0;
 }
 
-/* =========================================================================
- * Public API
- * ========================================================================= */
 
 void ir_lower_globals(IRFunction *f, Arena *arena) {
     // nothing to do: empty function, or no OPND_GLOBAL operand anywhere

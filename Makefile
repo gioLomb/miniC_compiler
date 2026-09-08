@@ -75,7 +75,7 @@ TEST_BUCKET_SRCS         := $(ARENA_SRC) $(BUCKET_SRC) \
                             tests/test_bucket.c
 
 # test_regalloc_utils: usa instr_selector.h ma non liveness -> no ir.c.
-TEST_REGALLOC_UTILS_SRCS := $(ARENA_SRC) $(HASHTABLE_SRC) $(DYN_ARR_SRC) \
+TEST_REGALLOC_UTILS_SRCS := $(ARENA_SRC) $(HASHTABLE_SRC) $(ERROR_SRC) $(DYN_ARR_SRC) \
                             $(VARMAP_SRC) $(REGALLOC_UTILS_SRC) $(INSTR_SEL_SRC) \
                             tests/test_regalloc_utils.c
 
