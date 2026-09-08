@@ -68,9 +68,20 @@ void *arena_alloc(Arena *arena, size_t size) {
     // Ensure all allocations align with standard alignment boundaries
     size_t aligned = align_up(size);
 
-    // Check if the current block has enough capacity for requested size
-    if (arena->current->capacity - arena->current->used < aligned) {
-        // Expand with default size unless requested size exceeds default capacity
+    // Advance through the chain while the current block cannot fit the request.
+    // A block already linked via 'next' may be a leftover from a growth cycle
+    // that happened before the most recent arena_reset(): its 'used' was reset
+    // to 0 by arena_reset, so it is safe and correct to reuse it here instead
+    // of allocating a brand-new block and overwriting 'next' (which would
+    // orphan that leftover chain and leak it).
+    while (arena->current->capacity - arena->current->used < aligned) {
+        if (arena->current->next) {
+            arena->current = arena->current->next;
+            continue;
+        }
+
+        // No reusable block left in the chain: expand with default size
+        // unless requested size exceeds default capacity
         size_t newCapacity = arena->defaultBlockSize;
         if (aligned > newCapacity) newCapacity = aligned;
 
