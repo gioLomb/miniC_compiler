@@ -29,11 +29,6 @@
 #include "arena.h"
 
 
-/** Maximum names (leaders) tracked per value number in one scope chain. */
-#define SVN_MAX_NAMES 4
-
-/** Initial capacity of each per-scope hash table (small: most scopes are tiny). */
-#define SVN_SCOPE_TABLE_CAPACITY 7
 
 /**
  * @brief Represents a single scope in the sheaf-of-tables hierarchy.
@@ -75,9 +70,6 @@ typedef struct {
     Operand names[SVN_MAX_NAMES];
 } NameList;
 
-/* =========================================================================
- * Hash Helpers & Key Builders
- * ========================================================================= */
 
 /**
  * @brief FNV-1a non-cryptographic hash over raw bytes.

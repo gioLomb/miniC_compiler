@@ -58,6 +58,14 @@
 
 #include "ir.h"
 
+
+/** Maximum names (leaders) tracked per value number in one scope chain. */
+#define SVN_MAX_NAMES 4
+
+/** Initial capacity of each per-scope hash table (small: most scopes are tiny). */
+#define SVN_SCOPE_TABLE_CAPACITY 7
+
+
 /**
  * @brief Run Superlocal Value Numbering on every EBB of function @p f.
  *

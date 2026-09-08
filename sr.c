@@ -411,7 +411,7 @@ static int applyStrengthReduction(IRFunction *irFunction, Loop *targetLoop,
     
     // -1 sentinel means "this instruction index is not a replacement/increment site".
     memset(mulReplacementMap, -1, (size_t)totalOriginalInstrs * sizeof(int));
-    memset(incrementIsBaseMap,           -1, (size_t)totalOriginalInstrs * sizeof(int));
+    memset(incrementIsBaseMap,-1, (size_t)totalOriginalInstrs * sizeof(int));
     
     // Reverse-index derived vars by the instruction they replace, and base
     // IVs by the instruction where their increment lives, for O(1) lookup

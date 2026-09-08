@@ -29,9 +29,6 @@
 #include "arena.h"
 #include <string.h>
 
-/* =========================================================================
- * Lattice constructors
- * ========================================================================= */
 
 LatVal lat_unknown(void) {
     LatVal v = {0};
@@ -61,9 +58,6 @@ LatVal lat_conflict(void) {
     return v;
 }
 
-/* =========================================================================
- * Lattice predicates
- * ========================================================================= */
 
 int lat_is_const(LatVal v)    { return v.state == LAT_CONST;    }
 int lat_is_unknown(LatVal v)  { return v.state == LAT_UNKNOWN;  }

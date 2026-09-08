@@ -586,10 +586,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     f->curBlockStart = 0;
     currentLoopDepth = 0;
 
-    /* All children except the last are ND_PARAM; the last is the body.
-     * st_bind_symbol (called during semantic_check) already stamped
-     * scopeLevel/offset on every ND_PARAM, so mk_var() here produces the
-     * correct OPND_VAR (scopeLevel>0: never OPND_GLOBAL for a parameter). */
+
     int paramCount = decl->nchildren - 1;
     f->paramCount  = paramCount;
     f->params      = paramCount > 0 ? malloc((size_t)paramCount * sizeof(Operand)) : NULL;
@@ -601,14 +598,11 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     ir_resolve_cfg(f);
 
-       ir_lower_globals(f,arena);
+    ir_lower_globals(f,arena);
 
     svn_optimize(f);
 
-    // Single VarMap shared by every cp_optimize/dce_optimize call for the
-    // whole pipeline of this function. Its per-instruction id cache
-    // (varmap_sync_cache, called internally by cp/dce) is rebuilt only
-    // when f->ver changes, instead of every call re-hashing every operand.
+    // Single VarMap shared by every cp_optimize/dce_optimize call
     VarMap sharedVarMap = varmap_init();
 
     dce_optimize(f, &sharedVarMap, arena);
@@ -634,9 +628,6 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     return f;
 }
 
-/* =========================================================================
- * IRProgram management
- * ========================================================================= */
 
 static void ir_program_append(IRProgram *prog, IRFunction *f) {
     // standard doubling growth
@@ -722,9 +713,6 @@ static IRGlobalVar *ir_globals_append_slot(IRProgram *prog) {
 static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
     if (decl->nchildren == 0) return; // no initializer: nothing to build
 
-    // has an initializer list: pre-evaluate each constant child into
-    // initVals (int value, or float re-interpreted as raw bits so a
-    // single 'long' array can hold both int and float initializers)
     int cnt       = decl->nchildren;
     gv->initVals  = malloc((size_t)cnt * sizeof(long));
     gv->initCount = cnt;
@@ -775,9 +763,7 @@ IRProgram *ir_generate(ASTNode *program) {
     IRProgram *prog = calloc(1, sizeof(IRProgram));
     Arena *arena = arena_create(0);
 
-    // pass 1: register every global variable with a sequential symOffset.
-    // Both ND_VAR_DECL and ND_FUNC_DECL advance the counter so symOffset
-    // stays in sync with st_resolve_global_namespace's assignment order.
+    // register every global variable with a sequential symOffset.
     int symOffset = 0;
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
@@ -787,9 +773,7 @@ IRProgram *ir_generate(ASTNode *program) {
             symOffset++;
     }
 
-    // pass 2: compile every function body (globals must all be registered
-    // first, since function bodies may reference any global, including
-    // ones declared later in the source file)
+    // compile every function body
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         if (decl->kind == ND_FUNC_DECL)
@@ -800,9 +784,6 @@ IRProgram *ir_generate(ASTNode *program) {
     return prog;
 }
 
-/* =========================================================================
- * Debug printing
- * ========================================================================= */
 
 static void ir_print_operand(const Operand *o) {
     switch (o->kind) {
@@ -1064,8 +1045,7 @@ PredList ir_build_pred_list(IRFunction *f, Arena *arena) {
     ir_count_pred_edges(f, n, pl.predCount);
     int total = ir_prefix_sum_pred_counts(n, pl.predCount, pl.predStart);
 
-    // guard against a zero-size allocation when the function has no edges
-    // at all (e.g. a single-block function with no branches)
+    // guard against a zero-size allocation when the function has no edges at all
     pl.predData = arena_alloc(arena, (size_t)(total > 0 ? total : 1) * sizeof(int));
 
     ir_fill_pred_data(f, n, pl.predStart, pl.predData, arena);

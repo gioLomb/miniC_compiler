@@ -259,19 +259,18 @@ static void irExtract(void *ctxP, int instrIdx,
     VarMap  *vm = ctx->vm;
     *nUses = 0; *nDefs = 0;
 
-    // cached ids, gated by the operand's CURRENT kind (see varmap.h doc on
-    // why a stale-but-unused id after a CP fold is harmless here)
-    int s1 = ir_operand_is_storage(in->src1.kind) ? vm->src1Id[instrIdx] : -1;
-    int s2 = ir_operand_is_storage(in->src2.kind) ? vm->src2Id[instrIdx] : -1;
-    int d  = ir_operand_is_storage(in->dst.kind)  ? vm->dstId[instrIdx]  : -1;
+    // varmap_operand_id() already returns -1 for non-storage kinds and
+    // resolves through VarMap's own internal cache: no per-instruction
+    // id array needed here anymore.
+    int s1 = varmap_operand_id(vm, in->src1);
+    int s2 = varmap_operand_id(vm, in->src2);
+    int d  = varmap_operand_id(vm, in->dst);
 
     if (s1 >= 0) uses[(*nUses)++] = s1;
     if (s2 >= 0) uses[(*nUses)++] = s2;
-
     if (!ir_defines_dst(in->op) && d >= 0) uses[(*nUses)++] = d;
     if (ir_defines_dst(in->op)  && d >= 0) defs[(*nDefs)++] = d;
 }
-
 /* ir_populate_varmap() rimossa: sostituita da varmap_sync_cache(). */
 
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
@@ -282,9 +281,9 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
     VarMap *vm = sharedVarMap;
     if (!vm) { owned = varmap_init(); vm = &owned; }
 
-    // Registers any new operand and refreshes the per-instruction id cache
-    // only if f changed structurally since the last sync on this vm.
-    varmap_sync_cache(vm, f);
+    // Prescan: register every operand of f (get-or-create) so numVars
+    // below is final before the bitsets are sized.
+    ir_populate_varmap(f, vm);
 
     int numVars = vm->nextId;
     BasicBlock *lb = ir_convert_blocks(f, arena);
@@ -293,7 +292,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
     r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
                                          irExtract, &ctx, arena);
     r.liveAfter = NULL;
-    r.varMap    = *vm; // vm is sharedVarMap (already updated in place) or &owned
+    r.varMap    = *vm;
     return r;
 }
 /* 

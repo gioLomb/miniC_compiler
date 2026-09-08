@@ -8,11 +8,6 @@
 #include "global_lower.h"
 
 
-/* =========================================================================
- * Buffer emitter — rebuilds the instruction array one instruction at a time.
- * Kept as a separate structure for clarity with respect to the main loop.
- * ========================================================================= */
-
 /**
  * @brief Growable output buffer used while rebuilding a function's
  *        instruction array during global lowering.
@@ -126,15 +121,6 @@ static int emit_global_addr(int symOff, int *nextTemp,
     return t;
 }
 
-/* =========================================================================
- * Per-operand lowering helpers
- * =========================================================================
- * Each helper handles ONE operand slot (src1, src2 or dst) of ONE original
- * instruction. Splitting them out keeps the three near-identical GLOBAL
- * handling paths (address materialisation + array-base vs. scalar
- * load/store) each in their own place instead of interleaved inside one
- * long loop body.
- * ========================================================================= */
 
 /**
  * @brief Lower @p src1 if it is an OPND_GLOBAL, otherwise return it unchanged.
@@ -302,10 +288,6 @@ void ir_lower_globals(IRFunction *f, Arena *arena) {
         int ld = in.loopDepth;
         newStart[i] = e.count;
 
-        // "array base" positions expand into an address only (the
-        // instruction itself still performs the indexed load/store):
-        //   - src1 of IR_LOAD_ARR  is the base
-        //   - dst  of IR_STORE_ARR is the base
         int isArrBaseSrc1 = (in.op == IR_LOAD_ARR);
         int isArrBaseDst  = (in.op == IR_STORE_ARR);
 
@@ -327,12 +309,11 @@ void ir_lower_globals(IRFunction *f, Arena *arena) {
     }
 
     // replace the function's instruction array with the rebuilt one
-        free(f->instrs);
+    free(f->instrs);
     f->instrs   = e.buf;
     f->count    = e.count;
     f->capacity = e.cap;
-    f->ver++;   // reindexed: invalidate cached ids (defensive; runs before
-                // any VarMap/cache exists in the current pipeline order)
+    f->ver++;  
 
     remap_block_ranges(f, newStart, newEnd, e.count);
 }

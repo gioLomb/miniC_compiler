@@ -136,22 +136,19 @@ static inline int id_if_storage(OperandKind kind, int cachedId) {
 
 static int dce_process_instr(IRInstr *in, int idx, BitSet *live,
                               VarMap *vm, char *eliminate) {
-    int dstId = id_if_storage(in->dst.kind, vm->dstId[idx]);
+    int dstId = varmap_operand_id(vm, in->dst);
     int def   = ir_defines_dst(in->op) && dstId >= 0;
 
-    // pure instruction whose destination is dead here: eliminate
     if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && !bitset_test(live, dstId)) {
         eliminate[idx] = 1;
         return 1;
     }
 
-    /* order matters: sources added BEFORE dst is killed */
-    int s1 = id_if_storage(in->src1.kind, vm->src1Id[idx]);
-    int s2 = id_if_storage(in->src2.kind, vm->src2Id[idx]);
+    int s1 = varmap_operand_id(vm, in->src1);
+    int s2 = varmap_operand_id(vm, in->src2);
     if (s1 >= 0) bitset_set(live, s1);
     if (s2 >= 0) bitset_set(live, s2);
 
-    // IR_STORE_ARR: dst is the array base, READ to form the address — a use
     if (!ir_defines_dst(in->op) && dstId >= 0)
         bitset_set(live, dstId);
 
@@ -160,7 +157,6 @@ static int dce_process_instr(IRInstr *in, int idx, BitSet *live,
 
     return 0;
 }
-
 
 static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
                       Arena *arena, char *eliminate) {
@@ -182,9 +178,6 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
     }
 }
 
-/* =========================================================================
- * Public entry point
- * ========================================================================= */
 
 /**
  * @brief Run one DCE iteration over @p f, returning whether anything changed.

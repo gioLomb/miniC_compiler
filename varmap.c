@@ -56,14 +56,28 @@ uint64_t varmap_makeKey(int kind, int level, int offset) {
  */
 int varmap_mapToIndex(VarMap *m, int kind, int level, int offset) {
     uint64_t key = varmap_makeKey(kind, level, offset);
+
+    // Direct-mapped cache probe: same hash as the backing table, so this
+    // costs nothing extra to compute. A hit skips ht_get entirely.
+    unsigned long h = varmap_hash(&key, sizeof key);
+    size_t slot = (size_t)(h & (VARMAP_CACHE_SIZE - 1));
+
+    if (m->cacheOccupied[slot] && m->cacheKeys[slot] == key)
+        return m->cacheIds[slot];
+
     int id;
+    if (!ht_get(m->table, &key, sizeof key, &id, sizeof id)) {
+        // first encounter: assign next sequential id and persist it
+        id = m->nextId++;
+        ht_set(m->table, &key, sizeof key, &id, sizeof id);
+    }
 
-    // fast path: operand seen before — return cached id
-    if (ht_get(m->table, &key, sizeof key, &id, sizeof id)) return id;
+    // populate/overwrite the slot unconditionally (no eviction policy
+    // needed for a single-way direct-mapped cache)
+    m->cacheKeys[slot]     = key;
+    m->cacheIds[slot]      = id;
+    m->cacheOccupied[slot] = 1;
 
-    // slow path: first encounter — assign next available id and persist it
-    id = m->nextId++;
-    ht_set(m->table, &key, sizeof key, &id, sizeof id);
     return id;
 }
 
@@ -76,13 +90,9 @@ int varmap_mapToIndex(VarMap *m, int kind, int level, int offset) {
  * returned as -1, signalling "no id" to callers such as liveness.c.
  */
 int varmap_operand_id(VarMap *m, Operand op) {
-    // variables are identified by (scopeLevel, offset) — kind 0
     if (op.kind == OPND_VAR)  return varmap_mapToIndex(m, 0, op.data.varLevel, op.data.varOffset);
-
-    // temporaries are identified by a single integer — kind 1, b unused
     if (op.kind == OPND_TEMP) return varmap_mapToIndex(m, 1, op.data.tempId, 0);
-
-    return -1;  // constants, labels, functions: not a storage location
+    return -1;
 }
 
 /**
@@ -92,51 +102,15 @@ int varmap_operand_id(VarMap *m, Operand op) {
  * than 32 distinct variables/temporaries, so this avoids over-allocating
  * while the hash table's built-in resize handles larger functions.
  */
-// VarMap varmap_init() {
-//     return (VarMap){.table = ht_create(32, varmap_hash), .nextId = 0};
-// }
-
 VarMap varmap_init() {
+    // cacheKeys/cacheIds/cacheOccupied default to all-zero (C99 rule:
+    // struct members not listed in a designated initializer are
+    // zero-initialised) — cacheOccupied all-0 means every slot starts empty.
     return (VarMap){
-        .table       = ht_create(32, varmap_hash),
-        .nextId      = 0,
-        .cacheArena  = NULL,   // created lazily on first varmap_sync_cache()
-        .dstId       = NULL,
-        .src1Id      = NULL,
-        .src2Id      = NULL,
-        .cacheCount  = 0,
-        .cachedIrVer = -1,     // guarantees the first sync always rebuilds
+        .table  = ht_create(32, varmap_hash),
+        .nextId = 0,
     };
 }
-
 void varmap_destroy(VarMap *m) {
-    arena_destroy(m->cacheArena); // no-op if NULL (arena_destroy guards it)
     ht_destroy(m->table, NULL);
-}
-
-void varmap_sync_cache(VarMap *vm, IRFunction *f) {
-    // cache already reflects this exact instruction layout: nothing to do
-    if (vm->cachedIrVer == f->ver && vm->cacheCount == f->count)
-        return;
-
-    // Structural change (or first use): rebuild. Reuse the dedicated arena
-    // via reset instead of destroy+recreate, so backing memory is recycled
-    // across rebuilds rather than leaking one block per round.
-    if (!vm->cacheArena) vm->cacheArena = arena_create(0);
-    else arena_reset(vm->cacheArena);
-
-    vm->dstId  = arena_alloc(vm->cacheArena, (size_t)f->count * sizeof(int));
-    vm->src1Id = arena_alloc(vm->cacheArena, (size_t)f->count * sizeof(int));
-    vm->src2Id = arena_alloc(vm->cacheArena, (size_t)f->count * sizeof(int));
-
-    // single pass: resolve (get-or-create) every operand's id exactly once
-    for (int i = 0; i < f->count; i++) {
-        IRInstr *in = &f->instrs[i];
-        vm->dstId[i]  = varmap_operand_id(vm, in->dst);
-        vm->src1Id[i] = varmap_operand_id(vm, in->src1);
-        vm->src2Id[i] = varmap_operand_id(vm, in->src2);
-    }
-
-    vm->cacheCount  = f->count;
-    vm->cachedIrVer = f->ver;
 }
