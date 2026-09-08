@@ -52,7 +52,7 @@
 #include "block.h"
 #include "arena.h"
 #include "varmap.h"
-#include "regalloc_utils.h"
+#include "instr_query.h"
 
 /** Number of bits per uint64_t word in a bit-set. */
 #define BITS_PER_WORD 64

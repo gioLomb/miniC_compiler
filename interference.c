@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include "interference.h"
 #include "regalloc_utils.h"
-
+#include "instr_query.h"
 
 /**
  * @brief Map the unordered pair (i, j) to its flat lower-triangular index.
@@ -199,7 +199,7 @@ static void ig_apply_constraint_masks(IGraph *g, const MachInstr *in,
         uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
             if (id < nextVreg) g->excl[id] |= mask;
-    } else if (regalloc_is_setcc(in->op)) {
+    } else if (instr_is_setcc(in->op)) {
         uint32_t mask = (1U << PHYS_RAX);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
             if (id < nextVreg) g->excl[id] |= mask;

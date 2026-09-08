@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "ra_spill.h"
-#include "regalloc_utils.h"   
+#include "instr_query.h"   
 #include "arena.h"
 #include "bitset.h"           
 
@@ -110,7 +110,7 @@ static inline void emit_spilled_destination(MachInstr *in, const int *slot,
     int dst_store_off = slot[orig_dst_vreg];
     int dst_tmp;
 
-    if (regalloc_is_rmw(in->op)) {
+    if (instr_is_rmw(in->op)) {
         MachOperand tmp = { .kind = MO_VREG, .vregId = orig_dst_vreg };
         load_spilled(&tmp, orig_dst_vreg, f, dst_store_off, new_instrs, new_count, cache);
         dst_tmp = tmp.vregId;

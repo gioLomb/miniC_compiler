@@ -39,7 +39,7 @@
 
 #ifndef SCHED_UTILS_H
 #define SCHED_UTILS_H
-#include "regalloc_utils.h" //TODO
+#include "instr_query.h" //TODO
 #include "instr_selector.h"
 
 
@@ -296,7 +296,7 @@ static inline void sched_uses(const MachInstr *in, int nextVreg,
     default:
         // FIX: Istruzioni Read-Modify-Write (ADD, SUB, IMUL, SAL, NEG, NOT, XOR)
         // leggono 'dst' prima di scriverci.
-        if (regalloc_is_rmw(in->op)) {
+        if (instr_is_rmw(in->op)) {
             SCHED_TRY(sched_reg(&in->dst, nextVreg));
         }
         break;
