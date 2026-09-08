@@ -111,24 +111,13 @@ int ht_get(Hash_Table * restrict table, void * restrict key, size_t keySize,
     unsigned long h = table->hashFunction(key, keySize);
     unsigned int index = (unsigned int)(h & (table->capacity - 1));
 
-    int probes = 0; // nodes visited in this bucket's chain so far
     for (Entry *e = table->pool[index]; e; e = e->next) {
-        probes++;
         if (e->hash == h && keys_equal(e->key, e->keySize, key, keySize)) {
-            if (probes > 1) {
-                // hit, but not at chain head: collision cost paid on this get
-                fprintf(stderr, "[ht_get] collisione: hit dopo %d probe (bucket %u)\n",
-                        probes, index);
-            }
+
             size_t n = e->size < destSize ? e->size : destSize;
             memcpy(destBuffer, e->value, n);
             return 1;
         }
-    }
-    if (probes > 0) {
-        // miss, but bucket wasn't empty: walked a chain for nothing
-        fprintf(stderr, "[ht_get] collisione: miss dopo %d probe (bucket %u)\n",
-                probes, index);
     }
     return 0;
 }
