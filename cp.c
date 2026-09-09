@@ -76,7 +76,7 @@ static inline int is_binary_op(IROp op) {
     }
 }
 
-int is_comparison_op(IROp op) {
+static int cp_is_comparison_op(IROp op) {
     switch (op) {
     case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
         return 1;
@@ -174,13 +174,13 @@ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
             } else if (lhs.isFloat && rhs.isFloat) {
                 float r;
                 if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
-                    result = is_comparison_op(in->op)
+                    result = cp_is_comparison_op(in->op)
                              ? lat_set_const_int((int)r)
                              : lat_set_const_float(r);
             }
         }
     } else if (in->op == IR_NEG || in->op == IR_NOT) {
-        result = fold_unary(in->op, lat_get_value_by_id(map, in->src1, src1Id));
+        result = lat_fold_unary(in->op, lat_get_value_by_id(map, in->src1, src1Id));
     }
 
     map->vals[dstId] = result;
@@ -278,7 +278,7 @@ static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
         in->op   = IR_ASSIGN;
         in->src2 = (Operand){.kind = OPND_NONE};
         // comparisons produce int 0/1 even when operands are float
-        if (is_comparison_op(origOp)) {
+        if (cp_is_comparison_op(origOp)) {
             in->src1 = (Operand){ .kind = OPND_CONST_INT,
                                   .data.intVal = (int)result };
         } else {

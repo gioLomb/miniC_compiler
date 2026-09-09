@@ -42,10 +42,9 @@
  *
  *   lat_get_value_from_operand — lift an Operand to a LatVal (inline constants or map lookup)
  *   is_binary_op      — predicate: opcode takes two operands and produces a value
- *   is_comparison_op  — predicate: opcode is a relational comparison
  *   fold_binary_int   — constant-fold a binary integer operation
  *   fold_binary_float — constant-fold a binary float operation
- *   fold_unary       — constant-fold NEG or NOT
+ *   lat_fold_unary       — constant-fold NEG or NOT
  */
 
 #ifndef CONSTMAP_H
@@ -246,6 +245,6 @@ Operand const_map_try_fold_by_id(Operand op, const ConstMap *m, int cachedId);
  * @param v   Lattice value of the single source operand.
  * @return    A CONST LatVal with the folded result, or CONFLICT on failure.
  */
-LatVal fold_unary(IROp op, LatVal v);
+LatVal lat_fold_unary(IROp op, LatVal v);
 
 #endif /* CONSTMAP_H */

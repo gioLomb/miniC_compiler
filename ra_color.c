@@ -131,7 +131,7 @@ typedef struct {
  * @param n   Total node count (== IGraph.n), sizes the start[] array.
  * @return    Heap-allocated PartnerIndex; release with partner_index_free().
  */
-static PartnerIndex build_partner_index(const PartnerList *pl, int n) {
+static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
     PartnerIndex idx = { NULL, NULL };
     if (!pl || pl->count == 0 || n <= 0) return idx;
 
@@ -167,7 +167,7 @@ static PartnerIndex build_partner_index(const PartnerList *pl, int n) {
     return idx;
 }
 
-/** @brief Release a PartnerIndex built by build_partner_index(). */
+/** @brief Release a PartnerIndex built by ra_build_partner_index(). */
 static void partner_index_free(PartnerIndex *idx) {
     free(idx->start);
     free(idx->data);
@@ -197,7 +197,7 @@ static int ra_hint_color(int v, uint32_t available,
 /**
  * Computes the mask of forbidden physical colors for node @p v.
  */
-static inline uint32_t compute_forbidden_colors(const IGraph *g, int v) {
+static inline uint32_t ra_compute_forbidden_colors(const IGraph *g, int v) {
     uint32_t forbidden = g->excl[v];
     for (int k = 0; k < g->adj[v].len; k++) {
         int w = g->adj[v].data[k];
@@ -209,7 +209,7 @@ static inline uint32_t compute_forbidden_colors(const IGraph *g, int v) {
 }
 
 
-static inline int choose_color(int v, uint32_t available,
+static inline int ra_choose_color(int v, uint32_t available,
                                const IGraph *g,const PartnerIndex *pidx){
     // Priority 1: biased hint from a move-related partner
     int hint = ra_hint_color(v, available, g, pidx);
@@ -238,16 +238,16 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen,
     const uint32_t valid_mask = (1u << PHYS_ALLOCATABLE) - 1u;
 
     // built once for the whole coloring pass instead of scanning pl per node
-    PartnerIndex pidx = build_partner_index(pl, g->n);
+    PartnerIndex pidx = ra_build_partner_index(pl, g->n);
 
     for (int si = stackLen - 1; si >= 0; si--) {
         int v = stack[si];
         g->active[v] = 1;
 
-        uint32_t forbidden = compute_forbidden_colors(g, v);
+        uint32_t forbidden = ra_compute_forbidden_colors(g, v);
         uint32_t available = (~forbidden) & valid_mask;
 
-        int chosen = choose_color(v, available, g, &pidx);
+        int chosen = ra_choose_color(v, available, g, &pidx);
 
         if (chosen >= 0) {
             g->color[v] = chosen;

@@ -209,7 +209,7 @@ Operand const_map_try_fold_by_id(Operand op, const ConstMap *m, int cachedId) {
  * IR_NOT applied to a float follows C semantics: the result is an integer
  * (0 or 1), stored as LAT_CONST with isFloat == 0.
  */
-LatVal fold_unary(IROp op, LatVal v) {
+LatVal lat_fold_unary(IROp op, LatVal v) {
     if (v.state != LAT_CONST) return lat_conflict(); // can only fold a known constant
     if (!v.isFloat) {
         int i = v.val.ival;

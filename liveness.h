@@ -237,7 +237,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
  * needed by ig_build() to add edges between definitions and live-at-def vregs.
  *
  * @param f        Machine function to analyse.
- * @param blocks   CFG array produced by build_cfg() in regalloc.c.
+ * @param blocks   CFG array produced by regalloc_build_cfg() in regalloc.c.
  * @param nBlocks  Number of entries in @p blocks.
  * @param arena    Arena for all output allocations except varMap.
  * @return         LivenessResult with liveAfter populated; varMap must be

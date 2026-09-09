@@ -4,20 +4,20 @@
  *
  * Pipeline: isel_select() -> sched_schedule() -> regalloc(). See sched.h.
  *
- * Algorithm per basic block (schedule_block):
- *   1. build_dag()           — dependency DAG with RAW/WAR/WAW + ordering edges
+ * Algorithm per basic block (sched_schedule_block):
+ *   1. dag_build()           — dependency DAG with RAW/WAR/WAW + ordering edges
  *                               (sched_dag.h/.c). BlockRange passed as a whole
  *                               struct so the [start,end) pair never drifts
  *                               out of sync between caller and callee.
- *   2. emit_pinned_headers() — LABEL/FUNC_BEGIN go first, unconditionally,
+ *   2. sched_emit_pinned_headers() — LABEL/FUNC_BEGIN go first, unconditionally,
  *                               marked scheduled so they never enter the heap.
- *   3. seed_ready_heap()     — every remaining unpinned node with zero
+ *   3. sched_seed_ready_heap()     — every remaining unpinned node with zero
  *                               unresolved predecessors becomes an initial
  *                               candidate.
- *   4. run_list_scheduling() — pop the highest-height ready node, commit it,
+ *   4. sched_run_list_scheduling() — pop the highest-height ready node, commit it,
  *                               unlock successors whose last predecessor
  *                               just committed.
- *   5. flush_leftovers()     — whatever never entered the heap (terminators,
+ *   5. sched_flush_leftovers()     — whatever never entered the heap (terminators,
  *                               CMP/TEST pinned for macro-fusion) is appended
  *                               in original program order.
  *
@@ -46,7 +46,7 @@ typedef struct {
  *
  * @return Number of blocks written into @p outBlocks.
  */
-static int find_basic_blocks(const MachFunction *f, BlockRange *outBlocks) {
+static int sched_find_basic_blocks(const MachFunction *f, BlockRange *outBlocks) {
     int count = 0;
     int start = 0;
 
@@ -157,7 +157,7 @@ static inline int is_pinned_header(MachOpCode op) {
 /**
  * @brief Place structural headers (LABEL, FUNC_BEGIN) first, unconditionally.
  */
-static int emit_pinned_headers(const MachInstr *src, int instrCount,
+static int sched_emit_pinned_headers(const MachInstr *src, int instrCount,
                                 DAGNode *nodes, MachInstr *result) {
     int rCount = 0;
     for (int i = 0; i < instrCount; i++) {
@@ -173,7 +173,7 @@ static int emit_pinned_headers(const MachInstr *src, int instrCount,
 /**
  * @brief Push every node that can legally start the greedy loop.
  */
-static void seed_ready_heap(const MachInstr *src, int instrCount,
+static void sched_seed_ready_heap(const MachInstr *src, int instrCount,
                              DAGNode *nodes, ReadyHeap *heap) {
     for (int i = 0; i < instrCount; i++) {
         if (is_schedulable(&src[i], &nodes[i]) && nodes[i].predCount == 0) {
@@ -185,7 +185,7 @@ static void seed_ready_heap(const MachInstr *src, int instrCount,
 /**
  * @brief Unlocks successor nodes when predecessor nodeIdx is scheduled.
  */
-static void unlock_successors(int nodeIdx, const MachInstr *src, DAGNode *nodes, ReadyHeap *heap) {
+static void sched_unlock_successors(int nodeIdx, const MachInstr *src, DAGNode *nodes, ReadyHeap *heap) {
     for (SuccNode *s = nodes[nodeIdx].succs; s; s = s->next) {
         int succ = s->to;
         nodes[succ].predCount--;
@@ -198,14 +198,14 @@ static void unlock_successors(int nodeIdx, const MachInstr *src, DAGNode *nodes,
 /**
  * @brief Greedily commit ready nodes, highest critical-path height first.
  */
-static int run_list_scheduling(const MachInstr *src, DAGNode *nodes,
+static int sched_run_list_scheduling(const MachInstr *src, DAGNode *nodes,
                                 ReadyHeap *heap, MachInstr *result, int rCount) {
     while (heap->size > 0) {
         int chosen = ready_heap_pop(heap);
         result[rCount++]        = src[chosen];
         nodes[chosen].scheduled = 1;
 
-        unlock_successors(chosen, src, nodes, heap);
+        sched_unlock_successors(chosen, src, nodes, heap);
     }
     return rCount;
 }
@@ -213,7 +213,7 @@ static int run_list_scheduling(const MachInstr *src, DAGNode *nodes,
 /**
  * @brief Append every instruction the greedy loop never touched.
  */
-static int flush_leftovers(const MachInstr *src, int instrCount,
+static int sched_flush_leftovers(const MachInstr *src, int instrCount,
                             const DAGNode *nodes, MachInstr *result, int rCount) {
     for (int i = 0; i < instrCount; i++) {
         if (!nodes[i].scheduled) {
@@ -226,7 +226,7 @@ static int flush_leftovers(const MachInstr *src, int instrCount,
 /**
  * @brief Forward list scheduling on block [blk.start, blk.end).
  */
-static void schedule_block(MachFunction *f, BlockRange blk, Arena *arena) {
+static void sched_schedule_block(MachFunction *f, BlockRange blk, Arena *arena) {
     int instrCount = blk.end - blk.start;
     if (instrCount <= 1) return; // Nothing to reorder
 
@@ -236,14 +236,14 @@ static void schedule_block(MachFunction *f, BlockRange blk, Arena *arena) {
     DAGNode   *nodes  = arena_alloc(arena, (size_t)instrCount * sizeof(DAGNode));
     MachInstr *result = arena_alloc(arena, (size_t)instrCount * sizeof(MachInstr));
 
-    build_dag(f, blk, nodes, arena);
+    dag_build(f, blk, nodes, arena);
 
     ReadyHeap heap = ready_heap_create(arena_alloc(arena, (size_t)instrCount * sizeof(int)), nodes);
 
-    int rCount = emit_pinned_headers(src, instrCount, nodes, result);
-    seed_ready_heap(src, instrCount, nodes, &heap);
-    rCount = run_list_scheduling(src, nodes, &heap, result, rCount);
-    rCount = flush_leftovers(src, instrCount, nodes, result, rCount);
+    int rCount = sched_emit_pinned_headers(src, instrCount, nodes, result);
+    sched_seed_ready_heap(src, instrCount, nodes, &heap);
+    rCount = sched_run_list_scheduling(src, nodes, &heap, result, rCount);
+    rCount = sched_flush_leftovers(src, instrCount, nodes, result, rCount);
 
     memcpy(&f->instrs[blk.start], result, (size_t)instrCount * sizeof(MachInstr));
 }
@@ -270,12 +270,12 @@ void sched_schedule(MachProgram *mp) {
             const size_t allocSize = (size_t)f->count * sizeof(BlockRange);
             BlockRange *blocks = arena_alloc(blockArena, allocSize);
 
-            const int bbCount = find_basic_blocks(f, blocks);
+            const int bbCount = sched_find_basic_blocks(f, blocks);
 
-            // scratchArena is reset once per block inside schedule_block(),
+            // scratchArena is reset once per block inside sched_schedule_block(),
             // so its lifetime spans every block of every function here.
             for (int b = 0; b < bbCount; b++) {
-                schedule_block(f, blocks[b], scratchArena);
+                sched_schedule_block(f, blocks[b], scratchArena);
             }
         }
     }

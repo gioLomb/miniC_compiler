@@ -150,7 +150,7 @@ int ig_has_edge(const IGraph *g, int i, int j);
  *       is in use (it owns all fixed-size arrays).
  *
  * @param f          Machine function to analyse.
- * @param blocks     Basic-block array for @p f (from @c build_cfg()).
+ * @param blocks     Basic-block array for @p f (from @c regalloc_build_cfg()).
  * @param nBlocks    Number of entries in @p blocks.
  * @param nextVreg   Number of virtual registers in @p f (first physical reg id).
  * @param liveAfter  Per-instruction live sets from liveness analysis.

@@ -3,7 +3,7 @@
  * @brief IR generation from the AST and IR-level optimisation pipeline.
  *
  * Key design points:
- *   - mk_var: scopeLevel==0 -> OPND_GLOBAL (expanded later by gl_lower_globals)
+ *   - ir_mk_var: scopeLevel==0 -> OPND_GLOBAL (expanded later by gl_lower_globals)
  *   - ir_is_pure / ir_defines_dst: include IR_GLOBAL_ADDR
  *   - ir_build_function: calls gl_lower_globals() after ir_resolve_cfg()
  *     and before SVN/DCE/CP/LICM/SR
@@ -45,7 +45,7 @@ static int currentLoopDepth;
 
 
 
-static inline Operand mk_var(const ASTNode *node) {
+static inline Operand ir_mk_var(const ASTNode *node) {
     if (node->scopeLevel == 0) {
         return (Operand){ .kind              = OPND_GLOBAL,
                           .data.globalOffset = node->offset };
@@ -92,7 +92,7 @@ int ir_is_pure(IROp op) {
  * @param writeCursor In/out: next free slot in f->instrs; advanced by the
  *                     number of surviving instructions in this block.
  */
-static void compact_block(IRFunction *f, const char *eliminate, int b, int *writeCursor) {
+static void ir_compact_block(IRFunction *f, const char *eliminate, int b, int *writeCursor) {
     int oldStart = f->blocks[b].bb.range.start;
     int oldEnd   = f->blocks[b].bb.range.end;
     int newStart = *writeCursor;
@@ -110,7 +110,7 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     int writeCursor = 0;
 
     for (int b = 0; b < nBlocks; b++)
-        compact_block(f, eliminate, b, &writeCursor);
+        ir_compact_block(f, eliminate, b, &writeCursor);
 
     f->count         = writeCursor;
     f->capacity      = f->capacity;
@@ -366,11 +366,11 @@ static Operand ir_emit_assign(ASTNode *expr, IRFunction *out) {
     ASTNode *lvalue = expr->children[0];
     if (lvalue->kind == ND_ID)
         // simple scalar assignment: emit the rhs directly into the variable's slot
-        return ir_emit_expr_into(expr->children[1], out, mk_var(lvalue));
+        return ir_emit_expr_into(expr->children[1], out, ir_mk_var(lvalue));
 
     // array-element assignment: base[idx] = rhs
     Operand idx  = ir_emit_expr(lvalue->children[0], out);
-    Operand base = mk_var(lvalue);
+    Operand base = ir_mk_var(lvalue);
     Operand rhs  = ir_emit_expr(expr->children[1], out);
     ir_emit_instr(out, IR_STORE_ARR, base, idx, rhs);
     return rhs; // assignment expression evaluates to the assigned value
@@ -392,11 +392,11 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {
     case ND_NUM_INT:   return (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) };
     case ND_NUM_FLOAT: return (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = (float)atof(expr->text) };
-    case ND_ID:        return mk_var(expr);
+    case ND_ID:        return ir_mk_var(expr);
 
     case ND_ARRAY_ACCESS: {
         Operand idx  = ir_emit_expr(expr->children[0], out);
-        Operand base = mk_var(expr);
+        Operand base = ir_mk_var(expr);
         Operand t    = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
         ir_emit_instr(out, IR_LOAD_ARR, t, base, idx);
         return t;
@@ -444,12 +444,12 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
         ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = (float)atof(expr->text) }, (Operand){.kind = OPND_NONE});
         return dest;
     case ND_ID:
-        ir_emit_instr(out, IR_ASSIGN, dest, mk_var(expr), (Operand){.kind = OPND_NONE});
+        ir_emit_instr(out, IR_ASSIGN, dest, ir_mk_var(expr), (Operand){.kind = OPND_NONE});
         return dest;
 
     case ND_ARRAY_ACCESS: {
         Operand idx  = ir_emit_expr(expr->children[0], out);
-        Operand base = mk_var(expr);
+        Operand base = ir_mk_var(expr);
         ir_emit_instr(out, IR_LOAD_ARR, dest, base, idx);
         return dest;
     }
@@ -508,12 +508,12 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
         if (stmt->nchildren == 0) break; // no initializer: nothing to emit
         if (stmt->nchildren == 1) {
             // scalar initializer
-            ir_emit_expr_into(stmt->children[0], out, mk_var(stmt));
+            ir_emit_expr_into(stmt->children[0], out, ir_mk_var(stmt));
         } else {
             // array initializer list: one STORE_ARR per element, index = position
             for (int i = 0; i < stmt->nchildren; i++) {
                 Operand v = ir_emit_expr(stmt->children[i], out);
-                ir_emit_instr(out, IR_STORE_ARR, mk_var(stmt), (Operand){ .kind = OPND_CONST_INT, .data.intVal = i }, v);
+                ir_emit_instr(out, IR_STORE_ARR, ir_mk_var(stmt), (Operand){ .kind = OPND_CONST_INT, .data.intVal = i }, v);
             }
         }
         break;
@@ -583,7 +583,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     f->paramCount  = paramCount;
     f->params      = paramCount > 0 ? malloc((size_t)paramCount * sizeof(Operand)) : NULL;
     for (int p = 0; p < paramCount; p++)
-        f->params[p] = mk_var(decl->children[p]);
+        f->params[p] = ir_mk_var(decl->children[p]);
 
     ASTNode *body = decl->children[decl->nchildren - 1];
     ir_emit_stmt(body, f);

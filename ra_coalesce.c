@@ -9,7 +9,7 @@
  * Resolves a Machine Operand to its internal register node ID.
  * Returns -1 if the operand is not a valid register representation.
  */
-static inline int resolve_operand_id(const MachOperand *op, int next_vreg) {
+static inline int ra_resolve_operand_id(const MachOperand *op, int next_vreg) {
     if (op->kind == MO_VREG) {
         return op->vregId;
     }
@@ -24,7 +24,7 @@ static inline int resolve_operand_id(const MachOperand *op, int next_vreg) {
  * Applies domain rules and interference checks.
  * (Refactoring: Replace Nested Conditional with Guard Clauses)
  */
-static inline int is_valid_coalesce_candidate(const IGraph *g, int u, int v, int max_node_id, int next_vreg) {
+static inline int ra_is_valid_coalesce_candidate(const IGraph *g, int u, int v, int max_node_id, int next_vreg) {
     // Both operands must resolve to valid node ids
     if (u < 0 || v < 0) return 0;
 
@@ -63,11 +63,11 @@ PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g, int next
         if (in->op != MACH_MOV) continue;
 
         // Refactoring: Extract Function calls replacing duplicated if-else trees
-        int u = resolve_operand_id(&in->dst, nextVreg);
-        int v = resolve_operand_id(&in->src1, nextVreg);
+        int u = ra_resolve_operand_id(&in->dst, nextVreg);
+        int v = ra_resolve_operand_id(&in->src1, nextVreg);
 
         // Refactoring: Replace Nested Conditional with Guard Clauses
-        if (is_valid_coalesce_candidate(g, u, v, max_node_id, nextVreg)) {
+        if (ra_is_valid_coalesce_candidate(g, u, v, max_node_id, nextVreg)) {
             partnerlist_push(&pl, u, v);
         }
     }

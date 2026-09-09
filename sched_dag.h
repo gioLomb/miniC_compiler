@@ -26,7 +26,7 @@
  * Height (critical-path length to any sink) is computed backward after all
  * edges exist; the list scheduler (sched.c) uses it as its priority key.
  *
- * Memory: every allocation build_dag() performs comes from the caller's
+ * Memory: every allocation dag_build() performs comes from the caller's
  * Arena, reset between blocks by sched.c — no per-block free needed.
  */
 
@@ -76,7 +76,7 @@ typedef struct DAGNode {
  * @param nodes  Caller-allocated array of (end - start) DAGNode.
  * @param arena  Scratch arena for internal tracking arrays and SuccNode edges.
  */
-void build_dag(const MachFunction *f, BlockRange blk, DAGNode *nodes,
+void dag_build(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena);
 
 #endif /* SCHED_DAG_H */

@@ -4,7 +4,7 @@
  * profondita' di call stack. Verifica:
  *   - correttezza prologo/epilogo (pushq %rbp; movq %rsp,%rbp; subq frame)
  *     e save/restore dei callee-saved effettivamente usati per ogni
- *     invocazione ricorsiva (save_restore_callee in regalloc.c).
+ *     invocazione ricorsiva (regalloc_save_restore_callee in regalloc.c).
  *   - IR_PARAM/IR_CALL: 'n' e' vivo attraverso le due chiamate ricorsive
  *     (fib(n-1) poi fib(n-2)), quindi deve sopravvivere alla prima CALL
  *     (crossesCall) prima di essere riletto per calcolare n-2.

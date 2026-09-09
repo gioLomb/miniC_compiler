@@ -7,7 +7,7 @@
  *
  *  1. **Latency table** (sched_latency_of)
  *     Static per-opcode cycle counts derived from Agner Fog's Haswell /
- *     Broadwell instruction tables.  Used by build_dag() to initialise each
+ *     Broadwell instruction tables.  Used by dag_build() to initialise each
  *     DAGNode.height and by the backward height-propagation pass to compute
  *     the latency-weighted critical-path length toward any sink node.
  *
@@ -19,14 +19,14 @@
  *                               divide/sign-extend sequences that must be
  *                               serialised relative to each other.
  *     - sched_is_jcc          — conditional branch opcodes; used by the
- *                               macro-fusion detector in build_dag().
+ *                               macro-fusion detector in dag_build().
  *     - sched_is_cmp_or_test  — comparison opcodes that may fuse with a
  *                               following Jcc into a single micro-op.
  *
  *  3. **Operand / def-use extractors** (sched_reg, sched_reg_idx, sched_def,
  *     sched_uses)
  *     Translate MachOperand fields into flat integer register ids suitable
- *     for the SparseMap-based renaming pass inside build_dag().  Physical
+ *     for the SparseMap-based renaming pass inside dag_build().  Physical
  *     registers are offset by nextVreg so that vregs and physregs share a
  *     single flat id space without collision.
  *
@@ -113,7 +113,7 @@ static inline int sched_is_pinned(MachOpCode op) {
  * @brief Return non-zero if @p op has observable side effects beyond its dst.
  *
  * Side-effecting instructions must be emitted in their original relative
- * order; build_dag() chains them through the lastSideEffect pointer to
+ * order; dag_build() chains them through the lastSideEffect pointer to
  * enforce this.  Covered:
  *   - Memory writes: STORE, PUSH, POP (read-modify stack pointer).
  *   - Calls: CALL (arbitrary memory and register side effects).
@@ -134,7 +134,7 @@ static inline int sched_has_side_effect(MachOpCode op) {
 /**
  * @brief Return non-zero if @p op is a conditional branch (Jcc).
  *
- * Used by the macro-fusion detector in build_dag(): when a CMP or TEST is
+ * Used by the macro-fusion detector in dag_build(): when a CMP or TEST is
  * immediately followed by a Jcc, the CMP/TEST is pinned (pinnedForFusion=1)
  * so the list scheduler preserves their adjacency and the Intel decoder can
  * fuse them into a single micro-op.
@@ -195,7 +195,7 @@ static inline int sched_reg(const MachOperand *o, int nextVreg) {
  * @brief Extract the index register id from an MO_MEM operand.
  *
  * SIB addressing modes (base + index*scale + disp) carry a second register
- * in the indexVreg field.  build_dag() calls this alongside sched_reg() to
+ * in the indexVreg field.  dag_build() calls this alongside sched_reg() to
  * ensure RAW edges are added for both the base and index registers of a
  * memory operand.
  *

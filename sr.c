@@ -7,17 +7,17 @@
  * Internal organization
  * ---------------------
  *  fold_int                  - Integer constant folding helper.
- *  count_variable_definitions- Counts variable write frequencies within a loop.
- *  collect_base_induction_vars- Filters and extracts basic induction variables.
- *  findInductionBase        - Identifies basic induction variables (i = i +/- c).
- *  try_match_derived_iv     - Matches instructions against the derived IV pattern.
- *  find_derived_induction_vars              - Identifies derived induction variables (t = i * d).
+ *  sr_count_variable_definitions- Counts variable write frequencies within a loop.
+ *  sr_collect_base_induction_vars- Filters and extracts basic induction variables.
+ *  sr_find_induction_base        - Identifies basic induction variables (i = i +/- c).
+ *  sr_try_match_derived_iv     - Matches instructions against the derived IV pattern.
+ *  sr_find_derived_induction_vars              - Identifies derived induction variables (t = i * d).
  *  make_instr               - IR instruction factory helper.
- *  emit_preheader_inits     - Emits "t_sr = i * mult" for every derived IV.
- *  patch_body_instruction   - Replaces/appends instructions during body rewrite.
- *  rewrite_loop_body        - Rewrites the body, splicing stride updates in place.
+ *  sr_emit_preheader_inits     - Emits "t_sr = i * mult" for every derived IV.
+ *  sr_patch_body_instruction   - Replaces/appends instructions during body rewrite.
+ *  sr_rewrite_loop_body        - Rewrites the body, splicing stride updates in place.
  *  remap_block_ranges       - Recomputes block [start,end) after the rewrite.
- *  apply_strength_reduction   - Orchestrates the rewrite steps for one loop.
+ *  sr_apply_strength_reduction   - Orchestrates the rewrite steps for one loop.
  *  sr_optimize              - Driver function for the pass.
  *
  * Why no dominance check is needed (unlike LICM)
@@ -98,7 +98,7 @@ typedef struct {
  * Induction Var Analysis Helpers
  * ========================================================================= */
 
-static void count_variable_definitions(const IRFunction *irFunction, const Loop *targetLoop, 
+static void sr_count_variable_definitions(const IRFunction *irFunction, const Loop *targetLoop, 
                                        VarMap *variableMap, int *definitionCounts) {
     // walk all loop body blocks
     for (int bodyIdx = 0; bodyIdx < targetLoop->bodyCount; bodyIdx++) {
@@ -117,7 +117,7 @@ static void count_variable_definitions(const IRFunction *irFunction, const Loop 
 }
 
 
-static int collect_base_induction_vars(const IRFunction *irFunction, const Loop *targetLoop,
+static int sr_collect_base_induction_vars(const IRFunction *irFunction, const Loop *targetLoop,
                                         VarMap *variableMap, const int *definitionCounts,
                                         InductionBase *baseVars) {
     int collectedCount = 0;
@@ -160,20 +160,20 @@ static int collect_base_induction_vars(const IRFunction *irFunction, const Loop 
 /**
  * @brief Scans a loop body to locate basic induction variables.
  */
-static int findInductionBase(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
+static int sr_find_induction_base(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
                              InductionBase *baseVars, Arena *arena) {
     int totalVars = variableMap->nextId;
     // per-variable def count, arena-owned
     int *definitionCounts = arena_alloc(arena, (size_t)totalVars * sizeof(int));
     memset(definitionCounts, 0, (size_t)totalVars * sizeof(int));
 
-    count_variable_definitions(irFunction, targetLoop, variableMap, definitionCounts);
-    return collect_base_induction_vars(irFunction, targetLoop, variableMap, definitionCounts, baseVars);
+    sr_count_variable_definitions(irFunction, targetLoop, variableMap, definitionCounts);
+    return sr_collect_base_induction_vars(irFunction, targetLoop, variableMap, definitionCounts, baseVars);
 }
 
 
 // Returns 1 if instr matches (iv * const) or (const * iv), writing factor into *outFactor.
-static int match_iv_mul_const(const IRInstr *in, Operand iv, int *outFactor) {
+static int sr_match_iv_mul_const(const IRInstr *in, Operand iv, int *outFactor) {
     if (ir_is_same_operand(&(in->src1), &iv) && in->src2.kind == OPND_CONST_INT) {
         *outFactor = in->src2.data.intVal; return 1;
     }
@@ -183,7 +183,7 @@ static int match_iv_mul_const(const IRInstr *in, Operand iv, int *outFactor) {
     return 0;
 }
 
-static int try_match_derived_iv(const IRInstr *currentInstr, int instructionIdx, VarMap *variableMap,
+static int sr_try_match_derived_iv(const IRInstr *currentInstr, int instructionIdx, VarMap *variableMap,
                                 const InductionBase *baseVars, int baseVarCount,
                                 InductionDerived *outDerivedVar, int *nextTempId) {
     if (currentInstr->op != IR_MUL) return 0;
@@ -195,7 +195,7 @@ static int try_match_derived_iv(const IRInstr *currentInstr, int instructionIdx,
         int constantFactor = 0;
 
         // i*const or const*i, commutative
-        if (!match_iv_mul_const(currentInstr, baseVar->variable, &constantFactor)) continue;
+        if (!sr_match_iv_mul_const(currentInstr, baseVar->variable, &constantFactor)) continue;
 
         int calculatedStride; // stride = step(i) * multiplier
         if (!fold_int(IR_MUL, baseVar->stepValue, constantFactor, &calculatedStride)) continue;
@@ -222,7 +222,7 @@ static int try_match_derived_iv(const IRInstr *currentInstr, int instructionIdx,
 /**
  * @brief Scans a loop body for derived induction variables based on basic IVs.
  */
-static int find_derived_induction_vars(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
+static int sr_find_derived_induction_vars(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
                        InductionBase *baseVars, int baseVarCount,
                        InductionDerived *derivedVars, int *nextTempId) {
     int derivedCount = 0;
@@ -234,7 +234,7 @@ static int find_derived_induction_vars(IRFunction *irFunction, Loop *targetLoop,
         int end   = irFunction->blocks[blockIdx].bb.range.end;
 
         for (int instrIdx = start; instrIdx < end && derivedCount < MAX_DERIVED; instrIdx++) {
-            if (try_match_derived_iv(&irFunction->instrs[instrIdx], instrIdx, variableMap, 
+            if (sr_try_match_derived_iv(&irFunction->instrs[instrIdx], instrIdx, variableMap, 
                                      baseVars, baseVarCount, &derivedVars[derivedCount], nextTempId)) {
                 derivedCount++;
             }
@@ -262,7 +262,7 @@ static inline IRInstr make_instr(IROp operation, Operand dest,
 /**
  * @brief Emit "t_sr = i * multiplier" for every derived induction variable.
  */
-static int emit_preheader_inits(IRInstr *newInstrs, int currentInstrCount,
+static int sr_emit_preheader_inits(IRInstr *newInstrs, int currentInstrCount,
                                  const InductionDerived *derivedVars, int derivedVarCount,
                                  const InductionBase *baseVars, int outerLoopDepth) {
     for (int derivedIdx = 0; derivedIdx < derivedVarCount; derivedIdx++) {
@@ -280,7 +280,7 @@ static int emit_preheader_inits(IRInstr *newInstrs, int currentInstrCount,
     return currentInstrCount;
 }
 
-static int patch_body_instruction(const IRInstr *currentInstr, int originalInstrIdx,
+static int sr_patch_body_instruction(const IRInstr *currentInstr, int originalInstrIdx,
                                  const InductionDerived *derivedVars, int derivedVarCount,
                                  const int *mulReplacementMap, const int *incrementIsBaseMap,
                                  int bodyLoopDepth, IRInstr *newInstrs, int currentInstrCount) {
@@ -316,7 +316,7 @@ static int patch_body_instruction(const IRInstr *currentInstr, int originalInstr
 /**
  * @brief Rewrite loop-body instructions in place (into a new buffer).
  */
-static int rewrite_loop_body(const IRFunction *irFunction, int totalOriginalInstrs, int insertionIdx,
+static int sr_rewrite_loop_body(const IRFunction *irFunction, int totalOriginalInstrs, int insertionIdx,
                              const InductionDerived *derivedVars, int derivedVarCount,
                              const InductionBase *baseVars,
                              const int *mulReplacementMap, const int *incrementIsBaseMap,
@@ -329,14 +329,14 @@ static int rewrite_loop_body(const IRFunction *irFunction, int totalOriginalInst
         // splice pre-header inits right before loop header
         if (instructionIdx == insertionIdx) {
             *preheaderInitStart = currentInstrCount;
-            currentInstrCount = emit_preheader_inits(newInstrs, currentInstrCount,
+            currentInstrCount = sr_emit_preheader_inits(newInstrs, currentInstrCount,
                                                            derivedVars, derivedVarCount, baseVars, outerLoopDepth);
             *preheaderInitEnd = currentInstrCount;
         }
 
         // record old->new position, needed to remap block ranges later
         oldToNewIdxMap[instructionIdx] = currentInstrCount;
-        currentInstrCount = patch_body_instruction(&irFunction->instrs[instructionIdx], instructionIdx,
+        currentInstrCount = sr_patch_body_instruction(&irFunction->instrs[instructionIdx], instructionIdx,
                                                          derivedVars, derivedVarCount,
                                                          mulReplacementMap, incrementIsBaseMap,
                                                          bodyLoopDepth, newInstrs, currentInstrCount);
@@ -345,7 +345,7 @@ static int rewrite_loop_body(const IRFunction *irFunction, int totalOriginalInst
     // edge case: insertion point at end of buffer, loop above never hit it
     if (insertionIdx >= totalOriginalInstrs) {
         *preheaderInitStart = currentInstrCount;
-        currentInstrCount = emit_preheader_inits(newInstrs, currentInstrCount,
+        currentInstrCount = sr_emit_preheader_inits(newInstrs, currentInstrCount,
                                                        derivedVars, derivedVarCount, baseVars, outerLoopDepth);
         *preheaderInitEnd = currentInstrCount;
     }
@@ -356,7 +356,7 @@ static int rewrite_loop_body(const IRFunction *irFunction, int totalOriginalInst
 /**
  * @brief Recompute every block's [start,end) range after instruction count changes.
  */
-static void remap_block_ranges(IRFunction *irFunction, int preheaderblockIdx, int preheaderInitStart, int preheaderInitEnd,
+static void sr_remap_block_ranges(IRFunction *irFunction, int preheaderblockIdx, int preheaderInitStart, int preheaderInitEnd,
                                 const int *oldToNewIdxMap, int totalOriginalInstrs, int newTotalInstrs) {
     for (int blockIdx = 0; blockIdx < irFunction->blockCount; blockIdx++) {
         if (blockIdx == preheaderblockIdx) {
@@ -385,7 +385,7 @@ static void remap_block_ranges(IRFunction *irFunction, int preheaderblockIdx, in
 /**
  * @brief Performs the strength reduction rewrite on loop instructions.
  */
-static int apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
+static int sr_apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
                                    InductionBase *baseVars, int baseVarCount,
                                    InductionDerived *derivedVars, int derivedVarCount,
                                    Arena *arena) {
@@ -415,16 +415,16 @@ static int apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
     
     // Reverse-index derived vars by the instruction they replace, and base
     // IVs by the instruction where their increment lives, for O(1) lookup
-    // during the single linear pass in rewrite_loop_body/patch_body_instruction.
+    // during the single linear pass in sr_rewrite_loop_body/sr_patch_body_instruction.
     for (int derivedIdx = 0; derivedIdx < derivedVarCount; derivedIdx++) 
         mulReplacementMap[derivedVars[derivedIdx].mulInstrIdx] = derivedIdx;
         
     for (int baseIdx = 0; baseIdx < baseVarCount; baseIdx++) 
         incrementIsBaseMap[baseVars[baseIdx].incrementInstrIdx] = baseIdx;
 
-    // Initialize to avoid compiler warning (they will be set by rewrite_loop_body)
+    // Initialize to avoid compiler warning (they will be set by sr_rewrite_loop_body)
     int preheaderInitStart = 0, preheaderInitEnd = 0;
-    int newInstrCount = rewrite_loop_body(irFunction, totalOriginalInstrs, insertionIdx,
+    int newInstrCount = sr_rewrite_loop_body(irFunction, totalOriginalInstrs, insertionIdx,
                                                 derivedVars, derivedVarCount, baseVars,
                                                 mulReplacementMap, incrementIsBaseMap,
                                                 bodyLoopDepth, outerLoopDepth,
@@ -438,7 +438,7 @@ static int apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
     irFunction->capacity = newInstrCount;
     irFunction->ver++;   // reindexed: invalidate cached ids
 
-    remap_block_ranges(irFunction, preheaderblockIdx, preheaderInitStart, preheaderInitEnd, 
+    sr_remap_block_ranges(irFunction, preheaderblockIdx, preheaderInitStart, preheaderInitEnd, 
                        oldToNewIdxMap, totalOriginalInstrs, newInstrCount);
     irFunction->curBlockStart = 0;
     return 1;
@@ -476,15 +476,15 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
         InductionDerived derivedVars[MAX_DERIVED];
 
         // No basic IV -> nothing to derive strength reduction from, skip loop.
-        int baseVarCount = findInductionBase(irFunction, targetLoop, variableMap, baseVars, arenaScratch);
+        int baseVarCount = sr_find_induction_base(irFunction, targetLoop, variableMap, baseVars, arenaScratch);
         if (baseVarCount == 0) continue;
 
         // No derived IV -> no mul to replace, skip loop.
-        int derivedVarCount = find_derived_induction_vars(irFunction, targetLoop, variableMap, baseVars, 
+        int derivedVarCount = sr_find_derived_induction_vars(irFunction, targetLoop, variableMap, baseVars, 
                                                baseVarCount, derivedVars, &nextTempId);
         if (derivedVarCount == 0) continue;
 
-        totalTransformationsApplied += apply_strength_reduction(irFunction, targetLoop, baseVars, baseVarCount,
+        totalTransformationsApplied += sr_apply_strength_reduction(irFunction, targetLoop, baseVars, baseVarCount,
                                                               derivedVars, derivedVarCount, arenaScratch);
     }
 

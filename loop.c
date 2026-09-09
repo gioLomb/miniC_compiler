@@ -4,7 +4,7 @@
  * Predecessor lookups
  * --------------------
  * Both loop_compute_dominators (intersection of predecessor Dom sets at
- * every fixed-point iteration) and collectBody (reverse BFS from the
+ * every fixed-point iteration) and loop_collect_body (reverse BFS from the
  * back-edge tail, called once per natural loop found) need, for a given
  * block, the set of blocks whose succ[] targets it. Both now use a shared
  * PredList (ir.h, built via ir_build_pred_list()) instead of independently
@@ -12,7 +12,7 @@
  * O(nBlocks) per lookup, repeated O(nBlocks) times per fixed-point
  * iteration in loop_compute_dominators (O(nBlocks^2) per pass), and was
  * additionally capped at a fixed fan-in of 2 predecessors per block in
- * collectBody's old inline preds[n][2] array — a latent buffer overflow
+ * loop_collect_body's old inline preds[n][2] array — a latent buffer overflow
  * for any block with more than two incoming edges (e.g. several branches
  * converging on the same join block). PredList has no such cap.
  */
@@ -42,7 +42,7 @@
  * Dom[0] = {0} (entry block).
  * Dom[b>0] = Universal set (all bits 1, masked to valid block count).
  */
-static void init_dominator_sets(BitSet *Dom, int n, int words, Arena *arena) {
+static void loop_init_dominator_sets(BitSet *Dom, int n, int words, Arena *arena) {
     for (int b = 0; b < n; b++) {
         Dom[b] = bitset_new(arena, words);
         if (b == 0) {
@@ -63,7 +63,7 @@ static void init_dominator_sets(BitSet *Dom, int n, int words, Arena *arena) {
 /**
  * @brief Intersect Dom sets of all predecessors for block @p b via CSR PredList.
  */
-static void intersect_predecessor_dominators(BitSet *inter, const BitSet *Dom,
+static void loop_intersect_predecessor_dominators(BitSet *inter, const BitSet *Dom,
                                              const PredList *preds, int b, int words) {
     int start = preds->predStart[b];
 
@@ -84,7 +84,7 @@ static void intersect_predecessor_dominators(BitSet *inter, const BitSet *Dom,
  *
  * @return 1 if Dom[b] changed, 0 otherwise.
  */
-static int update_dominator_set(BitSet *Dom_b, const BitSet *inter, int b, BitSet *tmp) {
+static int loop_update_dominator_set(BitSet *Dom_b, const BitSet *inter, int b, BitSet *tmp) {
     // Dom[b] = {b} ∪ inter
     bitset_copy(tmp, inter);
     bitset_set(tmp, b);
@@ -123,7 +123,7 @@ BitSet *loop_compute_dominators(IRFunction *f, int words, Arena *arena) {
     PredList preds = ir_build_pred_list(f, arena);
 
     // initialise Dom sets
-    init_dominator_sets(Dom, n, words, arena);
+    loop_init_dominator_sets(Dom, n, words, arena);
 
     // scratch sets for the intersection step
     BitSet inter = bitset_new(arena, words);
@@ -136,9 +136,9 @@ BitSet *loop_compute_dominators(IRFunction *f, int words, Arena *arena) {
         for (int b = 1; b < n; b++) {
             if (preds.predCount[b] == 0) continue; // block unreachable: no predecessors found
 
-            intersect_predecessor_dominators(&inter, Dom, &preds, b, words);
+            loop_intersect_predecessor_dominators(&inter, Dom, &preds, b, words);
 
-            if (update_dominator_set(&Dom[b], &inter, b, &tmp)) {
+            if (loop_update_dominator_set(&Dom[b], &inter, b, &tmp)) {
                 changed = 1;
             }
         }
@@ -153,7 +153,7 @@ int loop_dominates(BitSet *Dom, int a, int b) {
 /**
  * @brief Perform reverse BFS from @p tail up to @p header to discover body blocks.
  */
-static void bfs_traverse_loop_body(int header, int tail, char *inBody,
+static void loop_bfs_traverse_loop_body(int header, int tail, char *inBody,
                                    int *queue, const PredList *preds) {
     int head = 0, tail_q = 0;
 
@@ -206,7 +206,7 @@ static void gather_body_blocks_in_order(const char *inBody, int n, int *body, in
  * @param preds      Precomputed predecessor list for @p f (ir_build_pred_list()).
  * @param arena      Arena for internal BFS auxiliary arrays.
  */
-static void collectBody(IRFunction *f, int header, int tail,
+static void loop_collect_body(IRFunction *f, int header, int tail,
                         int *body, int *bodyCount, const PredList *preds,
                         Arena *arena) {
     int n = f->blockCount;
@@ -218,7 +218,7 @@ static void collectBody(IRFunction *f, int header, int tail,
     // BFS queue (arena-allocated; at most n entries)
     int *queue = arena_alloc(arena, (size_t)n * sizeof(int));
 
-    bfs_traverse_loop_body(header, tail, inBody, queue, preds);
+    loop_bfs_traverse_loop_body(header, tail, inBody, queue, preds);
     gather_body_blocks_in_order(inBody, n, body, bodyCount);
 }
 
@@ -229,7 +229,7 @@ static void collectBody(IRFunction *f, int header, int tail,
 /**
  * @brief Scan body blocks and record exit blocks (having successors outside body).
  */
-static void record_loop_exit_blocks(Loop *L, const IRFunction *f,
+static void loop_record_loop_exit_blocks(Loop *L, const IRFunction *f,
                                     const char *inBody, const int *body, int bodyCount) {
     // find exit blocks: body blocks with at least one out-of-loop successor
     for (int i = 0; i < bodyCount && L->exitCount < 64; i++) {
@@ -257,7 +257,7 @@ static void record_loop_exit_blocks(Loop *L, const IRFunction *f,
 /**
  * @brief Construct a natural loop instance from a verified back-edge h -> b.
  */
-static void build_natural_loop(Loop *L, IRFunction *f, int h, int b,
+static void loop_build_natural_loop(Loop *L, IRFunction *f, int h, int b,
                                int *body, const PredList *preds,
                                Arena *arena, int n) {
     L->header    = h;
@@ -266,7 +266,7 @@ static void build_natural_loop(Loop *L, IRFunction *f, int h, int b,
 
     // collect body; copy into arena-allocated array owned by Loop
     int bodyCount = 0;
-    collectBody(f, h, b, body, &bodyCount, preds, arena);
+    loop_collect_body(f, h, b, body, &bodyCount, preds, arena);
     L->body      = arena_alloc(arena, (size_t)bodyCount * sizeof(int));
     L->bodyCount = bodyCount;
     memcpy(L->body, body, (size_t)bodyCount * sizeof(int));
@@ -278,7 +278,7 @@ static void build_natural_loop(Loop *L, IRFunction *f, int h, int b,
         inBody[body[i]] = 1;
     }
 
-    record_loop_exit_blocks(L, f, inBody, body, bodyCount);
+    loop_record_loop_exit_blocks(L, f, inBody, body, bodyCount);
 }
 
 /**
@@ -286,12 +286,12 @@ static void build_natural_loop(Loop *L, IRFunction *f, int h, int b,
  *
  * For every CFG edge b→h, if h dominates b it is a back-edge defining a
  * natural loop.  For each such edge:
- *   1. Call collectBody() to gather all blocks in the loop body.
+ *   1. Call loop_collect_body() to gather all blocks in the loop body.
  *   2. Scan body blocks for exit blocks (have a successor outside the body).
  *      Each distinct exit block is recorded at most once in L->exits[].
  *
  * A single PredList is built once at the top of this function and shared
- * across every collectBody() call below — succ[] is never mutated while
+ * across every loop_collect_body() call below — succ[] is never mutated while
  * loop_find() runs, so the list stays valid for all loops discovered in
  * this call (see module header for the rationale).
  *
@@ -302,7 +302,7 @@ int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
     // reuse a single body scratch buffer across all loops
     int *body = arena_alloc(arena, (size_t)n * sizeof(int));
 
-    // predecessor list built once, reused by every collectBody() call below
+    // predecessor list built once, reused by every loop_collect_body() call below
     // instead of each call reconstructing its own reverse-adjacency lists
     PredList preds = ir_build_pred_list(f, arena);
 
@@ -313,7 +313,7 @@ int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
             if (h < 0 || !loop_dominates(Dom, h, b)) continue;
 
             Loop *L = &loops[nLoops++];
-            build_natural_loop(L, f, h, b, body, &preds, arena, n);
+            loop_build_natural_loop(L, f, h, b, body, &preds, arena, n);
         }
     }
     return nLoops;
@@ -336,7 +336,7 @@ static void ensure_block_capacity(IRFunction *f) {
 /**
  * @brief Append an empty synthetic pre-header block to the IRFunction.
  */
-static int create_pre_header_block(IRFunction *f, int header) {
+static int loop_create_pre_header_block(IRFunction *f, int header) {
     ensure_block_capacity(f);
 
     int phIdx   = f->blockCount++;
@@ -354,7 +354,7 @@ static int create_pre_header_block(IRFunction *f, int header) {
 /**
  * @brief Re-route non-body predecessors of loop header to target the pre-header.
  */
-static void reroute_non_body_predecessors(IRFunction *f, int header, int phIdx, const Loop *L) {
+static void loop_reroute_non_body_predecessors(IRFunction *f, int header, int phIdx, const Loop *L) {
     // build body membership for O(1) lookup during predecessor re-routing
     char *inBody = calloc((size_t)(phIdx + 1), 1);
     for (int i = 0; i < L->bodyCount; i++) {
@@ -404,9 +404,9 @@ static void reroute_non_body_predecessors(IRFunction *f, int header, int phIdx, 
 int loop_build_pre_header(IRFunction *f, Loop *L) {
     int header = L->header;
 
-    int phIdx = create_pre_header_block(f, header);
+    int phIdx = loop_create_pre_header_block(f, header);
 
-    reroute_non_body_predecessors(f, header, phIdx, L);
+    loop_reroute_non_body_predecessors(f, header, phIdx, L);
 
     // header gains the pre-header as its new (only) non-back-edge predecessor
     f->blocks[header].predCount++;

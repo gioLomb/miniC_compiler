@@ -8,7 +8,7 @@
  *   track_read/track_write         — apply one register access to the tracker,
  *                                    emitting RAW/WAR/WAW edges as needed.
  *   dag_add_edge                   — dedup'd, arena-allocated edge insertion.
- *   build_dag                     — four-pass driver (see header).
+ *   dag_build                     — four-pass driver (see header).
  */
 
 #include <string.h>
@@ -31,7 +31,7 @@ typedef struct {
 /**
  * @brief Initialise a RenameTracker for a block of @p n instructions.
  */
-static RenameTracker rename_tracker_create(int vregCount, int physCount, int n, Arena *arena) {
+static RenameTracker tracker_create(int vregCount, int physCount, int n, Arena *arena) {
     int universe = vregCount + physCount;
     int cap = universe + n; // worst case: one extra rename generation per instruction
 
@@ -237,11 +237,11 @@ static void dag_propagate_heights(DAGNode *nodes, int n) {
 }
 
 
-void build_dag(const MachFunction *f, BlockRange blk, DAGNode *nodes,
+void dag_build(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena) {
     int n = blk.end - blk.start;
 
-    RenameTracker rt = rename_tracker_create(f->nextVreg, PHYS_ALLOCATABLE, n, arena);
+    RenameTracker rt = tracker_create(f->nextVreg, PHYS_ALLOCATABLE, n, arena);
 
     dag_init_nodes(f, blk, nodes, n, arena);
     dag_pin_fusion_pairs(f, blk, nodes, n);

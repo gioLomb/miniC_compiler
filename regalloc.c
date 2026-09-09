@@ -16,7 +16,7 @@
  * ### Algorithm per function (regalloc_function)
  * ```
  *   loop:
- *     1. build_cfg        — derive basic-block ranges + CFG edges from MACH_LABEL/Jcc/RET
+ *     1. regalloc_build_cfg        — derive basic-block ranges + CFG edges from MACH_LABEL/Jcc/RET
  *     2. liveness_computeMach — backward dataflow: liveAfter[i] for each instruction
  *     3. ig_build         — interference graph (bit matrix + adjacency lists)
  *     4. ra_collect_partners — collect non-interfering MOV pairs for biased coloring
@@ -26,9 +26,9 @@
  *                           as optimistic-spill candidates — see interference.h)
  *     6. ra_select_colors — pop stack, assign colors; prefer partner hint, then
  *                           callee-saved if live across CALL, else lowest available
- *     7. if nSpilled == 0 → finalize() and break
+ *     7. if nSpilled == 0 → regalloc_finalize() and break
  *        else             → ra_spill_insert(), free temporaries, continue
- *   save_restore_callee   — insert push/pop in prologue/epilogue for used callee-saved regs
+ *   regalloc_save_restore_callee   — insert push/pop in prologue/epilogue for used callee-saved regs
  * ```
  */
 
@@ -94,7 +94,7 @@
  * array offset by the minimum label id gives O(1) lookup after a single
  * O(nBlocks) build pass — replacing the previous find_label_block() linear
  * scan called once per JMP/Jcc (O(nBlocks) per call, O(nBlocks^2) overall
- * per wire_block_successors() invocation, repeated every regalloc round).
+ * per regalloc_wire_block_successors() invocation, repeated every regalloc round).
  *
  * @param f        Machine function whose label-starting blocks are indexed
  *                 (a block's label, if any, always sits at range.start).
@@ -107,7 +107,7 @@
  * @return         Arena-allocated array; slot [labelId - *outMinId] holds
  *                 the owning block index, or LABEL_MAP_NONE if unmapped.
  */
-static int *build_label_to_block(const MachFunction *f, const BasicBlock *blocks, int count,
+static int *regalloc_build_label_to_block(const MachFunction *f, const BasicBlock *blocks, int count,
                                   Arena *arena, int *outMinId, int *outSize)
 {
     int minId = INT_MAX, maxId = INT_MIN;
@@ -157,7 +157,7 @@ static inline int lookup_label_block(const int *map, int minId, int size, int la
 /**
  * Connects control flow graph edges based on block boundary instructions.
  */
-static void wire_block_successors(BasicBlock *blocks, int count, const MachFunction *f,
+static void regalloc_wire_block_successors(BasicBlock *blocks, int count, const MachFunction *f,
                                  const int *labelMap, int minId, int mapSize){
     for (int b = 0; b < count; b++) {
         int last = blocks[b].range.end - 1;
@@ -184,7 +184,7 @@ static void wire_block_successors(BasicBlock *blocks, int count, const MachFunct
 /**
  * @brief Build the machine-code CFG for @p f.
  */
-static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
+static BasicBlock *regalloc_build_cfg(const MachFunction *f, Arena *arena, int *outCount)
 {
     int cap = INITIAL_BLOCK_CAPACITY;
     int count = 0;
@@ -213,9 +213,9 @@ static BasicBlock *build_cfg(const MachFunction *f, Arena *arena, int *outCount)
 
     // Build label lookup table and wire CFG edges (Refactoring: Extract Function)
     int minId, mapSize;
-    int *labelMap = build_label_to_block(f, blocks, count, arena, &minId, &mapSize);
+    int *labelMap = regalloc_build_label_to_block(f, blocks, count, arena, &minId, &mapSize);
 
-    wire_block_successors(blocks, count, f, labelMap, minId, mapSize);
+    regalloc_wire_block_successors(blocks, count, f, labelMap, minId, mapSize);
 
     *outCount = count;
     return blocks;
@@ -247,7 +247,7 @@ static inline int is_identity_mov(const MachInstr *in)
             in->dst.physReg == in->src1.physReg);
 }
 
-static void finalize(MachFunction *f, const int *color)
+static void regalloc_finalize(MachFunction *f, const int *color)
 {
     const int count = f->count;
     MachInstr *instrs = f->instrs;
@@ -354,7 +354,7 @@ static int emit_pops(MachInstr *dst, int at, const int *used, int usedCount) {
     return at;
 }
 
-static void save_restore_callee(MachFunction *f)
+static void regalloc_save_restore_callee(MachFunction *f)
 {
     int retCount = 0;
     uint32_t usedMask = collect_used_callee_saved(f, &retCount);
@@ -395,7 +395,7 @@ static void save_restore_callee(MachFunction *f)
 /**
  * @brief Run a single build->liveness->interference->color round.
  *
- * On success (no spills), applies the coloring via finalize() and returns 1.
+ * On success (no spills), applies the coloring via regalloc_finalize() and returns 1.
  * On failure, inserts spill/reload code via ra_spill_insert() (which the
  * caller must re-analyse in a subsequent round) and returns 0.
  *
@@ -412,7 +412,7 @@ static int regalloc_try_round(MachFunction *f, int firstSpillVreg, int *frameOff
 
     Arena *livArena = arena_create(0);
     int nBlocks;
-    BasicBlock *blocks = build_cfg(f, livArena, &nBlocks);
+    BasicBlock *blocks = regalloc_build_cfg(f, livArena, &nBlocks);
 
     // Backward liveness analysis
     LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, livArena);
@@ -434,7 +434,7 @@ static int regalloc_try_round(MachFunction *f, int firstSpillVreg, int *frameOff
     // coloring succeeded, or spilling required
     int done = (nSpilled == 0);
     if (done) {
-        finalize(f, g.color);
+        regalloc_finalize(f, g.color);
     } else {
         // Spill handling — insert load/store instructions for next round
         ra_spill_insert(f, spilled, nSpilled, frameOff);
@@ -459,7 +459,7 @@ static void regalloc_function(MachFunction *f)
     while (!regalloc_try_round(f, firstSpillVreg, &frameOff));
 
     // Save/restore callee-saved registers in prologue/epilogue
-    save_restore_callee(f);
+    regalloc_save_restore_callee(f);
 
     // Align frame size to 16-byte boundary (Refactoring: Replace Magic Literal / Explaining Variable)
     f->frameSize = (frameOff + (STACK_ALIGNMENT_BYTES - 1)) & ~(STACK_ALIGNMENT_BYTES - 1);

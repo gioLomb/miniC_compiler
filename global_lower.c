@@ -39,7 +39,7 @@ typedef struct {
  * @param f Function to inspect.
  * @return  Non-zero if at least one instruction has an OPND_GLOBAL operand.
  */
-static int function_touches_globals(const IRFunction *f) {
+static int gl_function_touches_globals(const IRFunction *f) {
     for (int i = 0; i < f->count; i++) {
         const IRInstr *in = &f->instrs[i];
         if (in->dst.kind  == OPND_GLOBAL ||
@@ -211,7 +211,7 @@ static Operand gl_lower_dst_operand(Operand dst, int isArrBase,
  * @param newTotal Total instruction count after rebuilding (used as the
  *                 "past the end" sentinel for empty blocks).
  */
-static void remap_block_ranges(IRFunction *f, const int *newStart,
+static void gl_remap_block_ranges(IRFunction *f, const int *newStart,
                                 const int *newEnd, int newTotal) {
     for (int b = 0; b < f->blockCount; b++) {
         int oldS = f->blocks[b].bb.range.start;
@@ -230,7 +230,7 @@ static void remap_block_ranges(IRFunction *f, const int *newStart,
 
 void gl_lower_globals(IRFunction *f, Arena *arena) {
     // nothing to do: empty function, or no OPND_GLOBAL operand anywhere
-    if (f->count == 0 || !function_touches_globals(f)) return;
+    if (f->count == 0 || !gl_function_touches_globals(f)) return;
 
     int oldCount = f->count;
 
@@ -278,5 +278,5 @@ void gl_lower_globals(IRFunction *f, Arena *arena) {
     f->capacity = e.cap;
     f->ver++;  
 
-    remap_block_ranges(f, newStart, newEnd, e.count);
+    gl_remap_block_ranges(f, newStart, newEnd, e.count);
 }
