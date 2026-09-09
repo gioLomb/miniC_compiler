@@ -47,7 +47,7 @@ typedef struct {
  * CMP + SETcc + MOVSX. But if the very next IR instruction is an
  * IR_IF_FALSE testing that same result, the value never needs to exist as
  * a byte in memory/register at all — a single CMP + Jcc suffices. Deferring
- * the emission lets is_select_function() choose the cheaper path once it sees
+ * the emission lets isel_select_function() choose the cheaper path once it sees
  * how the comparison result is used.
  */
 typedef struct {
@@ -243,7 +243,7 @@ static void flush_pending_cmp(PendingCmp *pcmp, VarMap *operandToVreg, MachFunct
  *        unused formal parameters) with a stable vreg id, then sync
  *        f->nextVreg so isel-internal temporaries never collide with them.
  */
-static void is_select_prescan(const IRFunction *irf, VarMap *operandToVreg,
+static void isel_select_prescan(const IRFunction *irf, VarMap *operandToVreg,
                                            MachFunction *f) {
     // walk every instruction once just to register every distinct
     // variable/temp with a stable vreg id BEFORE any code is emitted
@@ -264,13 +264,13 @@ static void is_select_prescan(const IRFunction *irf, VarMap *operandToVreg,
 }
 
 /**
- * @brief Phase 3-bis of is_select_function: bind formal parameters to their
+ * @brief Phase 3-bis of isel_select_function: bind formal parameters to their
  *        ABI registers (System V: rdi,rsi,rdx,rcx,r8,r9).
  *
  * Parameters beyond the 6th (passed on the caller's stack) are not yet
  * supported — flagged with a diagnostic rather than silently miscompiled.
  */
-static void is_select_bind_params(const IRFunction *irf, VarMap *operandToVreg, MachFunction *f) {
+static void isel_select_bind_params(const IRFunction *irf, VarMap *operandToVreg, MachFunction *f) {
     for (int p = 0; p < irf->paramCount; p++) {
         int vreg = varmap_operand_id(operandToVreg, irf->params[p]);
         if (p < NUM_ARG_REGS) {
@@ -284,11 +284,11 @@ static void is_select_bind_params(const IRFunction *irf, VarMap *operandToVreg, 
 }
 
 
-static void is_select_label(MachFunction *f, const IRInstr *in) {
+static void isel_select_label(MachFunction *f, const IRInstr *in) {
     mfunc_emit(f, MACH_LABEL, (MachOperand){ .kind = MO_LABEL, .labelId = in->dst.data.labelId }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void is_select_goto(MachFunction *f, const IRInstr *in) {
+static void isel_select_goto(MachFunction *f, const IRInstr *in) {
     mfunc_emit(f, MACH_JMP, (MachOperand){ .kind = MO_LABEL, .labelId = in->dst.data.labelId }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
 
@@ -297,7 +297,7 @@ static void is_select_goto(MachFunction *f, const IRInstr *in) {
  *        CMP + Jcc when possible (see PendingCmp doc), otherwise TEST+JE
  *        on an ordinary 0/1-valued vreg.
  */
-static void is_select_if_false(VarMap *operandToVreg, MachFunction *f, PendingCmp *pcmp,
+static void isel_select_if_false(VarMap *operandToVreg, MachFunction *f, PendingCmp *pcmp,
                              const IRInstr *in) {
     int cond_vreg = varmap_operand_id(operandToVreg, in->src1);
     int lbl       = in->dst.data.labelId;
@@ -339,14 +339,14 @@ static void is_select_if_false(VarMap *operandToVreg, MachFunction *f, PendingCm
     }
 }
 
-static void is_select_assign(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_assign(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int         dst = varmap_operand_id(operandToVreg, in->dst);
     MachOperand src = operand_to_mach(&in->src1, operandToVreg);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, src, (MachOperand){ .kind = MO_NONE });
 }
 
 /** @brief Lowering already done in IR: only emits the LEA here. */
-static void is_select_global_addr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
+static void isel_select_global_addr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                                 const IRGlobalVar *globals, int globalCount) {
     int dst = varmap_operand_id(operandToVreg, in->dst);
     int idx = find_global_idx(in->src1.data.globalOffset, globals, globalCount);
@@ -355,7 +355,7 @@ static void is_select_global_addr(VarMap *operandToVreg, MachFunction *f, const 
 }
 
 /** @brief IR_ADD/IR_SUB, reusing dst as an operand in place where possible. */
-static void is_select_add_sub(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_add_sub(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int         dst = varmap_operand_id(operandToVreg, in->dst);
     MachOperand lhs = operand_to_mach(&in->src1, operandToVreg);
     MachOperand rhs = operand_to_mach(&in->src2, operandToVreg);
@@ -381,7 +381,7 @@ static void is_select_add_sub(VarMap *operandToVreg, MachFunction *f, const IRIn
 }
 
 /** @brief IR_MUL, with power-of-2 immediates strength-reduced to a shift. */
-static void is_select_mul(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_mul(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int         dst  = varmap_operand_id(operandToVreg, in->dst);
     MachOperand src1 = operand_to_mach(&in->src1, operandToVreg);
     MachOperand src2 = operand_to_mach(&in->src2, operandToVreg);
@@ -416,7 +416,7 @@ static void is_select_mul(VarMap *operandToVreg, MachFunction *f, const IRInstr 
 }
 
 /** @brief IR_DIV/IR_MOD via RDX:RAX IDIV; both operands forced into registers. */
-static void is_select_div_mod(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_div_mod(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int dst = varmap_operand_id(operandToVreg, in->dst);
     int lhs = load_operand(&in->src1, operandToVreg, f);
     int rhs = load_operand(&in->src2, operandToVreg, f);
@@ -428,7 +428,7 @@ static void is_select_div_mod(VarMap *operandToVreg, MachFunction *f, const IRIn
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = res }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void is_select_neg(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_neg(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int dst = varmap_operand_id(operandToVreg, in->dst);
     MachOperand src = operand_to_mach(&in->src1, operandToVreg);
     // MACH_NEG is in-place; only copy src into dst first if not already there
@@ -437,7 +437,7 @@ static void is_select_neg(VarMap *operandToVreg, MachFunction *f, const IRInstr 
     mfunc_emit(f, MACH_NEG, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void is_select_not(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_not(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     // MOVSX widens the byte result
     int dst = varmap_operand_id(operandToVreg, in->dst);
     int sv  = load_operand(&in->src1, operandToVreg, f);
@@ -447,14 +447,14 @@ static void is_select_not(VarMap *operandToVreg, MachFunction *f, const IRInstr 
 }
 
 /** @brief Defer comparisons (IR_LT..IR_NE) for possible CMP+Jcc fusion. */
-static void is_select_defer_comparison(VarMap *operandToVreg, PendingCmp *pcmp, const IRInstr *in) {
+static void isel_select_defer_comparison(VarMap *operandToVreg, PendingCmp *pcmp, const IRInstr *in) {
     int dst = varmap_operand_id(operandToVreg, in->dst);
     pcmp->active  = 1;
     pcmp->instr   = in;
     pcmp->dstVreg = dst;
 }
 
-static void is_select_load_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_load_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int dst  = varmap_operand_id(operandToVreg, in->dst);
     int base = varmap_operand_id(operandToVreg, in->src1);
     if (in->src2.kind == OPND_CONST_INT) {
@@ -468,7 +468,7 @@ static void is_select_load_arr(VarMap *operandToVreg, MachFunction *f, const IRI
     }
 }
 
-static void is_select_store_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_store_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int base = varmap_operand_id(operandToVreg, in->dst);
     if (in->src1.kind == OPND_CONST_INT) {
         int disp = in->src1.data.intVal * 8;
@@ -482,7 +482,7 @@ static void is_select_store_arr(VarMap *operandToVreg, MachFunction *f, const IR
 }
 
 /** @brief Stage one call argument; actual placement happens at IR_CALL. */
-static void is_select_param(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
+static void isel_select_param(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                           PendingArgs *args) {
     MachOperand sv = operand_to_mach(&in->src1, operandToVreg);
     int sv_vreg;
@@ -497,7 +497,7 @@ static void is_select_param(VarMap *operandToVreg, MachFunction *f, const IRInst
 }
 
 /** @brief Emit the full call sequence (stack args, register args, CALL, cleanup). */
-static void is_select_call(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
+static void isel_select_call(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                          PendingArgs *args) {
     int n = args->count;
     // overflow args (beyond the 6 ABI registers) pushed in REVERSE order
@@ -521,14 +521,14 @@ static void is_select_call(VarMap *operandToVreg, MachFunction *f, const IRInstr
     args->count = 0; // reset staging buffer for the next call site
 }
 
-static void is_select_return(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_return(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
     int sv = load_operand(&in->src1, operandToVreg, f);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_VREG, .vregId = sv }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_RET, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
 
 
-static MachFunction *is_select_function(const IRFunction *irf,
+static MachFunction *isel_select_function(const IRFunction *irf,
                                       const IRGlobalVar *globals,
                                       int globalCount) {
     MachFunction *f = mfunc_create(irf->name);
@@ -536,10 +536,10 @@ static MachFunction *is_select_function(const IRFunction *irf,
                             selected function's last instruction */
 
     VarMap operandToVreg = varmap_init();
-    is_select_prescan(irf, &operandToVreg, f);
+    isel_select_prescan(irf, &operandToVreg, f);
 
     mfunc_emit(f, MACH_FUNC_BEGIN, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    is_select_bind_params(irf, &operandToVreg, f);
+    isel_select_bind_params(irf, &operandToVreg, f);
 
     PendingArgs args = { .count = 0 };
     PendingCmp  pcmp = { .active = 0 };
@@ -560,23 +560,23 @@ static MachFunction *is_select_function(const IRFunction *irf,
         }
 
         switch (in->op) {
-        case IR_LABEL:       is_select_label(f, in); break;
-        case IR_GOTO:        is_select_goto(f, in); break;
-        case IR_IF_FALSE:    is_select_if_false(&operandToVreg, f, &pcmp, in); break;
-        case IR_ASSIGN:      is_select_assign(&operandToVreg, f, in); break;
-        case IR_GLOBAL_ADDR: is_select_global_addr(&operandToVreg, f, in, globals, globalCount); break;
-        case IR_ADD: case IR_SUB: is_select_add_sub(&operandToVreg, f, in); break;
-        case IR_MUL:          is_select_mul(&operandToVreg, f, in); break;
-        case IR_DIV: case IR_MOD: is_select_div_mod(&operandToVreg, f, in); break;
-        case IR_NEG:          is_select_neg(&operandToVreg, f, in); break;
-        case IR_NOT:           is_select_not(&operandToVreg, f, in); break;
+        case IR_LABEL:       isel_select_label(f, in); break;
+        case IR_GOTO:        isel_select_goto(f, in); break;
+        case IR_IF_FALSE:    isel_select_if_false(&operandToVreg, f, &pcmp, in); break;
+        case IR_ASSIGN:      isel_select_assign(&operandToVreg, f, in); break;
+        case IR_GLOBAL_ADDR: isel_select_global_addr(&operandToVreg, f, in, globals, globalCount); break;
+        case IR_ADD: case IR_SUB: isel_select_add_sub(&operandToVreg, f, in); break;
+        case IR_MUL:          isel_select_mul(&operandToVreg, f, in); break;
+        case IR_DIV: case IR_MOD: isel_select_div_mod(&operandToVreg, f, in); break;
+        case IR_NEG:          isel_select_neg(&operandToVreg, f, in); break;
+        case IR_NOT:           isel_select_not(&operandToVreg, f, in); break;
         case IR_LT: case IR_LE: case IR_GT: case IR_GE:
-        case IR_EQ: case IR_NE: is_select_defer_comparison(&operandToVreg, &pcmp, in); break;
-        case IR_LOAD_ARR:     is_select_load_arr(&operandToVreg, f, in); break;
-        case IR_STORE_ARR:    is_select_store_arr(&operandToVreg, f, in); break;
-        case IR_PARAM:        is_select_param(&operandToVreg, f, in, &args); break;
-        case IR_CALL:         is_select_call(&operandToVreg, f, in, &args); break;
-        case IR_RETURN:       is_select_return(&operandToVreg, f, in); break;
+        case IR_EQ: case IR_NE: isel_select_defer_comparison(&operandToVreg, &pcmp, in); break;
+        case IR_LOAD_ARR:     isel_select_load_arr(&operandToVreg, f, in); break;
+        case IR_STORE_ARR:    isel_select_store_arr(&operandToVreg, f, in); break;
+        case IR_PARAM:        isel_select_param(&operandToVreg, f, in, &args); break;
+        case IR_CALL:         isel_select_call(&operandToVreg, f, in, &args); break;
+        case IR_RETURN:       isel_select_return(&operandToVreg, f, in); break;
         }
     }
 
@@ -594,15 +594,15 @@ static MachFunction *is_select_function(const IRFunction *irf,
 
 
 /* =========================================================================
- * Public API — is_isel_select
+ * Public API — isel_select
  * ========================================================================= */
 
-MachProgram *is_isel_select(const IRProgram *ir) {
+MachProgram *isel_select(const IRProgram *ir) {
     MachProgram *mp = calloc(1, sizeof(MachProgram));
     mp->capacity    = ir->count ? ir->count : 1;
     mp->functions   = malloc((size_t)mp->capacity * sizeof(MachFunction *));
     for (int i = 0; i < ir->count; i++)
-        mp->functions[mp->count++] = is_select_function(ir->functions[i],
+        mp->functions[mp->count++] = isel_select_function(ir->functions[i],
                                                        ir->globals,
                                                        ir->globalCount);
     return mp;
@@ -612,7 +612,7 @@ MachProgram *is_isel_select(const IRProgram *ir) {
  * Assembly printer
  * ========================================================================= */
 
-static void is_emit_operand(const MachOperand *o, FILE *out) {
+static void isel_emit_operand(const MachOperand *o, FILE *out) {
     switch (o->kind) {
     case MO_NONE:   break;
     case MO_VREG:   fprintf(out, "%%v%d",      o->vregId);               break;
@@ -642,7 +642,7 @@ static void is_emit_operand(const MachOperand *o, FILE *out) {
 
 
 /** @brief Emit .bss entries for every zero-initialised global (initCount == 0). */
-static void is_emit_bss_section(FILE *out, const IRProgram *ir) {
+static void isel_emit_bss_section(FILE *out, const IRProgram *ir) {
     int section_emitted = 0;
 
     for (int i = 0; i < ir->globalCount; i++) {
@@ -662,7 +662,7 @@ static void is_emit_bss_section(FILE *out, const IRProgram *ir) {
 } 
 
 /** @brief Emit .data entries for every explicitly-initialised global. */
-static void is_emit_data_section(FILE *out, const IRProgram *ir) {
+static void isel_emit_data_section(FILE *out, const IRProgram *ir) {
     int section_emitted = 0;
 
     for (int i = 0; i < ir->globalCount; i++) {
@@ -685,10 +685,10 @@ static void is_emit_data_section(FILE *out, const IRProgram *ir) {
     }
 }
 
-static void is_emit_globals(FILE *out, const IRProgram *ir) {
+static void isel_emit_globals(FILE *out, const IRProgram *ir) {
     if (!ir || ir->globalCount == 0) return;
-    is_emit_bss_section(out, ir);
-    is_emit_data_section(out, ir);
+    isel_emit_bss_section(out, ir);
+    isel_emit_data_section(out, ir);
 }
 
 
@@ -701,9 +701,9 @@ static void is_emit_globals(FILE *out, const IRProgram *ir) {
  * @param frameSize  Enclosing function's frame size, needed only for the
  *                    MACH_FUNC_BEGIN prologue's `subq`.
  * @return 1 if @p in was fully printed (caller moves to the next
- *         instruction), 0 if it must go through is_emit_generic_instr().
+ *         instruction), 0 if it must go through isel_emit_generic_instr().
  */
-static int is_emit_fixed_encoding_instr(const MachInstr *in, int frameSize, FILE *out) {
+static int isel_emit_fixed_encoding_instr(const MachInstr *in, int frameSize, FILE *out) {
     switch (in->op) {
     case MACH_LABEL:
         fprintf(out, ".L%d:\n", in->dst.labelId); return 1;
@@ -721,28 +721,28 @@ static int is_emit_fixed_encoding_instr(const MachInstr *in, int frameSize, FILE
     case MACH_CQO:
         fprintf(out, "\tcqo\n"); return 1;
     case MACH_IDIV:
-        fprintf(out, "\tidivq\t"); is_emit_operand(&in->dst, out);
+        fprintf(out, "\tidivq\t"); isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     case MACH_NEG:
-        fprintf(out, "\tnegq\t"); is_emit_operand(&in->dst, out);
+        fprintf(out, "\tnegq\t"); isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     case MACH_NOT:
-        fprintf(out, "\tnotq\t"); is_emit_operand(&in->dst, out);
+        fprintf(out, "\tnotq\t"); isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     case MACH_PUSH:
-        fprintf(out, "\tpushq\t"); is_emit_operand(&in->dst, out);
+        fprintf(out, "\tpushq\t"); isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     case MACH_POP:
-        fprintf(out, "\tpopq\t"); is_emit_operand(&in->dst, out);
+        fprintf(out, "\tpopq\t"); isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     case MACH_CALL:
-        fprintf(out, "\tcall\t"); is_emit_operand(&in->dst, out);
+        fprintf(out, "\tcall\t"); isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     case MACH_LEA:
         fprintf(out, "\tleaq\t");
-        is_emit_operand(&in->src1, out);
+        isel_emit_operand(&in->src1, out);
         fprintf(out, ", ");
-        is_emit_operand(&in->dst, out);
+        isel_emit_operand(&in->dst, out);
         fprintf(out, "\n"); return 1;
     // SETcc variants: fixed destination (%al), no operand printing needed
     case MACH_SETE:  fprintf(out, "\tsete\t%%al\n");  return 1;
@@ -766,10 +766,10 @@ static int is_emit_fixed_encoding_instr(const MachInstr *in, int frameSize, FILE
 /**
  * @brief Print @p in via the generic "mnemonic src, dst" AT&T pattern.
  *
- * Only reached for opcodes is_emit_fixed_encoding_instr() didn't claim
+ * Only reached for opcodes isel_emit_fixed_encoding_instr() didn't claim
  * (MOV/MOVSX/ADD/SUB/IMUL/SAL/XOR/CMP/TEST/LOAD/STORE, or "???" defensively).
  */
-static void is_emit_generic_instr(const MachInstr *in, FILE *out) {
+static void isel_emit_generic_instr(const MachInstr *in, FILE *out) {
     const char *mnem = NULL;
     switch (in->op) {
     case MACH_MOV:   mnem = "movq";   break;
@@ -791,52 +791,52 @@ static void is_emit_generic_instr(const MachInstr *in, FILE *out) {
     // AT&T operand order is "src, dst". LOAD/STORE address the memory
     // operand via src1/dst depending on direction; other binary ops use
     // src1 as the explicit source (dst is implicitly both input/output,
-    // as arranged by the in-place-reuse logic in is_select_function).
+    // as arranged by the in-place-reuse logic in isel_select_function).
     if (in->op == MACH_LOAD || in->op == MACH_STORE) {
-        is_emit_operand(&in->src1, out);
+        isel_emit_operand(&in->src1, out);
         fprintf(out, ", ");
-        is_emit_operand(&in->dst, out);
+        isel_emit_operand(&in->dst, out);
     } else if (in->src2.kind != MO_NONE ) {
         // shouldn't normally happen post-selection, kept defensively
-        is_emit_operand(&in->src1, out);
+        isel_emit_operand(&in->src1, out);
         fprintf(out, ", ");
-        is_emit_operand(&in->dst, out);
+        isel_emit_operand(&in->dst, out);
     } else if (in->src1.kind != MO_NONE ) {
-        is_emit_operand(&in->src1, out);
+        isel_emit_operand(&in->src1, out);
         if (in->dst.kind != MO_NONE) {
             fprintf(out, ", ");
-            is_emit_operand(&in->dst, out);
+            isel_emit_operand(&in->dst, out);
         }
     } else {
         // single-operand instruction with only dst set
-        is_emit_operand(&in->dst, out);
+        isel_emit_operand(&in->dst, out);
     }
     fprintf(out, "\n");
 }
 
 /** @brief Print every instruction of one function body, in order. */
-static void is_emit_function_body(const MachFunction *f, FILE *out) {
+static void isel_emit_function_body(const MachFunction *f, FILE *out) {
     const int count = f->count;
     const MachInstr *instrs = f->instrs;
     const int frameSize = f->frameSize;
 
     for (int i = 0; i < count; i++) {
         const MachInstr *in = &instrs[i];
-        if (!is_emit_fixed_encoding_instr(in, frameSize, out)) {
-            is_emit_generic_instr(in, out);
+        if (!isel_emit_fixed_encoding_instr(in, frameSize, out)) {
+            isel_emit_generic_instr(in, out);
         }
     }
 }
 
 
-void is_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out) {
-    is_emit_globals(out, ir);
+void isel_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out) {
+    isel_emit_globals(out, ir);
 
     fprintf(out, "\t.text\n");
     for (int fi = 0; fi < mp->count; fi++) {
         const MachFunction *f = mp->functions[fi];
         fprintf(out, "\t.globl %s\n%s:\n", f->name, f->name);
-        is_emit_function_body(f, out);
+        isel_emit_function_body(f, out);
         fprintf(out, "\n");
     }
 }

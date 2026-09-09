@@ -176,59 +176,7 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
     return liveAfter;
 }
 
-
-/** Context passed from liveness_computeIr to ir_extract. */
-// typedef struct {
-//     IRFunction *f;
-//     VarMap     *varMap;
-// } IRLivenessCtx;
-
-/**
- * @brief Extract use and def ids from IR instruction at @p instrIdx.
- *
- * Dispatch rules:
- *   - src1, src2 are always uses if they are storage operands.
- *   - dst of IR_STORE_ARR is a use (the array base address is *read* to
- *     compute the effective address, not written); this case requires special
- *     handling because ir_defines_dst() returns false for IR_STORE_ARR.
- *   - dst of any instruction where ir_defines_dst() is true is a def.
- *
- * Non-storage operands (constants, labels, function names) are silently
- * ignored — they have no VarMap id and cannot be live.
- */
-// static void ir_extract(void *ctxP, int instrIdx,
-//                        int uses[LIVENESS_MAX_IDS], int *nUses,
-//                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
-//     IRLivenessCtx *ctx = ctxP;
-//     IRInstr *in = &ctx->f->instrs[instrIdx];
-//     *nUses = 0; *nDefs = 0;
-
-//     // src1 and src2 are always source operands — add them as uses.
-//     if (ir_operand_is_storage(in->src1.kind)) {
-//         int id = varmap_operand_id(ctx->varMap, in->src1);
-//         if (id >= 0) uses[(*nUses)++] = id;
-//     }
-//     if (ir_operand_is_storage(in->src2.kind)) {
-//         int id = varmap_operand_id(ctx->varMap, in->src2);
-//         if (id >= 0) uses[(*nUses)++] = id;
-//     }
-
-//     // case IR_STORE_ARR  dst[src1] = src2
-
-//     if (!ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
-//         int id = varmap_operand_id(ctx->varMap, in->dst);
-//         if (id >= 0) uses[(*nUses)++] = id;
-//     }
-
-//     // For all opcodes that write a result into dst, dst is a def.
-//     if (ir_defines_dst(in->op) && ir_operand_is_storage(in->dst.kind)) {
-//         int id = varmap_operand_id(ctx->varMap, in->dst);
-//         if (id >= 0) defs[(*nDefs)++] = id;
-//     }
-// }
-
-
-static void ir_populate_varmap(IRFunction *f, VarMap *varMap) {
+static void populate_varmap(IRFunction *f, VarMap *varMap) {
     for (int i = 0; i < f->count; i++) {
         IRInstr *in = &f->instrs[i];
         varmap_operand_id(varMap, in->dst);
@@ -238,20 +186,20 @@ static void ir_populate_varmap(IRFunction *f, VarMap *varMap) {
 }
 
 
-static BasicBlock *ir_convert_blocks(IRFunction *f, Arena *arena) {
+static BasicBlock *convert_blocks(IRFunction *f, Arena *arena) {
     BasicBlock *lb = arena_alloc(arena, (size_t)f->blockCount * sizeof(BasicBlock));
     for (int b = 0; b < f->blockCount; b++)
         lb[b] = f->blocks[b].bb;
     return lb;
 }
 
-/** Context passed from liveness_computeIr to ir_extract. */
+/** Context passed from liveness_computeIr to extract_ir. */
 typedef struct {
     IRFunction *f;
     VarMap     *vm;
 } IRLivenessCtx;
 
-static void ir_extract(void *ctxP, int instrIdx,
+static void extract_ir(void *ctxP, int instrIdx,
                        int uses[LIVENESS_MAX_IDS], int *nUses,
                        int defs[LIVENESS_MAX_IDS], int *nDefs) {
     IRLivenessCtx *ctx = ctxP;
@@ -271,7 +219,6 @@ static void ir_extract(void *ctxP, int instrIdx,
     if (!ir_defines_dst(in->op) && d >= 0) uses[(*nUses)++] = d;
     if (ir_defines_dst(in->op)  && d >= 0) defs[(*nDefs)++] = d;
 }
-/* ir_populate_varmap() rimossa: sostituita da varmap_sync_cache(). */
 
 LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
                                     VarMap *sharedVarMap, Arena *arena) {
@@ -283,14 +230,14 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
 
     // Prescan: register every operand of f (get-or-create) so numVars
     // below is final before the bitsets are sized.
-    ir_populate_varmap(f, vm);
+    populate_varmap(f, vm);
 
     int numVars = vm->nextId;
-    BasicBlock *lb = ir_convert_blocks(f, arena);
+    BasicBlock *lb = convert_blocks(f, arena);
 
     IRLivenessCtx ctx = { f, vm };
     r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
-                                         ir_extract, &ctx, arena);
+                                         extract_ir, &ctx, arena);
     r.liveAfter = NULL;
     r.varMap    = *vm;
     return r;
@@ -299,7 +246,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
  * Machine-code front-end
 */
 
-/** Context passed from liveness_computeMach to mach_extract. */
+/** Context passed from liveness_computeMach to extract_mach. */
 typedef struct {
     const MachFunction *f;
     int   nextVreg; // base offset: phys reg P → id nextVreg + P
@@ -316,7 +263,7 @@ typedef struct {
  *   - IDIV: reads RAX and RDX (dividend), writes RAX (quotient) and RDX (remainder).
  *   - CQO:  reads RAX, writes RDX (sign extension).
  */
-static void mach_extract(void *ctxP, int instrIdx,
+static void extract_mach(void *ctxP, int instrIdx,
                          int uses[LIVENESS_MAX_IDS], int *nUses,
                          int defs[LIVENESS_MAX_IDS], int *nDefs) {
     MachLivenessCtx *ctx = ctxP;
@@ -350,13 +297,13 @@ LivenessResult liveness_computeMach(const MachFunction *f,
 
     // Run the backward dataflow engine
     r.blockSets = liveness_computeCore(nBlocks, blocks, numVars, NULL,
-                                         mach_extract, &ctx, arena);
+                                         extract_mach, &ctx, arena);
 
     // Compute per-instruction liveAfter[] needed by ig_build().
     // This is a single additional backward sweep seeded with the fixed-point
     // LiveOut[] from the engine above.
     r.liveAfter = liveness_computePerInstr(nBlocks, blocks, f->count, numVars,
                                               r.blockSets.LiveOut,
-                                              mach_extract, &ctx, arena);
+                                              extract_mach, &ctx, arena);
     return r;
 }

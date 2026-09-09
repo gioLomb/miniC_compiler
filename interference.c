@@ -11,21 +11,18 @@
  * After the swap, i > j is guaranteed (diagonal excluded since self-loops are
  * meaningless).  Row i starts at i*(i-1)/2 and column j is j steps into it.
  */
-static inline long tri_idx(int i, int j) {
+static inline long ig_tri_idx(int i, int j) {
+    if(i<0 || j<0 || i==j) return 0;
     // enforce canonical ordering: larger id becomes the row index
     if (i < j) { int t = i; i = j; j = t; }
     // standard lower-triangular formula: Σ_{k=0}^{i-1} k  = i*(i-1)/2
     return (long)i * (i - 1) / 2 + j;
 }
 
-/**
- * @brief Test whether edge (i, j) exists in the interference graph.
- *
- * Converts the pair to a flat index, selects the correct uint64_t word
- * (idx >> 6 = idx / 64) and extracts the appropriate bit (idx & 63).
- */
-static inline int ig_has_edge(const IGraph *g, int i, int j) {
-    long idx = tri_idx(i, j);
+
+int ig_has_edge(const IGraph *g, int i, int j) {
+    if (i < 0 || j < 0 || i == j) return 0;
+    long idx = ig_tri_idx(i, j);
     // word index: which uint64_t holds this bit
     // bit offset: position within that word (0..63)
     return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
@@ -46,7 +43,7 @@ static void ig_add_edge(IGraph *g, int i, int j) {
     if (ig_has_edge(g, i, j)) return;
 
     // set the bit in the triangular matrix
-    long idx = tri_idx(i, j);
+    long idx = ig_tri_idx(i, j);
     g->matrix[idx >> 6] |= 1ULL << (idx & 63);
 
     // update both adjacency lists (undirected edge: each node lists the other)

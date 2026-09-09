@@ -1,15 +1,26 @@
 /**
  * @file test_regalloc_utils.c
- * @brief Unit test per regalloc_utils.h/regalloc_utils.c.
+ * @brief Unit test per instr_query.h/.c (operand extraction, opcode
+ *        predicates) e per regalloc_spill_weight() (regalloc_utils.h/.c).
  *
  * Copre in particolare la regressione del Bug 1: instr_uses() deve contare
  * dst come use per gli opcode RMW (ADD/SUB/IMUL/SAL/NEG/NOT/XOR), non solo
  * per STORE/PUSH/IDIV/CQO.
+ *
+ * NOTA: le funzioni di query erano originariamente in regalloc_utils.h
+ * (regalloc_is_rmw/regalloc_is_setcc/regalloc_is_ctrl_transfer). Sono state
+ * spostate in instr_query.h e rinominate instr_is_rmw/instr_is_setcc/
+ * instr_is_ctrl_transfer per rimuovere una dipendenza a rovescio: lo
+ * scheduler (fase precedente al regalloc nella pipeline) usava funzioni
+ * definite in un modulo con nome/scopo "regalloc". regalloc_utils.h ora
+ * contiene solo regalloc_spill_weight(), genuinamente specifico
+ * dell'allocatore di registri.
  */
 
 #include <stdio.h>
 #include <assert.h>
 #include "../instr_selector.h"
+#include "../instr_query.h"
 #include "../regalloc_utils.h"
 
 /* Helper: costruisce un MachOperand MO_VREG. */
@@ -56,7 +67,7 @@ int main(void) {
             MachInstr in = { .op = rmwOps[i], .dst = vreg(7), .src1 = vreg(8), .src2 = mo_none() };
             instr_uses(&in, 100, buf, &n);
             assert(contains(buf, n, 7));
-            assert(regalloc_is_rmw(rmwOps[i]));
+            assert(instr_is_rmw(rmwOps[i]));
         }
         printf("PASS 1bis ok: tutta la famiglia RMW conta dst come use.\n");
     }
@@ -67,7 +78,7 @@ int main(void) {
         instr_uses(&mov, 100, buf, &n);
         assert(!contains(buf, n, 2) && "MOV non e' RMW: dst non deve essere un uso");
         assert(contains(buf, n, 3));
-        assert(!regalloc_is_rmw(MACH_MOV));
+        assert(!instr_is_rmw(MACH_MOV));
         printf("PASS 2 ok: MOV non tratta dst come use (nessun falso positivo).\n");
     }
 
@@ -133,19 +144,19 @@ int main(void) {
 
     /* ---- PASS 8: predicati ausiliari ---- */
     {
-        assert(regalloc_is_setcc(MACH_SETE));
-        assert(regalloc_is_setcc(MACH_SETGE));
-        assert(!regalloc_is_setcc(MACH_MOV));
+        assert(instr_is_setcc(MACH_SETE));
+        assert(instr_is_setcc(MACH_SETGE));
+        assert(!instr_is_setcc(MACH_MOV));
 
-        assert(regalloc_is_ctrl_transfer(MACH_JMP));
-        assert(regalloc_is_ctrl_transfer(MACH_CALL));
-        assert(regalloc_is_ctrl_transfer(MACH_RET));
-        assert(!regalloc_is_ctrl_transfer(MACH_ADD));
+        assert(instr_is_ctrl_transfer(MACH_JMP));
+        assert(instr_is_ctrl_transfer(MACH_CALL));
+        assert(instr_is_ctrl_transfer(MACH_RET));
+        assert(!instr_is_ctrl_transfer(MACH_ADD));
 
         assert(regalloc_spill_weight(0) == 1);
         assert(regalloc_spill_weight(2) == 100);
         assert(regalloc_spill_weight(99) == regalloc_spill_weight(5)); /* clamp */
-        printf("PASS 8 ok: predicati setcc/ctrl-transfer e spill weight corretti.\n");
+        printf("PASS 8 ok: predicati setcc/ctrl-transfer (instr_query) e spill weight (regalloc_utils) corretti.\n");
     }
 
     /* ---- PASS 9: PHYS_AL normalizzato a PHYS_RAX nelle letture esplicite ---- */
@@ -167,6 +178,6 @@ int main(void) {
         printf("PASS 10 ok: operando immediato non produce alcun id di registro.\n");
     }
 
-    printf("\nTutti i test regalloc_utils sono passati.\n");
+    printf("\nTutti i test instr_query/regalloc_utils sono passati.\n");
     return 0;
 }

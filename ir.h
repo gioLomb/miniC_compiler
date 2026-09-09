@@ -40,7 +40,7 @@ typedef enum {
     /**< dst = RIP-relative address of global identified by src1.data.globalOffset.
      *   Pure instruction (no side-effects, no memory write).
      *   src1 carries OPND_GLOBAL which is NOT a storage operand: liveness,
-     *   VarMap, DCE all ignore it as a source. Emitted by ir_lower_globals()
+     *   VarMap, DCE all ignore it as a source. Emitted by gl_lower_globals()
      *   before any optimisation pass. */
     IR_GLOBAL_ADDR,
     IR_LOAD_ARR,    /**< dst = src1[src2]  */
@@ -285,6 +285,17 @@ int ir_operand_is_storage(OperandKind kind);
  */
 int ir_is_commutative(IROp op);
 
+/**
+ * @brief Allocate and return a fresh, globally-unique temporary id.
+ *
+ * Draws from the same monotonic counter ir_generate() uses when emitting
+ * OPND_TEMP operands during initial code generation, so ids handed out
+ * here never collide with any temp already present in the program's IR —
+ * no need to rescan the instruction stream to find a safe starting point.
+ *
+ * @return A tempId not used anywhere else in the current ir_generate() run.
+ */
+int ir_alloc_temp_id();
 
 /**
  * @brief Build a CSR predecessor list for every block in @p f.

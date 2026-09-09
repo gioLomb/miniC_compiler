@@ -3,7 +3,7 @@
  * @brief Register allocation via graph coloring (Chaitin-Briggs, EaC §13.4).
  *
  * ### Preconditions
- * Input must be the output of is_isel_select() + sched_schedule(): a MachProgram
+ * Input must be the output of isel_select() + sched_schedule(): a MachProgram
  * where every value lives in a virtual register (MO_VREG) and the frame size
  * is not yet finalised.
  *

@@ -151,7 +151,7 @@ typedef struct {
  * Global variable information from @p ir is passed to is_select_function() so
  * it can emit RIP-relative LEA/LOAD/STORE sequences for global accesses.
  */
-MachProgram *is_isel_select(const IRProgram *ir);
+MachProgram *isel_select(const IRProgram *ir);
 
 /**
  * @brief Print AT&T x86-64 assembly for @p mp to @p out.
@@ -161,7 +161,7 @@ MachProgram *is_isel_select(const IRProgram *ir);
  *            May be NULL, in which case no data sections are emitted.
  * @param out Output stream.
  */
-void is_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out);
+void isel_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out);
 
 /**
  * @brief Free all memory owned by @p mp.

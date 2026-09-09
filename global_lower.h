@@ -40,6 +40,6 @@
  *               this call, caller retains ownership and is free to reset it
  *               afterwards.
  */
-void ir_lower_globals(IRFunction *f, Arena *arena);
+void gl_lower_globals(IRFunction *f, Arena *arena);
 
 #endif /* GLOBAL_LOWER_H */

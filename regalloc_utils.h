@@ -55,7 +55,7 @@
  * @param loopDepth  Static nesting depth of the instruction (from IRInstr.loopDepth).
  * @return           Spill weight (1, 10, 100, 1 000, 10 000, or 100 000).
  */
-int regalloc_spill_weight(int loopDepth);
+int regalloc_spill_weight(int loopDepth); //TODO: INTERFERENCE
 
 
 #endif /* REGALLOC_UTILS_H */

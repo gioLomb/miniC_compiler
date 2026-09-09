@@ -14,11 +14,7 @@
 #include <string.h>
 #include "sched_dag.h"
 #include "sched_utils.h"
-#include "regalloc_utils.h"   /* instr_implicit_uses/defs: ABI-implicit register
-                                * traffic (CALL args/return, IDIV/CQO RAX:RDX)
-                                * invisible to sched_uses()/sched_def(). Reused
-                                * from the register allocator instead of
-                                * duplicating the logic. */
+#include "regalloc_utils.h"   
 
 /* =========================================================================
  * RenameTracker
@@ -111,10 +107,6 @@ static void track_write(RenameTracker *rt, DAGNode *nodes, Arena *arena, int j, 
     rt->currentName[d]     = newGen;
     rt->lastWriter[newGen] = j;
 }
-
-/* =========================================================================
- * Helper orientati all'espressività e all'eliminazione delle duplicazioni
- * ========================================================================= */
 
 static inline void track_reg_list_reads(RenameTracker *rt, DAGNode *nodes, Arena *arena,
                                          int j, const int *regs, int count) {

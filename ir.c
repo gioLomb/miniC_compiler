@@ -3,9 +3,9 @@
  * @brief IR generation from the AST and IR-level optimisation pipeline.
  *
  * Key design points:
- *   - mk_var: scopeLevel==0 -> OPND_GLOBAL (expanded later by ir_lower_globals)
+ *   - mk_var: scopeLevel==0 -> OPND_GLOBAL (expanded later by gl_lower_globals)
  *   - ir_is_pure / ir_defines_dst: include IR_GLOBAL_ADDR
- *   - ir_build_function: calls ir_lower_globals() after ir_resolve_cfg()
+ *   - ir_build_function: calls gl_lower_globals() after ir_resolve_cfg()
  *     and before SVN/DCE/CP/LICM/SR
  *   - ir_build_function: populates f->params/f->paramCount with the formal
  *     parameters' (OPND_VAR) operands, so instr_selector.c can generate the
@@ -590,7 +590,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     ir_resolve_cfg(f);
 
-    ir_lower_globals(f,arena);
+    gl_lower_globals(f,arena);
 
     svn_optimize(f);
 
@@ -746,6 +746,9 @@ static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
     free(buf);
 }
 
+int ir_alloc_temp_id(void){
+    return nextTemp++;
+}
 
 
 IRProgram *ir_generate(ASTNode *program) {

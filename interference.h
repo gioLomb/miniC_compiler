@@ -101,6 +101,17 @@ typedef struct {
                               *   lets ra_simplify() avoid respilling short-lived temps first. */
 } IGraph;
 
+
+
+
+/**
+ * @brief Test whether edge (i, j) exists in the interference graph.
+ *
+ * Converts the pair to a flat index, selects the correct uint64_t word
+ * (idx >> 6 = idx / 64) and extracts the appropriate bit (idx & 63).
+ */
+int ig_has_edge(const IGraph *g, int i, int j);
+
 /**
  * @brief Build the interference graph from the machine-code liveness result.
  *

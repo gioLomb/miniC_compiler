@@ -3,7 +3,7 @@
 #include <string.h>
 #include <limits.h>
 #include <float.h>
-#include "optimize.h"
+#include "ast_optimizer.h"
 
 // Calculate maximum buffer size required to safely convert numeric values into string representation
 #define INT_BUF_SIZE   (CHAR_BIT * sizeof(long) / 3 + 3)

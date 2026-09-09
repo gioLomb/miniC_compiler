@@ -39,7 +39,7 @@
 
 #ifndef SCHED_UTILS_H
 #define SCHED_UTILS_H
-#include "instr_query.h" //TODO
+#include "instr_query.h" 
 #include "instr_selector.h"
 
 

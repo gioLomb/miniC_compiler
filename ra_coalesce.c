@@ -2,35 +2,7 @@
 #include <stdint.h>
 #include "ra_coalesce.h"
 
-/* =========================================================================
- * Triangular-matrix edge query — mirrors interference.c
- * ========================================================================= */
 
-/**
- * Map the unordered pair (i, j) to its flat lower-triangular index.
- * Canonical form enforced: larger id becomes the row (i > j after swap).
- */
-static inline long tri_idx(int i, int j) {
-    if (i < j) { 
-        int t = i; 
-        i = j; 
-        j = t; 
-    }
-    // Standard lower-triangular formula: row i starts at i*(i-1)/2
-    return (long)i * (i - 1) / 2 + j;
-}
-
-/** 
- * Return non-zero if an interference edge exists between nodes @p i and @p j. 
- */
-static inline int edge_exists(const IGraph *g, int i, int j) {
-    // Reject degenerate or self-pairs before touching the bit matrix
-    if (i < 0 || j < 0 || i == j) return 0;
-    
-    long idx = tri_idx(i, j);
-    // Word index (idx >> 6) selects the uint64_t, (idx & 63) the bit within it
-    return (int)((g->matrix[idx >> 6] >> (idx & 63)) & 1ULL);
-}
 
 
 /**
@@ -63,14 +35,14 @@ static inline int is_valid_coalesce_candidate(const IGraph *g, int u, int v, int
     if (u >= next_vreg && v >= next_vreg) return 0;
 
     // Only record pairs that do NOT already interfere
-    if (edge_exists(g, u, v)) return 0;
+    if (ig_has_edge(g, u, v)) return 0;
 
     return 1;
 }
 
 
 /** Append the pair (u, v) to @p pl, doubling capacity when needed. */
-static void pl_push(PartnerList *pl, int u, int v) {
+static void partnerlist_push(PartnerList *pl, int u, int v) {
     // Start at 16 to amortise early reallocations on small functions
     if (pl->count == pl->cap) {
         pl->cap   = pl->cap ? pl->cap * 2 : 16;
@@ -96,7 +68,7 @@ PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g, int next
 
         // Refactoring: Replace Nested Conditional with Guard Clauses
         if (is_valid_coalesce_candidate(g, u, v, max_node_id, nextVreg)) {
-            pl_push(&pl, u, v);
+            partnerlist_push(&pl, u, v);
         }
     }
 

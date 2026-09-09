@@ -444,9 +444,6 @@ static int apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
     return 1;
 }
 
-/* =========================================================================
- * Public Interface
- * ========================================================================= */
 
 int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
     if (!irFunction || irFunction->blockCount == 0 || irFunction->count == 0) return 0;
@@ -467,18 +464,7 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
     LivenessResult livenessResult = liveness_computeIr(irFunction, NULL, NULL, livenessArena);
     VarMap        *variableMap    = &livenessResult.varMap;
 
-    // Scan the whole function once to find the highest temp id already in
-    // use, so newly minted strength-reduction temps never collide with
-    // existing ones.
-    int nextTempId = 0;
-    for (int instructionIdx = 0; instructionIdx < irFunction->count; instructionIdx++) {
-        const IRInstr *currentInstr = &irFunction->instrs[instructionIdx];
-        const Operand *operands[3] = { &currentInstr->dst, &currentInstr->src1, &currentInstr->src2 };
-        
-        for (int operandIdx = 0; operandIdx < 3; operandIdx++)
-            if (operands[operandIdx]->kind == OPND_TEMP && operands[operandIdx]->data.tempId >= nextTempId)
-                nextTempId = operands[operandIdx]->data.tempId + 1;
-    }
+    int nextTempId = ir_alloc_temp_id();
 
     int totalTransformationsApplied = 0;
     for (int loopIdx = 0; loopIdx < totalLoops; loopIdx++) {

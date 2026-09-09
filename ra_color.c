@@ -6,15 +6,11 @@
 #include "ra_coalesce.h"
 #include "instr_selector.h"   /* PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, PHYS_RBX..R15 */
 
-/* =========================================================================
- * Helper Functions — Simplification Phase (Refactoring: Extract Function)
- * ========================================================================= */
-
 /**
  * Scans active, non-bucketed nodes to find the best optimistic spill candidate.
  * Strictly prefers real IR variables over reload temporaries.
  */
-static int select_spill_candidate(const IGraph *g, int nextVreg, const Buckets *buckets) {
+static int ra_select_spill_candidate(const IGraph *g, int nextVreg, const Buckets *buckets) {
     double bestRealRatio = DBL_MAX, bestReloadRatio = DBL_MAX;
     int bestReal = -1, bestReload = -1;
 
@@ -46,7 +42,7 @@ static int select_spill_candidate(const IGraph *g, int nextVreg, const Buckets *
  * Decrements the degrees of active neighbors after removing a node,
  * adjusting their bucket status accordingly.
  */
-static inline void update_neighbor_degrees(IGraph *g, int chosen, int nextVreg, int k, Buckets *buckets) {
+static inline void ra_update_neighbor_degrees(IGraph *g, int chosen, int nextVreg, int k, Buckets *buckets) {
     for (int idx = 0; idx < g->adj[chosen].len; idx++) {
         int w = g->adj[chosen].data[idx];
         if (w >= nextVreg || !g->active[w]) continue;
@@ -89,7 +85,7 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
 
         if (!fromBucket) {
             // No node has degree < k: select optimistic spill candidate
-            chosen = select_spill_candidate(g, nextVreg, &buckets);
+            chosen = ra_select_spill_candidate(g, nextVreg, &buckets);
             if (chosen < 0) break; // Impossible to proceed
 
             degree = (g->degree[chosen] < k) ? g->degree[chosen] : (k - 1);
@@ -101,7 +97,7 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
         remaining--;
         (*outStack)[stackLen++] = chosen;
 
-        update_neighbor_degrees(g, chosen, nextVreg, k, &buckets);
+        ra_update_neighbor_degrees(g, chosen, nextVreg, k, &buckets);
     }
 
     buckets_free();
@@ -114,7 +110,7 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
  * @brief CSR (compressed sparse row) index: node id -> list of partner node ids.
  *
  * Built once per ra_select_colors() call from the flat PartnerList, replacing
- * the O(pl->count) linear scan hint_color() previously did for every single
+ * the O(pl->count) linear scan ra_hint_color() previously did for every single
  * node being colored (O(nodes * moves) worst case over the whole function).
  * Lookup for one node becomes O(local degree) instead of O(total pairs).
  */
@@ -181,7 +177,7 @@ static void partner_index_free(PartnerIndex *idx) {
 /**
  * Look up a preferred color from the partner index (Biased Coloring).
  */
-static int hint_color(int v, uint32_t available,
+static int ra_hint_color(int v, uint32_t available,
                       const IGraph *g, const PartnerIndex *pidx){
     if (!pidx->start) return -1;
 
@@ -216,7 +212,7 @@ static inline uint32_t compute_forbidden_colors(const IGraph *g, int v) {
 static inline int choose_color(int v, uint32_t available,
                                const IGraph *g,const PartnerIndex *pidx){
     // Priority 1: biased hint from a move-related partner
-    int hint = hint_color(v, available, g, pidx);
+    int hint = ra_hint_color(v, available, g, pidx);
     if (hint >= 0) return hint;
 
     // Priority 2: live across CALL — prefer callee-saved registers

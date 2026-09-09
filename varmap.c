@@ -103,9 +103,6 @@ int varmap_operand_id(VarMap *m, Operand op) {
  * while the hash table's built-in resize handles larger functions.
  */
 VarMap varmap_init() {
-    // cacheKeys/cacheIds/cacheOccupied default to all-zero (C99 rule:
-    // struct members not listed in a designated initializer are
-    // zero-initialised) — cacheOccupied all-0 means every slot starts empty.
     return (VarMap){
         .table  = ht_create(32, varmap_hash),
         .nextId = 0,

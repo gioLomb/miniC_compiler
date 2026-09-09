@@ -30,36 +30,10 @@ typedef struct {
 
 
 /**
- * @brief Compute the lowest temp id not yet used in @p f.
- *
- * Scans every instruction's dst/src1/src2 operand and returns one past the
- * highest OPND_TEMP id found. This mirrors the pattern already used in
- * sr.c, since the static nextTemp counter owned by ir.c is not exposed to
- * this translation unit and a fresh, function-local counter must be
- * reconstructed here before allocating new temporaries.
- *
- * @param f Function whose instructions are scanned. Not modified.
- * @return  Smallest temp id guaranteed not to collide with an existing one.
- */
-static int compute_next_temp(const IRFunction *f) {
-    int next = 0;
-    for (int i = 0; i < f->count; i++) {
-        const Operand *ops[3] = {
-            &f->instrs[i].dst, &f->instrs[i].src1, &f->instrs[i].src2
-        };
-        // check all three operand slots of every instruction
-        for (int k = 0; k < 3; k++)
-            if (ops[k]->kind == OPND_TEMP && ops[k]->data.tempId >= next)
-                next = ops[k]->data.tempId + 1;
-    }
-    return next;
-}
-
-/**
  * @brief Check whether @p f references any OPND_GLOBAL operand.
  *
  * Cheap fast-path guard: if a function never touches a global variable,
- * ir_lower_globals() can skip the full instruction-array reconstruction
+ * gl_lower_globals() can skip the full instruction-array reconstruction
  * entirely.
  *
  * @param f Function to inspect.
@@ -87,7 +61,7 @@ static int function_touches_globals(const IRFunction *f) {
  * @param loopDepth Static loop nesting depth to stamp on the instruction,
  *                  inherited from the original instruction being expanded.
  */
-static void emitter_push(Emitter *e, IROp op, Operand dst,
+static void gl_emitter_push(Emitter *e, IROp op, Operand dst,
                           Operand src1, Operand src2, int loopDepth) {
     if (__builtin_expect(e->count == e->cap,0)) {
         // standard doubling growth
@@ -113,12 +87,11 @@ static void emitter_push(Emitter *e, IROp op, Operand dst,
  * @param loopDepth Loop depth stamped on the new instruction.
  * @return          Temp id holding the computed address.
  */
-static int emit_global_addr(int symOff, int *nextTemp,
-                             Emitter *e, int loopDepth) {
-    int t = (*nextTemp)++;
-    emitter_push(e, IR_GLOBAL_ADDR, (Operand){ .kind = OPND_TEMP, .data.tempId = t }, (Operand){ .kind = OPND_GLOBAL, .data.globalOffset = symOff },
+static int gl_emit_global_addr(int symOff,Emitter *e, int loopDepth) {
+    int nextTempId = ir_alloc_temp_id();
+    gl_emitter_push(e, IR_GLOBAL_ADDR, (Operand){ .kind = OPND_TEMP, .data.tempId = nextTempId }, (Operand){ .kind = OPND_GLOBAL, .data.globalOffset = symOff },
                  (Operand){.kind = OPND_NONE}, loopDepth);
-    return t;
+    return nextTempId;
 }
 
 
@@ -141,16 +114,15 @@ static int emit_global_addr(int symOff, int *nextTemp,
  * @param loopDepth  Loop depth stamped on any emitted instruction.
  * @return           Replacement operand for src1 (unchanged if not GLOBAL).
  */
-static Operand lower_src1_operand(Operand src1, int isArrBase,
-                                   int *nextTemp, Emitter *e, int loopDepth) {
+static Operand gl_lower_src1_operand(Operand src1, int isArrBase, Emitter *e, int loopDepth) {
     if (src1.kind != OPND_GLOBAL) return src1;
 
-    int addr = emit_global_addr(src1.data.globalOffset, nextTemp, e, loopDepth);
+    int addr = gl_emit_global_addr(src1.data.globalOffset, e, loopDepth);
     if (isArrBase)
         return (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
 
-    int val = (*nextTemp)++;
-    emitter_push(e, IR_LOAD_ARR,
+    int val = ir_alloc_temp_id();
+    gl_emitter_push(e, IR_LOAD_ARR,
                  (Operand){ .kind = OPND_TEMP, .data.tempId = val },
                  (Operand){ .kind = OPND_TEMP, .data.tempId = addr },
                  (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, loopDepth);
@@ -170,13 +142,12 @@ static Operand lower_src1_operand(Operand src1, int isArrBase,
  * @param loopDepth  Loop depth stamped on any emitted instruction.
  * @return           Replacement operand for src2 (unchanged if not GLOBAL).
  */
-static Operand lower_src2_operand(Operand src2, int *nextTemp,
-                                   Emitter *e, int loopDepth) {
+static Operand gl_lower_src2_operand(Operand src2, Emitter *e, int loopDepth) {
     if (src2.kind != OPND_GLOBAL) return src2;
 
-    int addr = emit_global_addr(src2.data.globalOffset, nextTemp, e, loopDepth);
-    int val  = (*nextTemp)++;
-    emitter_push(e, IR_LOAD_ARR,
+    int addr = gl_emit_global_addr(src2.data.globalOffset, e, loopDepth);
+    int val  = ir_alloc_temp_id();
+    gl_emitter_push(e, IR_LOAD_ARR,
                  (Operand){ .kind = OPND_TEMP, .data.tempId = val },
                  (Operand){ .kind = OPND_TEMP, .data.tempId = addr },
                  (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, loopDepth);
@@ -204,26 +175,23 @@ static Operand lower_src2_operand(Operand src2, int *nextTemp,
  *                    otherwise. Caller must zero-init before calling.
  * @return           Replacement operand for dst (unchanged if not GLOBAL).
  */
-static Operand lower_dst_operand(Operand dst, int isArrBase, int *nextTemp,
+static Operand gl_lower_dst_operand(Operand dst, int isArrBase,
                                   Emitter *e, int loopDepth, DeferredStore *out) {
     if (dst.kind != OPND_GLOBAL) return dst;
 
-    int addr = emit_global_addr(dst.data.globalOffset, nextTemp, e, loopDepth);
+    int addr = gl_emit_global_addr(dst.data.globalOffset, e, loopDepth);
     if (isArrBase)
         return (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
 
     // scalar write: redirect to a fresh temp now, store it back after the
     // instruction is emitted (handled by the caller)
-    int tmpDst = (*nextTemp)++;
+    int tmpDst = ir_alloc_temp_id();
     out->addr    = (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
     out->val     = (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
     out->present = 1;
     return (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
 }
 
-/* =========================================================================
- * Block-range realignment
- * ========================================================================= */
 
 /**
  * @brief Realign every block's [start, end) range onto the rebuilt
@@ -260,15 +228,13 @@ static void remap_block_ranges(IRFunction *f, const int *newStart,
 }
 
 
-void ir_lower_globals(IRFunction *f, Arena *arena) {
+void gl_lower_globals(IRFunction *f, Arena *arena) {
     // nothing to do: empty function, or no OPND_GLOBAL operand anywhere
     if (f->count == 0 || !function_touches_globals(f)) return;
 
     int oldCount = f->count;
-    int nextTemp = compute_next_temp(f);
 
     // worst case: every original instruction expands into 3 instructions
-    // (address computation + load/store + the original instruction itself)
     Emitter e = {
         .buf   = malloc((size_t)(oldCount * IR_MAX_EXPANSION_FACTOR + 8) * sizeof(IRInstr)),
         .count = 0,
@@ -288,18 +254,18 @@ void ir_lower_globals(IRFunction *f, Arena *arena) {
         int isArrBaseSrc1 = (in.op == IR_LOAD_ARR);
         int isArrBaseDst  = (in.op == IR_STORE_ARR);
 
-        in.src1 = lower_src1_operand(in.src1, isArrBaseSrc1, &nextTemp, &e, ld);
-        in.src2 = lower_src2_operand(in.src2, &nextTemp, &e, ld);
+        in.src1 = gl_lower_src1_operand(in.src1, isArrBaseSrc1, &e, ld);
+        in.src2 = gl_lower_src2_operand(in.src2, &e, ld);
 
         DeferredStore ds = {0};
-        in.dst = lower_dst_operand(in.dst, isArrBaseDst, &nextTemp, &e, ld, &ds);
+        in.dst = gl_lower_dst_operand(in.dst, isArrBaseDst, &e, ld, &ds);
 
         // emit the instruction itself, now with substituted operands
-        emitter_push(&e, in.op, in.dst, in.src1, in.src2, ld);
+        gl_emitter_push(&e, in.op, in.dst, in.src1, in.src2, ld);
 
         // emit the deferred store for a scalar global written by this instruction
         if (ds.present)
-            emitter_push(&e, IR_STORE_ARR,
+            gl_emitter_push(&e, IR_STORE_ARR,
                          ds.addr, (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, ds.val, ld);
 
         newEnd[i] = e.count;

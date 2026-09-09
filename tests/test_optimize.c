@@ -9,7 +9,7 @@
 #include "../symbol_table.h"
 #include "../ast_to_symtab.h"
 #include "../semantic.h"
-#include "../optimize.h"
+#include "../ast_optimizer.h"
 
 static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     const char *path = "/tmp/miniC_test_optimize_src.c";

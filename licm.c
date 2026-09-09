@@ -28,7 +28,7 @@
  *     operands are invariant (constant, defined outside, or their single
  *     in-loop definition is itself invariant).
  *
- *  3. Safety check + motion  (move_invariants)
+ *  3. Safety check + motion  (licm_move_invariants)
  *     Not every invariant instruction is safe to hoist.  Two conditions
  *     must hold:
  *       a. The block containing the instruction must dominate ALL loop
@@ -104,7 +104,7 @@
  *
  * This turns the repeated "find where variable X is defined in this loop"
  * scan (previously redone on every worklist pop inside propagate_worklist ->
- * src_is_invariant -> single_loop_def_invariant, up to O(loop size) per call)
+ * src_is_invariant -> licm_single_loop_def_invariant, up to O(loop size) per call)
  * into a single O(loop size) pass done once here.
  */
 static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
@@ -146,7 +146,7 @@ static int *count_defs_in_loop(IRFunction *f, Loop *L, VarMap *vm,
  * instruction's index is static (precomputed once by count_defs_in_loop());
  * only its invariance flag is dynamic (advances as propagate_worklist() runs).
  */
-static inline int single_loop_def_invariant(const int *defInstrIdx,
+static inline int licm_single_loop_def_invariant(const int *defInstrIdx,
                                             const char *invariant, int id) {
     int idx = defInstrIdx[id];
     return (idx >= 0 && invariant[idx]) ? idx : -1;
@@ -163,7 +163,7 @@ static int src_is_invariant(Operand src, const int *defCount,
 
     if (id < 0 || defCount[id] == 0) return 1;
 
-    if (defCount[id] == 1) return single_loop_def_invariant(defInstrIdx, invariant, id) >= 0;
+    if (defCount[id] == 1) return licm_single_loop_def_invariant(defInstrIdx, invariant, id) >= 0;
 
     return 0;
 }
@@ -225,7 +225,7 @@ static void register_src_uses(VarMap *vm, UsedByList *usedBy, IRInstr *in, int j
  * @param worklist Output worklist, sized f->count by the caller.
  * @return Number of instructions seeded into worklist (the new wTail).
  */
-static int seed_worklist(IRFunction *f, Loop *L, VarMap *vm,
+static int licm_seed_worklist(IRFunction *f, Loop *L, VarMap *vm,
                          UsedByList *usedBy, int *worklist) {
     int wTail = 0;
 
@@ -307,7 +307,7 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
     UsedByList *usedBy = alloc_used_by(numVars);
     int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
 
-    int wTail = seed_worklist(f, L, vm, usedBy, worklist);
+    int wTail = licm_seed_worklist(f, L, vm, usedBy, worklist);
     propagate_worklist(f, defCount, defInstrIdx, vm, usedBy, worklist, wTail, invariant);
 
     free_used_by(usedBy, numVars);
@@ -335,22 +335,6 @@ static inline int dominates_all_exits(Loop *L, LiveSet *Dom, int blk) {
 }
 
 
-
-/* =========================================================================
- * Phase 3 — Safety check and motion
- * =========================================================================
- * Walk all invariant instructions, filter to the safe subset, and move
- * them into the pre-header in a single array rebuild.
- *
- * The rebuild works in three phases:
- *   a. Copy instructions before the loop header unchanged.
- *   b. Append the safe invariant instructions into the pre-header range.
- *   c. Copy the remaining loop instructions, skipping the moved ones,
- *      and update an oldToNew[] index map so block start/end can be
- *      rewritten consistently.
- * ========================================================================= */
-
-
 /**
  * @brief Build a flat instruction-index -> block-index lookup table.
  *
@@ -359,7 +343,7 @@ static inline int dominates_all_exits(Loop *L, LiveSet *Dom, int blk) {
  * appear in index order), so a single forward scan over blocks fills the
  * whole map in O(instrs + blocks) total. Replaces the previous pattern of
  * calling instr_block() (O(blocks) linear scan) once per instruction inside
- * mark_hoistable()'s loop over every instruction in the function — an
+ * licm_mark_hoistable()'s loop over every instruction in the function — an
  * O(instrs * blocks) cost per loop processed by LICM.
  *
  * @param f      IR function whose blocks are scanned.
@@ -376,7 +360,7 @@ static int *build_instr_to_block(IRFunction *f, Arena *arena) {
 }
 
 
-static int mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
+static int licm_mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv, int header,
                            const char *inBody, const int *instrToBlock, char *doMove) {
@@ -431,8 +415,8 @@ typedef struct {
  *                  surviving suffix); left untouched for hoisted j — callers
  *                  must gate access on doMove[j], not on a sentinel value.
  * @return Layout describing the new array and where the hoisted block sits.
- */ //todo: arena
-static HoistLayout compact_and_hoist(IRFunction *f, const char *doMove, int moved,
+ */ 
+static HoistLayout licm_compact_and_hoist(IRFunction *f, const char *doMove, int moved,
                                       int insertAt, int *oldToNew) {
     int nInstrs = f->count;
     HoistLayout out;
@@ -441,7 +425,7 @@ static HoistLayout compact_and_hoist(IRFunction *f, const char *doMove, int move
 
     // --- part a: instructions before the loop header (unchanged position) ---
     // FIX: oldToNew must be filled here too (identity map), not left at -1,
-    // otherwise remap_block_ranges mistakes "never written" for "hoisted".
+    // otherwise licm_remap_block_ranges mistakes "never written" for "hoisted".
     for (int j = 0; j < insertAt; j++) {
         oldToNew[j] = j;
         out.instrs[out.count++] = f->instrs[j];
@@ -466,7 +450,7 @@ static HoistLayout compact_and_hoist(IRFunction *f, const char *doMove, int move
 
 /**
  * @brief Rewrite block.start/end ranges to match the compacted instruction
- *        array produced by compact_and_hoist.
+ *        array produced by licm_compact_and_hoist.
  *
  * The pre-header block is special-cased: it now contains exactly the
  * hoisted instructions ([preHeaderMovedStart, preHeaderMovedEnd)). Every other block's
@@ -475,14 +459,14 @@ static HoistLayout compact_and_hoist(IRFunction *f, const char *doMove, int move
  * surviving instructions becomes the empty range {0, 0}.
  *
  * @param f            IR function whose blocks[] are rewritten in place.
- * @param oldToNew     Map from compact_and_hoist, valid for every j with
+ * @param oldToNew     Map from licm_compact_and_hoist, valid for every j with
  *                      doMove[j] == 0.
  * @param doMove       doMove[j] = 1 if instruction j was hoisted.
  * @param phIdx        Index of the pre-header block.
  * @param preHeaderMovedStart First index of the hoisted block in the new array.
  * @param preHeaderMovedEnd   One-past-last index of the hoisted block.
  */
-static void remap_block_ranges(IRFunction *f, const int *oldToNew, const char *doMove,
+static void licm_remap_block_ranges(IRFunction *f, const int *oldToNew, const char *doMove,
                                 int phIdx, int preHeaderMovedStart, int preHeaderMovedEnd) {
     for (int b = 0; b < f->blockCount; b++) {
         if (b == phIdx) {
@@ -530,7 +514,7 @@ static void remap_block_ranges(IRFunction *f, const int *oldToNew, const char *d
  * @param liv       Liveness result used to query live-in at the header.
  * @return          Number of instructions actually moved (0 = nothing changed).
  */
-static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
+static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            VarMap *vm, LivenessResult *liv) {
     int nInstrs = f->count, nBlocks = f->blockCount;
@@ -548,7 +532,7 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
     // precomputed once per loop instead of per-instruction linear scan
     int *instrToBlock = build_instr_to_block(f, localArena);
 
-    int moved = mark_hoistable(f, L, Dom, invariant, defCount, vm, liv,
+    int moved = licm_mark_hoistable(f, L, Dom, invariant, defCount, vm, liv,
                                 header, inBody, instrToBlock, doMove);
     if (!moved) { arena_destroy(localArena); return 0; }
 
@@ -558,14 +542,14 @@ static int move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
 
     int *oldToNew = arena_alloc(localArena, (size_t)nInstrs * sizeof(int));
 
-    HoistLayout layout = compact_and_hoist(f, doMove, moved, insertAt, oldToNew);
+    HoistLayout layout = licm_compact_and_hoist(f, doMove, moved, insertAt, oldToNew);
 
     free(f->instrs);
     f->instrs   = layout.instrs;
     f->count    = layout.count;
     f->capacity = layout.count;
 
-    remap_block_ranges(f, oldToNew, doMove, phIdx, layout.preHeaderMovedStart, layout.preHeaderMovedEnd);
+    licm_remap_block_ranges(f, oldToNew, doMove, phIdx, layout.preHeaderMovedStart, layout.preHeaderMovedEnd);
 
     f->curBlockStart = 0;
     // instructions reindexed: invalidate any VarMap id cache keyed by old indices
@@ -592,7 +576,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
     int      nLoops = loop_find(f, Dom, loops, arenaScratch);
     if (nLoops == 0) return 0;
 
-    // compute initial liveness (needed for live-in check in move_invariants)
+    // compute initial liveness (needed for live-in check in licm_move_invariants)
     // livArena stays internally managed: tied to the per-loop scan below and
     // recreated only when something is actually hoisted. Sharing arenaScratch
     // here would invalidate Dom/loops still in use by subsequent loop
@@ -618,7 +602,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
         find_invariants(f, L, vm, numVars, defCount, defInstrIdx, invariant, arenaScratch);
 
         // phase 3: move safe invariants to the pre-header
-        int moved = move_invariants(f, L, Dom, invariant, defCount, vm, &liv);
+        int moved = licm_move_invariants(f, L, Dom, invariant, defCount, vm, &liv);
         totalMoved += moved;
 
         if (moved) {

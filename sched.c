@@ -2,7 +2,7 @@
  * @file sched.c
  * @brief Local list instruction scheduler (per-block, forward, height-ordered).
  *
- * Pipeline: is_isel_select() -> sched_schedule() -> regalloc(). See sched.h.
+ * Pipeline: isel_select() -> sched_schedule() -> regalloc(). See sched.h.
  *
  * Algorithm per basic block (schedule_block):
  *   1. build_dag()           — dependency DAG with RAW/WAR/WAW + ordering edges
@@ -248,15 +248,11 @@ static void schedule_block(MachFunction *f, BlockRange blk, Arena *arena) {
     memcpy(&f->instrs[blk.start], result, (size_t)instrCount * sizeof(MachInstr));
 }
 
-/* =========================================================================
- * Public entry point
- * ========================================================================= */
-
 void sched_schedule(MachProgram *mp) {
     if (!mp || mp->count == 0) return;
 
-    // Hoisting delle risorse: le Arena vengono create una sola volta
-    // e azzerate ad ogni iterazione, azzerando l'overhead di allocazione OS.
+    // Hoist allocation out of the loop: arenas created once, reset (not
+    // destroyed/recreated) every iteration, avoiding per-function OS calls.
     Arena *blockArena   = arena_create(0);
     Arena *scratchArena = arena_create(0);
 
@@ -265,16 +261,19 @@ void sched_schedule(MachProgram *mp) {
 
     for (int fi = 0; fi < funcCount; fi++) {
         MachFunction *f = functions[fi];
-        
-        // Inversione della guardia: ramo caldo nel fall-through path
+
+        // Guard inverted: hot branch (non-empty function) is the fall-through
+        // path, not nested inside an early-continue.
         if (f && f->count > 0) {
             arena_reset(blockArena);
-            
+
             const size_t allocSize = (size_t)f->count * sizeof(BlockRange);
             BlockRange *blocks = arena_alloc(blockArena, allocSize);
-            
+
             const int bbCount = find_basic_blocks(f, blocks);
 
+            // scratchArena is reset once per block inside schedule_block(),
+            // so its lifetime spans every block of every function here.
             for (int b = 0; b < bbCount; b++) {
                 schedule_block(f, blocks[b], scratchArena);
             }

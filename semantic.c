@@ -121,9 +121,6 @@ static DataType resolve_name_use(ASTNode *expr, Scope *scope, int wantArray,
     return sym.dataType;
 }
 
-/* =========================================================================
- * Compile-time constant evaluation (for static bounds checking)
- * ========================================================================= */
 
 /**
  * @brief Try to evaluate @p expr as a compile-time integer constant.
@@ -421,7 +418,6 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
 
     switch (stmt->kind) {
 
-    /* Variable declaration */
     case ND_VAR_DECL: {
         // Register the variable in the current scope and stamp the node with
         // (scopeLevel, offset); returns 0 on redeclaration.
@@ -444,7 +440,6 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
         break;
     }
 
-    /* ---- Block: { stmt* } ----------------------------------------------- */
     case ND_BLOCK: {
         // Each block gets its own scope so that inner declarations shadow
         // outer ones but do not persist beyond the closing brace.
@@ -456,7 +451,6 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
         break;
     }
 
-    /* ---- if / if-else ---------------------------------------------------- */
     case ND_IF:
         check_expr_type(stmt->children[0], scope, errors);                         // condition
         check_stmt(stmt->children[1], scope, returnType, arena, errors);      // then-branch
@@ -464,13 +458,11 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
             check_stmt(stmt->children[2], scope, returnType, arena, errors);  // else-branch
         break;
 
-    /* ---- while ----------------------------------------------------------- */
     case ND_WHILE:
         check_expr_type(stmt->children[0], scope, errors);                     // loop condition
         check_stmt(stmt->children[1], scope, returnType, arena, errors);  // loop body
         break;
 
-    /* ---- return expr; ---------------------------------------------------- */
     case ND_RETURN: {
         DataType t = check_expr_type(stmt->children[0], scope, errors);
         if (t != T_VOID && !is_type_compatible(returnType, t)) {
