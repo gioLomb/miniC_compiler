@@ -1,46 +1,13 @@
-/**
- * @file loop.h
- * @brief Loop detection and pre-header construction shared by LICM and SR.
- *
- * Overview
- * --------
- * This module provides the three building blocks that LICM and SR need
- * before they can transform loop bodies:
- *
- *  1. Dominator computation (loop_compute_dominators)
- *     Builds the Dom[] relation: Dom[b] is the set of all blocks that
- *     dominate b (i.e., every path from the entry to b passes through them).
- *     Represented as an array of bit-sets, one per block.
- *
- *  2. Loop detection (loop_find)
- *     Finds natural loops via back-edges: an edge b→h is a back-edge iff
- *     h dominates b (h is the loop header).  For each back-edge the loop
- *     body is computed by a backward BFS from b that stops at h, collecting
- *     all blocks that can reach b without leaving the loop.
- *
- *  3. Pre-header insertion (loop_build_pre_header)
- *     Inserts a synthetic block immediately before the loop header.
- *     All predecessors of the header that are NOT part of the loop body
- *     are re-routed through the pre-header, which falls through to the header.
- *     LICM hoists invariant instructions into this block; SR initialises
- *     its strength-reduced temporaries there.
- *
- * Data structures
- * ---------------
- * Loop: one entry per natural loop, carrying:
- *   - header     : index of the block that dominates all others in the loop.
- *   - preHeader  : index of the synthetic pre-header block (-1 until created).
- *   - body[]     : flat array of block indices that make up the loop body
- *                  (includes header).
- *   - exits[]    : blocks inside the loop that have at least one successor
- *                  outside the loop (used by LICM safety check).
- *
- * All dynamically-sized arrays (body[], dominators bit-words) are allocated
- * from the caller-supplied Arena, so no per-array free is needed.
- */
+
 
 #ifndef LOOP_H
 #define LOOP_H
+
+
+/**
+ * @file loop.h
+ * @brief Loop detection and pre-header construction shared by LICM and SR.
+ */
 
 #include "ir.h"
 #include "bitset.h"

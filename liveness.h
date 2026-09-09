@@ -1,50 +1,13 @@
-/**
- * @file liveness.h
- * @brief Liveness analysis engine shared by DCE, LICM, SR (IR front-end)
- *        and register allocation / interference-graph construction
- *        (machine-code front-end).
- *
- * ### Architecture — single engine, two front-ends
- * A single backward dataflow engine (liveness_computeCore) drives both use
- * cases.  The only front-end-specific logic is *how uses and defs are
- * extracted from a single instruction*, expressed as a callback of type
- * LivenessExtractFn.  Two thin wrappers provide the public API:
- *
- *   - liveness_computeIr()   — IR front-end (DCE, LICM, SR).
- *   - liveness_computeMach() — machine-code front-end (regalloc).
- *
- * ### Dataflow equations
- * Standard backward liveness (Appel / EaC §10.1):
- * ```
- *   Use[b]    = variables read in b before being defined in b
- *   Def[b]    = variables defined in b
- *
- *   LiveOut[b] = ∪ { LiveIn[s] | s ∈ succ(b) }
- *   LiveIn[b]  = Use[b] ∪ (LiveOut[b] − Def[b])
- * ```
- * The fixed-point loop terminates because LiveIn sets can only grow
- * (monotone join), and the universe of variables is finite.
- *
- * ### Bit-set representation
- * LiveSet is a typedef of BitSet (bitset.h): a flat array of uint64_t words.
- * One bit per variable id as assigned by VarMap.  All bitwise operations
- * (union, intersection, difference, equal) are O(words) = O(⌈numVars/64⌉).
- *
- * Note: loop.h reuses BitSet with a different semantic (bit = block index for
- * dominator sets).  The same layout, different interpretation — the type alias
- * makes the intended domain clear at each call site.
- *
- * ### Memory
- * All liveness data (Use, Def, LiveIn, LiveOut arrays and their bit words,
- * liveAfter[]) is allocated from the caller-supplied Arena.  The caller
- * destroys the arena when the analysis result is no longer needed.
- * The VarMap embedded in LivenessResult owns a separate hash table allocated
- * with malloc; it must be destroyed explicitly with varmap_destroy() before
- * the arena is freed.
- */
+
 
 #ifndef LIVENESS_H
 #define LIVENESS_H
+
+
+/**
+ * @file liveness.h
+ * @brief Liveness analysis engine shared by DCE, LICM, SR (IR front-end) and register allocation / interference-graph construction (machine-code front-end).
+ */
 
 #include <stdint.h>
 #include "bitset.h"

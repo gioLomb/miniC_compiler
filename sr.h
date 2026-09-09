@@ -1,6 +1,12 @@
 #ifndef SR_H
 #define SR_H
 
+
+/**
+ * @file sr.h
+ * @brief Strength reduction loop optimization pass interface.
+ */
+
 #include "ir.h"
 
 /** Maximum basic induction variables tracked per loop. */
@@ -8,24 +14,6 @@
 
 /** Maximum derived induction variables tracked per loop. */
 #define MAX_DERIVED 64
-
-/**
- * @file sr.h
- * @brief Strength reduction loop optimization pass interface.
- *
- * Replaces expensive multiplication operations involving induction variables with
- * cheaper iterative additions inside natural loops.
- *
- * Overview
- * --------
- * For every loop containing a basic induction variable (e.g. `i = i + c`) and a
- * derived induction variable (e.g. `t = i * d`), this pass rewrites the IR as follows:
- *
- * Prerequisites
- * -------------
- * Requires `licm_optimize()` to have been executed on the target function beforehand
- * so that loop pre-headers exist and invariant statements have been hoisted.
- */
 
 /**
  * @brief Performs strength reduction on all natural loops in an IR function.

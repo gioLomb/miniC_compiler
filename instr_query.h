@@ -1,27 +1,14 @@
 #ifndef INSTR_QUERY_H
 #define INSTR_QUERY_H
 
-#include "block.h"
-#include "instr_selector.h"
 
 /**
  * @file instr_query.h
  * @brief Pure MachInstr property queries: operand extraction and opcode predicates.
- *
- * Layering rationale: these functions depend only on MachInstr/MachOperand
- * (instr_selector.h). They sit BELOW both the scheduler (sched.c/sched_dag.c,
- * phase 2) and the register allocator (regalloc.c/interference.c/ra_spill.c,
- * phase 3) in the pipeline isel -> sched -> regalloc, and both phases need
- * the same use/def/opcode information. Previously these lived in
- * regalloc_utils.h, making an earlier phase (sched) depend on a module
- * named/scoped for a later phase — backwards layering. Moving them here
- * removes that inversion: sched and regalloc both depend downward on this
- * module, never on each other's utilities.
- *
- * regalloc_spill_weight() stays in regalloc_utils.h: it is a genuinely
- * regalloc-only concept (spill-cost heuristic), not a property of the
- * instruction itself.
  */
+
+#include "block.h"
+#include "instr_selector.h"
 
 /** @brief Return the single register defined by @p in, or -1 if none. */
 int instr_def(const MachInstr *in, int nextVreg);

@@ -1,25 +1,14 @@
 #ifndef RA_COALESCE_H
 #define RA_COALESCE_H
 
-#include "instr_selector.h"
-#include "interference.h"
 
 /**
  * @file ra_coalesce.h
  * @brief Biased-coloring support: partner list collection (lightweight coalescing).
- *
- * Unlike classic Chaitin coalescing — which merges interference-graph nodes before
- * coloring — this module only collects move-related vreg pairs, called *partners*
- * in the biased-coloring literature.  ra_select_colors() (ra_color.c) uses these
- * pairs as coloring *hints*: when a partner already holds a valid color that is
- * still available for the current node, that color is preferred, eliminating the
- * redundant MOV without ever mutating the IGraph structure.
- *
- * Correctness guarantee: a hint is only followed when the partner's color already
- * belongs to the `available` mask computed inside ra_select_colors() — meaning it
- * already satisfies all interference edges, excl[] masks, and crossesCall
- * constraints — so no additional safety check is needed at hint time.
  */
+
+#include "instr_selector.h"
+#include "interference.h"
 
 /**
  * @brief An ordered pair of nodes considered for biased coloring.

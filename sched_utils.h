@@ -1,47 +1,15 @@
-/**
- * @file sched_utils.h
- * @brief Utility predicates and operand extractors for the instruction scheduler.
- *
- * Provides three groups of inline helpers consumed exclusively by the DAG
- * builder (sched_dag.c) and the list scheduler (sched.c):
- *
- *  1. **Latency table** (sched_latency_of)
- *     Static per-opcode cycle counts derived from Agner Fog's Haswell /
- *     Broadwell instruction tables.  Used by dag_build() to initialise each
- *     DAGNode.height and by the backward height-propagation pass to compute
- *     the latency-weighted critical-path length toward any sink node.
- *
- *  2. **Instruction predicates**
- *     - sched_is_pinned       — control-flow terminators + structural markers
- *                               that must stay at fixed positions and are never
- *                               placed in the ready heap.
- *     - sched_has_side_effect — memory writes, stack ops, calls, and integer
- *                               divide/sign-extend sequences that must be
- *                               serialised relative to each other.
- *     - sched_is_jcc          — conditional branch opcodes; used by the
- *                               macro-fusion detector in dag_build().
- *     - sched_is_cmp_or_test  — comparison opcodes that may fuse with a
- *                               following Jcc into a single micro-op.
- *
- *  3. **Operand / def-use extractors** (sched_reg, sched_reg_idx, sched_def,
- *     sched_uses)
- *     Translate MachOperand fields into flat integer register ids suitable
- *     for the SparseMap-based renaming pass inside dag_build().  Physical
- *     registers are offset by nextVreg so that vregs and physregs share a
- *     single flat id space without collision.
- *
- * All functions are static inline — zero call overhead at the hot scheduling
- * inner loop.  No heap allocation is performed here.
- *
- * Limitation: latency values are single-cycle averages; port-throughput
- * bottlenecks and cache-miss penalties are not modelled.
- */
+
 
 #ifndef SCHED_UTILS_H
 #define SCHED_UTILS_H
+
+/**
+ * @file sched_utils.h
+ * @brief Utility predicates and operand extractors for the instruction scheduler.
+ */
+
 #include "instr_query.h" 
 #include "instr_selector.h"
-
 
 /**
  * @brief Return the execution latency in cycles for machine opcode @p op.
@@ -83,7 +51,6 @@ static inline int sched_latency_of(MachOpCode op) {
     default: return 1;
     }
 }
-
 
 /**
  * @brief Return non-zero if @p op must stay at a fixed position in the block.
@@ -162,8 +129,6 @@ static inline int sched_is_jcc(MachOpCode op) {
 static inline int sched_is_cmp_or_test(MachOpCode op) {
     return op == MACH_CMP || op == MACH_TEST;
 }
-
-
 
 /**
  * @brief Extract the primary register id from a MachOperand.

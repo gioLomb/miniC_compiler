@@ -1,12 +1,13 @@
 #ifndef AST_H
 #define AST_H
 
-#include "../arena.h"
 
 /**
  * @file ast.h
  * @brief Abstract Syntax Tree (AST) representation and manipulation interface.
  */
+
+#include "../arena.h"
 
 /**
  * @brief X-Macro list defining AST node kinds and their string representations.
@@ -57,8 +58,6 @@ typedef struct ASTNode {
     int scopeLevel;             /**< Nesting scope level where symbol resolves */
     int offset;                 /**< Memory offset inside frame or storage area */
 } ASTNode;
-
-
 
 /**
  * @brief Constructs a new AST node.

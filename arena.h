@@ -1,18 +1,15 @@
 #ifndef ARENA_H
 #define ARENA_H
 
-#include <stddef.h>
-
-#define ARENA_DEFAULT_BLOCK_SIZE 4096
-
 
 /**
  * @file arena.h
  * @brief Fast arena (bump/region) memory allocator interface.
- *
- * Provides high-performance region-based memory allocation routines. Memory
- * is allocated in contiguous blocks and reclaimed all at once, avoiding individual free calls.
  */
+
+#include <stddef.h>
+
+#define ARENA_DEFAULT_BLOCK_SIZE 4096
 
 typedef struct Arena Arena;
 

@@ -1,43 +1,18 @@
-/**
- * @file ast_to_symtab.h
- * @brief AST → Symbol Table translation interface.
- *
- * Bridges the parser output (ASTNode tree) and the symbol-table layer
- * (Scope / Symbol).  Three distinct responsibilities are exposed:
- *
- *  1. **Declaration text parsing** (st_elaborate_decl)
- *     ASTNode.text for declarations is a compact string produced by the
- *     parser (e.g. "int x", "float arr[5]").  st_elaborate_decl splits it
- *     into its constituent parts — type name, symbol name, array flag and
- *     size — allocating the substrings from the caller's Arena.
- *
- *  2. **Single-symbol binding** (st_bind_symbol)
- *     Parses a single ND_VAR_DECL or ND_PARAM node's text and inserts the
- *     resulting Symbol into the given Scope.  On success it also stamps the
- *     AST node with the resolved (scopeLevel, offset) coordinates so that
- *     ir_generate() can identify the variable without a second lookup.
- *
- *  3. **Pass 1 — global namespace population** (st_resolve_global_namespace)
- *     Walks the top-level children of ND_PROGRAM and registers every global
- *     variable and function signature in the global Scope.  This single pass
- *     ensures that forward references between functions (function A calls
- *     function B declared later in the file) resolve correctly: all
- *     signatures are visible before any function body is type-checked or
- *     translated to IR.
- *
- * Dependency: caller must create the global Scope (sym_scopeCreate(NULL))
- * before calling st_resolve_global_namespace, and must call sym_finalize()
- * when done to release all scope memory.
- */
+
 
 #ifndef AST_TO_SYMTAB_H
 #define AST_TO_SYMTAB_H
+
+
+/**
+ * @file ast_to_symtab.h
+ * @brief AST → Symbol Table translation interface.
+ */
 
 #include <stddef.h>
 #include "arena.h"
 #include "parser/ast.h"
 #include "symbol_table.h"
-
 
 /**
  * @brief Map a textual type name from the AST to its DataType enum value.
@@ -104,7 +79,6 @@ void st_elaborate_decl(Arena *arena, const char *text,
  *               (redeclaration error — caller should increment its error counter).
  */
 int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
-
 
 /**
  * @brief Populate @p global with every top-level declaration in @p program.

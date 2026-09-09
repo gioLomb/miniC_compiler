@@ -1,22 +1,13 @@
 #ifndef ERROR_COLLECTOR_H
 #define ERROR_COLLECTOR_H
 
-#include <stdarg.h>
 
 /**
- * @file error_collector.h
+ * @file errorCollector.h
  * @brief Centralized error reporting/counting for every compiler phase.
- *
- * Two report modes funnel into one shared running total:
- *  - ec_report_cascading(): parser-only. Suppresses duplicate messages
- *    for the same erroneous statement (a syntax error found deep in the
- *    grammar - Expr -> ... -> Factor - would otherwise re-trigger at
- *    every enclosing rule before panic-mode recovery runs). Caller must
- *    call ec_clear_pending() once recovery completes.
- *  - ec_report()/ec_reportv(): unconditional, used by every other phase
- *    (semantic analysis, future passes). No suppression: each distinct
- *    call is a distinct diagnostic.
  */
+
+#include <stdarg.h>
 
 /**
  * @brief Report a syntax error, suppressed while a statement error is pending.

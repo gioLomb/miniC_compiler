@@ -1,140 +1,107 @@
 #!/usr/bin/env python3
+"""
+move_file_comment_after_guard.py
+
+Moves the leading Doxygen "@file" comment block of every .h file so it
+sits at the LATEST right after the include guard:
+
+    #ifndef X_H
+    #define X_H
+
+    /**
+     * @file x.h
+     * @brief ...
+     */
+
+    <rest of the file>
+
+If the header has no #ifndef/#define guard, the block is moved to the
+very top of the file instead. Headers with no "@file" doc block at all
+are left untouched.
+
+Usage:
+    python3 move_file_comment_after_guard.py [root_dir]
+
+root_dir defaults to the current directory; recurses into subdirectories
+(including parser/, examples/, tests/, ...) looking for *.h files.
+"""
+
 import re
 import sys
 from pathlib import Path
 
-# Mappatura dei rinominamenti (Vecchio Nome -> Nuovo Nome)
-RENAMES = {
-    # 🔴 Problemi reali
-    "build_dag": "dag_build",
-    
-    # ⚠️ Moduli con incoerenza reale
-    # sr.c
-    "count_variable_definitions": "sr_count_variable_definitions",
-    "collect_base_induction_vars": "sr_collect_base_induction_vars",
-    "findInductionBase": "sr_find_induction_base",
-    "match_iv_mul_const": "sr_match_iv_mul_const",
-    "try_match_derived_iv": "sr_try_match_derived_iv",
-    "find_derived_induction_vars": "sr_find_derived_induction_vars",
-    "emit_preheader_inits": "sr_emit_preheader_inits",
-    "patch_body_instruction": "sr_patch_body_instruction",
-    "rewrite_loop_body": "sr_rewrite_loop_body",
-    "apply_strength_reduction": "sr_apply_strength_reduction",
+BLOCK_RE = re.compile(r'/\*\*.*?\*/', re.DOTALL)
+GUARD_RE = re.compile(r'#ifndef\s+(\w+)\s*\n#define\s+\1\s*\n')
 
-    # loop.c
-    "init_dominator_sets": "loop_init_dominator_sets",
-    "intersect_predecessor_dominators": "loop_intersect_predecessor_dominators",
-    "update_dominator_set": "loop_update_dominator_set",
-    "bfs_traverse_loop_body": "loop_bfs_traverse_loop_body",
-    "collectBody": "loop_collect_body",
-    "record_loop_exit_blocks": "loop_record_loop_exit_blocks",
-    "build_natural_loop": "loop_build_natural_loop",
-    "create_pre_header_block": "loop_create_pre_header_block",
-    "reroute_non_body_predecessors": "loop_reroute_non_body_predecessors",
 
-    # regalloc.c
-    "build_cfg": "regalloc_build_cfg",
-    "finalize": "regalloc_finalize",
-    "save_restore_callee": "regalloc_save_restore_callee",
-    "wire_block_successors": "regalloc_wire_block_successors",
-    "build_label_to_block": "regalloc_build_label_to_block",
+def find_file_block(text: str):
+    """Return the re.Match for the first /** ... */ block containing @file, or None."""
+    for m in BLOCK_RE.finditer(text):
+        if '@file' in m.group(0):
+            return m
+    return None
 
-    # sched.c
-    "find_basic_blocks": "sched_find_basic_blocks",
-    "emit_pinned_headers": "sched_emit_pinned_headers",
-    "seed_ready_heap": "sched_seed_ready_heap",
-    "unlock_successors": "sched_unlock_successors",
-    "run_list_scheduling": "sched_run_list_scheduling",
-    "flush_leftovers": "sched_flush_leftovers",
-    "schedule_block": "sched_schedule_block",
 
-    # sched_dag.c
-    "rename_tracker_create": "tracker_create",
-    "rename_tracker_track_read": "tracker_read",
-    "rename_tracker_track_write": "tracker_write",
-    "rename_tracker_track_reg_list_read": "tracker_reg_list_read",
-    "rename_tracker_track_reg_list_write": "tracker_reg_list_write",
+def strip_block(text: str, block_m) -> str:
+    """
+    Remove the matched comment block from text and collapse the
+    whitespace gap it leaves behind to at most one blank line, so
+    repeated moves don't accumulate stray blank lines.
+    """
+    without = text[:block_m.start()] + text[block_m.end():]
+    return re.sub(r'\n{3,}', '\n\n', without)
 
-    # ra_color.c
-    "build_partner_index": "ra_build_partner_index",
-    "compute_forbidden_colors": "ra_compute_forbidden_colors",
-    "choose_color": "ra_choose_color",
 
-    # ra_coalesce.c
-    "resolve_operand_id": "ra_resolve_operand_id",
-    "is_valid_coalesce_candidate": "ra_is_valid_coalesce_candidate",
+def insert_after_guard(text: str, block_text: str) -> str:
+    """
+    Insert block_text right after the #ifndef/#define guard, or at the
+    top of the file if no guard is found. Normalises to exactly one
+    blank line before and after the inserted block.
+    """
+    guard_m = GUARD_RE.search(text)
 
-    # global_lower.c
-    "function_touches_globals": "gl_function_touches_globals",
+    if guard_m:
+        head = text[:guard_m.end()]
+        tail = text[guard_m.end():].lstrip('\n')
+        return f"{head}\n{block_text}\n\n{tail}"
 
-    # instr_selector.c
-    "load_operand": "isel_load_operand",
-    "operand_to_mach": "isel_operand_to_mach",
-    "find_global_idx": "isel_find_global_idx",
-    "flip_cmp": "isel_flip_cmp",
-    "comparison_to_setcc": "isel_comparison_to_setcc",
-    "flush_pending_cmp": "isel_flush_pending_cmp",
+    # no include guard: comment goes at the very top of the file
+    tail = text.lstrip('\n')
+    return f"{block_text}\n\n{tail}"
 
-    # ir.c (minori)
-    "mk_var": "ir_mk_var",
-    "compact_block": "ir_compact_block",
 
-    # constmap.c
-    "fold_unary": "lat_fold_unary",
-}
+def process_file(path: Path) -> bool:
+    original = path.read_text(encoding='utf-8')
 
-def fix_cp_comment_and_linkage(content: str) -> str:
-    """Corregge il commento errato e rende static is_comparison_op se non lo è."""
-    # Correggi il commento fuorviante in cp.c
-    old_comment = "arithmetic kernel lives in constmap.c"
-    new_comment = "arithmetic kernel lives locally in fold_binary_int/fold_binary_float"
-    content = content.replace(old_comment, new_comment)
+    block_m = find_file_block(original)
+    if block_m is None:
+        return False  # no @file doc block: nothing to move
 
-    # Rendi static la funzione is_comparison_op in cp.c (se definita non-static)
-    content = re.sub(
-        r'^(bool\s+is_comparison_op\s*\()',
-        r'static \1',
-        content,
-        flags=re.MULTILINE
-    )
-    return content
+    block_text = block_m.group(0)
+    without_block = strip_block(original, block_m)
+    new_text = insert_after_guard(without_block, block_text)
 
-def apply_refactoring(file_path: Path):
-    try:
-        content = file_path.read_text(encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Impossibile leggere {file_path}: {e}")
-        return
+    if new_text == original:
+        return False  # already in canonical position
 
-    original_content = content
+    path.write_text(new_text, encoding='utf-8')
+    return True
 
-    # Correggi cp.c specificatamente per commento e linkage
-    if file_path.name == "cp.c":
-        content = fix_cp_comment_and_linkage(content)
-
-    # Applica il rinominamento dei simboli rispettando i confini delle parole (\b)
-    for old_name, new_name in RENAMES.items():
-        pattern = r'\b' + re.escape(old_name) + r'\b'
-        content = re.sub(pattern, new_name, content)
-
-    if content != original_content:
-        file_path.write_text(content, encoding="utf-8")
-        print(f"[✓] Modificato: {file_path}")
 
 def main():
-    # Cerca ricorsivamente file .c e .h nella cartella corrente e sottocartelle
-    project_root = Path(".")
-    files = list(project_root.glob("**/*.[ch]"))
-    
-    if not files:
-        print("[!] Nessun file .c o .h trovato nella directory corrente.")
+    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('.')
+    if not root.exists():
+        print(f"error: path '{root}' does not exist")
         sys.exit(1)
 
-    print(f"Processando {len(files)} file sorgente...")
-    for f in files:
-        apply_refactoring(f)
+    changed = 0
+    for path in sorted(root.rglob('*.h')):
+        if process_file(path):
+            changed += 1
+            print(f"[moved] {path}")
 
-    print("\nRefactoring completato con successo!")
+    print(f"\nDone: {changed} header(s) fixed.")
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

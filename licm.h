@@ -1,44 +1,13 @@
 #ifndef LICM_H
 #define LICM_H
 
-#include "ir.h"
 
 /**
  * @file licm.h
  * @brief Loop-Invariant Code Motion (LICM) pass interface.
- *
- * LICM identifies instructions inside loop bodies whose operands do not
- * change across iterations (loop-invariant) and hoists them into a
- * synthetic pre-header block that executes exactly once before the loop.
- *
- * An instruction is loop-invariant iff:
- *   - it is pure (no memory writes, no control flow, no calls), AND
- *   - every source operand is either a compile-time constant, defined
- *     outside the loop, or defined exactly once inside the loop by an
- *     instruction that is itself loop-invariant (transitive invariance).
- *
- * A loop-invariant instruction is safe to hoist only when:
- *   - the block containing it dominates ALL loop exits (hoisting cannot
- *     cause the instruction to execute on a path where it would not have
- *     executed inside the loop), AND
- *   - its destination is defined exactly once in the loop AND is not
- *     live-in at the loop header (no external predecessor reads the old
- *     value before the loop begins).
- *
- * Prerequisites
- * -------------
- * - f must have a fully resolved CFG (succ[] set for all blocks).
- * - licm_optimize() internally builds dominators, detects loops, and
- *   computes liveness; callers do not need to provide these.
- * - licm_optimize() inserts synthetic pre-header blocks into f->blocks[].
- *   SR (sr.c) shares these pre-headers and must be run after LICM.
- *
- * Pipeline position
- * -----------------
- * Called once per function after the initial SVN → DCE → (CP+DCE)* rounds.
- * Returns 1 to signal that a new CP+DCE round should be run to clean up
- * dead multiplications and newly exposed constants.
  */
+
+#include "ir.h"
 
 /**
  * @brief Run Loop-Invariant Code Motion on every natural loop of @p f.

@@ -1,34 +1,15 @@
 #ifndef RA_COLOR_H
 #define RA_COLOR_H
 
-#include "interference.h"
-#include "bucket.h"
-#include "ra_coalesce.h"
 
 /**
  * @file ra_color.h
  * @brief Chaitin-Briggs graph coloring: Simplify + Select phases.
- *
- * Two-stage register allocation over an already-built IGraph:
- *
- *  1. ra_simplify() — repeatedly removes nodes from the graph in
- *     bucket-by-degree order (O(1) amortised via bucket.h), pushing each
- *     removed node onto a stack. Uses Briggs-optimistic heuristic for
- *     potential spill candidates: a node with degree >= k is not
- *     immediately marked as spill, it is only assumed *possibly*
- *     colorable and picked by lowest spill-cost/degree ratio when no
- *     node with degree < k remains.
- *
- *  2. ra_select_colors() — pops the stack in reverse order and assigns a
- *     physical-register color to each node. Applies biased coloring: if
- *     a move-related partner (from PartnerList) already has an available
- *     color, that color is preferred, eliminating the redundant MOV.
- *     Nodes with no available color are recorded in @c spilled[].
- *     Vregs live across a CALL prefer callee-saved registers to reduce
- *     push/pop overhead in the prologue/epilogue.
- *
- * The caller (regalloc.c) owns allocation/deallocation of stack/spilled.
  */
+
+#include "interference.h"
+#include "bucket.h"
+#include "ra_coalesce.h"
 
 /**
  * @brief Simplify phase: iteratively remove low-degree nodes from @p g.

@@ -1,10 +1,13 @@
+
+
+#ifndef IR_H
+#define IR_H
+
+
 /**
  * @file ir.h
  * @brief Three-address code IR for the miniC compiler.
  */
-
-#ifndef IR_H
-#define IR_H
 
 #include "parser/ast.h"
 #include "block.h"
@@ -51,7 +54,6 @@ typedef enum {
     IR_GOTO, IR_IF_FALSE, IR_LABEL,
 } IROp;
 
-
 /**
  * @brief Discriminant for the Operand union.
  */
@@ -67,7 +69,6 @@ typedef enum {
     OPND_LABEL,
     OPND_FUNC
 } OperandKind;
-
 
 /**
  * @brief Tagged union representing one IR value: variable, temp, constant,
@@ -90,7 +91,6 @@ typedef struct {
     } data;
 } Operand;
 
-
 /**
  * @brief One three-address IR instruction.
  */
@@ -100,7 +100,6 @@ typedef struct {
     int     loopDepth;  /**< Static loop nesting depth at the point this instruction was emitted. */
 } IRInstr;
 
-
 /**
  * @brief IR-level basic block: generic BasicBlock range plus predecessor count.
  */
@@ -108,7 +107,6 @@ typedef struct {
     BasicBlock bb;
     int        predCount;  /**< Number of CFG edges targeting this block. */
 } IRBlock;
-
 
 typedef struct {
     char    *name;
@@ -155,7 +153,6 @@ typedef struct {
     int      initCount;   /**< Number of entries in initVals (0 = goes to .bss). */
 } IRGlobalVar;
 
-
 /**
  * @brief Top-level compiled program: all functions plus all global variables.
  */
@@ -168,7 +165,6 @@ typedef struct {
     int          globalCount;
     int          globalCap;
 } IRProgram;
-
 
 /**
  * @brief Compressed-sparse-row predecessor list for a function's CFG.
@@ -192,7 +188,6 @@ typedef struct {
     int *predCount;  /**< predCount[b]: number of predecessors of block b. */
     int *predData;   /**< Flat array of all predecessor block indices, CSR-packed. */
 } PredList;
-
 
 /**
  * @brief Translate a full AST program into an IRProgram.
@@ -236,8 +231,6 @@ int ir_is_same_operand(const Operand *a, const Operand *b);
  * @return           1 if the instruction count changed, 0 if nothing was eliminated.
  */
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks);
-
-
 
 /**
  * @brief Print a human-readable dump of @p prog (globals + per-function instructions) to stdout.

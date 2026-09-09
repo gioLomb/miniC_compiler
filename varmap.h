@@ -1,43 +1,16 @@
 #ifndef VARMAP_H
 #define VARMAP_H
 
-#include "ir.h"         
-
-#include <stdint.h>
-#include "hash_table.h"
 
 /**
  * @file varmap.h
  * @brief Compact operand-to-integer id mapping for IR analysis passes.
- *
- * VarMap assigns a small non-negative integer to each distinct IR operand
- * (variable or temporary) encountered in a function.  These ids are used
- * to index into dense bit-vector structures — primarily LiveSet in
- * liveness.h — so that dataflow sets can be stored and manipulated with
- * bitwise operations instead of symbol-table lookups.
- *
- * ### Why this is a separate module
- * Several IR passes need a compact operand map without running the full
- * liveness dataflow engine (SVN, SR, LICM each build their own).
- * Isolating VarMap here lets any pass that needs "give me an integer id
- * for this operand" use it independently of liveness.h.
- *
- * ### 64-bit key layout
- * Each (kind, a, b) triple is packed into a single uint64_t for O(1)
- * hash-table lookup:
- *
- *   bits 63-62 | bits 61-31 | bits 30-0
- *   -----------|------------|----------
- *   kind (2)   | a (31)     | b (31)
- *
- * | kind |  Operand type | a          | b          |
- * |------|---------------|------------|------------|
- * |  0   |  OPND_VAR     | varLevel   | varOffset  |
- * |  1   |  OPND_TEMP    | tempId     | 0          |
- *
- * The 31-bit masks ensure no field bleeds into its neighbour regardless of
- * the input values; kind fits in 2 bits because only 0 and 1 are used.
  */
+
+#include "ir.h"         
+
+#include <stdint.h>
+#include "hash_table.h"
 
 /** Direct-mapped cache size; must be a power of 2. */
 #define VARMAP_CACHE_SIZE 256
@@ -56,7 +29,6 @@ typedef struct {
     int      cacheIds[VARMAP_CACHE_SIZE];
     char     cacheOccupied[VARMAP_CACHE_SIZE];
 } VarMap;
-
 
 /**
  * @brief Hash function for packed uint64_t keys, compatible with @c hash_func.

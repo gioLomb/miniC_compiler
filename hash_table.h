@@ -1,30 +1,13 @@
-/**
- * @file hash_table.h
- * @brief Generic hash table with separate chaining and binary key/value support.
- *
- * Lightweight version for single-thread internal use (e.g. as a building
- * block for a compiler's symbol table): compared to a general-purpose
- * implementation, it has no readers-writer lock and no anti hash-flooding
- * seed, since there is no concurrency and keys never come from hostile
- * input. Public API and collision/resize logic match a standard
- * separate-chaining table.
- *
- * Applied optimizations (see callgrind_report):
- *   1. Capacity always a power of 2: index = h & (capacity-1) instead of
- *      h % capacity (modulo on a prime). ht_get/ht_set are hotspots #1 and
- *      #6 in profiling; AND removes the integer division on every single
- *      lookup/insert across all hash tables in the project (symtab, varmap,
- *      svn, cp). The hash functions used (FNV-1a, varmap_hash's splitmix64
- *      finalizer) have enough avalanche on the low bits to make the switch
- *      from modulo-prime to AND-power-of-2 safe.
- *   2. Entry.size (logical value bytes) kept separate from Entry.cap
- *      (physical bytes allocated in the arena): an update that shrinks then
- *      regrows a value reuses the existing buffer instead of reallocating
- *      every time valueSize exceeds the last recorded size.
- */
+
 
 #ifndef HASH_TABLE_H
 #define HASH_TABLE_H
+
+
+/**
+ * @file hash_table.h
+ * @brief Generic hash table with separate chaining and binary key/value support.
+ */
 
 #include <stdio.h>
 #include <stdlib.h>

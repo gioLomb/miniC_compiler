@@ -1,6 +1,7 @@
 #ifndef LEXER_H
 #define LEXER_H
 
+
 /**
  * @file lexer.h
  * @brief Lexical analyzer interface for reading and tokenizing source files.

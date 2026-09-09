@@ -1,67 +1,13 @@
-/**
- * @file interference.h
- * @brief Interference graph (IGraph) construction for register allocation.
- *
- * An interference graph models which virtual registers cannot share the same
- * physical register because they are simultaneously live at some program
- * point.  Each node corresponds to one virtual register (id in [0, nextVreg));
- * an edge (u, v) means u and v interfere.
- *
- * Representation
- * --------------
- * Two complementary representations are maintained:
- *
- *  - Triangular bit matrix (@c matrix): provides O(1) edge existence queries
- *    and is compact in memory.  Entry for the pair (i, j) with i > j is at
- *    bit position i*(i-1)/2 + j within the flat uint64_t array.
- *
- *  - Adjacency lists (@c adj): one IntVector per node.  Used by Simplify
- *    (ra_color.c) to iterate over a node's neighbours when updating degrees
- *    after a node is removed from the graph.
- *
- * Physical-register nodes
- * -----------------------
- * Nodes in [nextVreg, nextVreg + PHYS_ALLOCATABLE) represent physical
- * registers.  They are pre-coloured (color[p] = p - nextVreg) and always
- * active.  Edges from virtual registers to physical registers are added when
- * a virtual register is live across an instruction that implicitly defines a
- * physical register (e.g. IDIV clobbers RAX/RDX, CALL clobbers all
- * caller-saved registers).
- *
- * Exclusion masks and call-crossing flags
- * ----------------------------------------
- * @c excl[v] is a bitmask of physical-register colours that @p v must not
- * receive (in addition to interference edges).  Used for partial clobbers
- * (SETcc writes %al = PHYS_RAX).
- * @c crossesCall[v] is 1 if @p v is live across at least one CALL; the
- * colour selector then prefers callee-saved registers for @p v to minimise
- * push/pop overhead in the prologue/epilogue.
- *
- * Reload-temp flag
- * -----------------
- * @c isReloadTemp[v] is 1 if @p v is a reload/spill temporary introduced by
- * ra_spill_insert() in a previous round of the same function's regalloc
- * loop (see ig_build()'s firstSpillVreg parameter).  Such temps are scoped
- * to 2-3 instructions by construction (one load-use or def-store), so they
- * naturally have a very low spillCost.  Left unguarded, the Briggs-optimistic
- * spill heuristic in ra_simplify() picks them as the "cheapest" candidate by
- * the spillCost/degree ratio, even though respilling them does nothing to
- * relieve real register pressure — that pressure comes from other, genuinely
- * long-lived values.  This produced observed pathological cases: a single
- * value bounced through 15+ stack slots across that many regalloc rounds
- * before the heuristic finally picked a real candidate.  ra_simplify() uses
- * this flag to prefer non-reload-temp candidates first.
- *
- * Lifetime
- * --------
- * Fixed-size arrays (matrix, degree, color, active, excl, spillCost,
- * crossesCall, isReloadTemp) are allocated from the caller-supplied arena.
- * Adjacency list data (adj[i].data) is heap-allocated by IntVector and must
- * be released via ig_free() before the arena is destroyed.
- */
+
 
 #ifndef INTERFERENCE_H
 #define INTERFERENCE_H
+
+
+/**
+ * @file interference.h
+ * @brief Interference graph (IGraph) construction for register allocation.
+ */
 
 #include <stdbool.h>
 #include "liveness.h"
@@ -100,9 +46,6 @@ typedef struct {
     char     *isReloadTemp;  /**< 1 if a reload/spill temp from a prior ra_spill_insert() round;
                               *   lets ra_simplify() avoid respilling short-lived temps first. */
 } IGraph;
-
-
-
 
 /**
  * @brief Test whether edge (i, j) exists in the interference graph.

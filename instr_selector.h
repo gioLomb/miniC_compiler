@@ -1,11 +1,13 @@
-/**
- * @file instr_selector.h
- * @brief Instruction selection: lowers the linear IR to machine instructions
- *        targeting x86-64 (System V AMD64 ABI).
- */
+
 
 #ifndef ISEL_H
 #define ISEL_H
+
+
+/**
+ * @file instr_selector.h
+ * @brief Instruction selection: lowers the linear IR to machine instructions targeting x86-64 (System V AMD64 ABI).
+ */
 
 #include "ir.h"
 #include <stdio.h>
@@ -16,7 +18,6 @@
 
 #define NUM_ARG_REGS 6
 #define MAX_PARAMS   64
-
 
 typedef enum {
     MACH_MOV, MACH_MOVSX,

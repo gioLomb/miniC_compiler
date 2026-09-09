@@ -1,12 +1,10 @@
 #ifndef SYMBOL_TABLE_H
 #define SYMBOL_TABLE_H
 
+
 /**
  * @file symbol_table.h
  * @brief Lexical Scope Symbol Table implementation ("sheaf of tables").
- *
- * Implements lexical scoping where each scope maintains its own Hash_Table and
- * forms a tree hierarchy using parent and children links.
  */
 
 #include <stdint.h>

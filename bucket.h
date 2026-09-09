@@ -1,32 +1,13 @@
-/**
- * @file bucket.h
- * @brief Degree-indexed bucket list for O(1) node extraction in graph coloring.
- *
- * Provides a fixed-width array of doubly-linked lists (one per degree 0..k-1)
- * used by the Briggs-optimistic Simplify phase of the Chaitin-Briggs register
- * allocator (ra_color.c).  The key invariant is that every active virtual
- * register sits in the bucket whose index equals its current interference-graph
- * degree, capped at k-1 (= PHYS_ALLOCATABLE - 1).
- *
- * Design
- * ------
- * Each bucket is a doubly-linked list threaded through the next/prev arrays,
- * allowing O(1) insert and remove without touching a heap allocator.  A 32-bit
- * bitmask (nonempty) records which buckets contain at least one node; the
- * lowest set bit is found in one instruction via __builtin_ctz, making
- * bucket_pop_any_low() O(1) as well.
- *
- * Ownership and lifetime
- * ----------------------
- * All storage (head, next, prev, inBucket) is allocated from a private
- * module-level arena created by buckets_create() and destroyed by
- * buckets_free().  Only one Buckets instance may exist at a time per process
- * (the arena is a module-level singleton).  This matches the single-threaded,
- * single-allocation-at-a-time usage pattern of the register allocator.
- */
+
 
 #ifndef BUCKET_H
 #define BUCKET_H
+
+
+/**
+ * @file bucket.h
+ * @brief Degree-indexed bucket list for O(1) node extraction in graph coloring.
+ */
 
 #include <stdint.h>
 

@@ -1,15 +1,16 @@
 #ifndef GLOBAL_LOWER_H
 #define GLOBAL_LOWER_H
 
-#include "ir.h"
-#include "arena.h"
-
-#define IR_MAX_EXPANSION_FACTOR 7
 
 /**
  * @file global_lower.h
  * @brief Module for lowering global variable accesses in the IR.
  */
+
+#include "ir.h"
+#include "arena.h"
+
+#define IR_MAX_EXPANSION_FACTOR 7
 
 /**
  * @brief Lower every OPND_GLOBAL operand of @p f into IR_GLOBAL_ADDR + LOAD/STORE_ARR.

@@ -1,18 +1,16 @@
 #ifndef PARSER_H
 #define PARSER_H
 
-#include "ast.h"
-#include "../arena.h"
-
-#define NEW_NODE(p, kind, text) newNode((p)->ast_arena, (kind), (text))
-
 
 /**
  * @file parser.h
  * @brief Recursive-descent parser interface.
- *
- * Provides entry point functions for parsing source tokens into an Abstract Syntax Tree (AST).
  */
+
+#include "ast.h"
+#include "../arena.h"
+
+#define NEW_NODE(p, kind, text) newNode((p)->ast_arena, (kind), (text))
 
 /**
  * @brief Parses an entire program and generates its corresponding AST representation.

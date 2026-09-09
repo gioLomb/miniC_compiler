@@ -1,24 +1,13 @@
-/**
- * @file dynamic_array.h
- * @brief Generic resizable integer array (IntVector).
- *
- * Provides a minimal growable array of @c int values used across several
- * modules that need variable-length lists whose size is not known at
- * allocation time:
- *
- *   - interference.c  — adjacency lists of the interference graph
- *                       (typedef'd as AdjList)
- *   - licm.c          — per-variable use lists during invariant detection
- *                       (typedef'd as UsedByList)
- *
- * The implementation uses a standard doubling strategy: the backing array
- * starts empty and is reallocated to twice its capacity whenever a push
- * would exceed it.  All memory is heap-allocated (malloc/realloc/free);
- * IntVector does not interact with any Arena.
- */
+
 
 #ifndef DYNAMIC_ARRAY_H
 #define DYNAMIC_ARRAY_H
+
+
+/**
+ * @file dynamic_array.h
+ * @brief Generic resizable integer array (IntVector).
+ */
 
 /** Initial capacity on the first push (avoids realloc on every early push). */
 #define INT_VECTOR_INITIAL_CAP 16

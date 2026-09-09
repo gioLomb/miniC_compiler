@@ -1,54 +1,13 @@
-/**
- * @file constmap.h
- * @brief Constant-propagation lattice and per-variable constant map.
- *
- * This module provides two interrelated abstractions used exclusively by the
- * Constant Propagation pass (cp.c):
- *
- *  1. LatVal — a single element of the constant-propagation lattice.
- *  2. ConstMap — a dense array of LatVal, one entry per tracked variable id,
- *     indexed by the compact integer ids produced by VarMap.
- *
- * The lattice
- * -----------
- * The lattice is ordered UNKNOWN < CONST(v) < CONFLICT and has three levels:
- *
- *   UNKNOWN   (⊤)  No definition of this variable has been seen yet on any
- *                   reaching path.  Acts as the identity element for meet:
- *                   UNKNOWN ⊓ x = x.
- *
- *   CONST(v)       The variable holds the same compile-time constant value v
- *                   on every path reaching this point.  Both integer and
- *                   float constants are represented.
- *
- *   CONFLICT  (⊥)  The variable's value differs across reaching paths, or
- *                   comes from a non-constant definition (e.g. a load or call).
- *                   Absorbs everything: CONFLICT ⊓ x = CONFLICT.
- *
- * Meet operation (⊓)
- * ------------------
- * Used at CFG join points to combine information from all predecessors:
- *
- *   UNKNOWN  ⊓  x         = x
- *   CONST(a) ⊓  CONST(a)  = CONST(a)   (same value: still a constant)
- *   CONST(a) ⊓  CONST(b)  = CONFLICT   (a ≠ b: cannot determine statically)
- *   CONFLICT ⊓  x         = CONFLICT
- *
- * Transfer function helpers
- * -------------------------
- * The bottom half of this header declares the helpers called by cp.c's
- * transferInstr() to evaluate whether an instruction produces a constant
- * result and, if so, what value:
- *
- *   lat_get_value_from_operand — lift an Operand to a LatVal (inline constants or map lookup)
- *   is_binary_op      — predicate: opcode takes two operands and produces a value
- *   fold_binary_int   — constant-fold a binary integer operation
- *   fold_binary_float — constant-fold a binary float operation
- *   lat_fold_unary       — constant-fold NEG or NOT
- */
+
 
 #ifndef CONSTMAP_H
 #define CONSTMAP_H
+
+
+/**
+ * @file constmap.h
+ * @brief Constant-propagation lattice and per-variable constant map.
+ */
 
 #include "ir.h"
 #include "varmap.h"
@@ -86,7 +45,6 @@ typedef struct {
 /* =========================================================================
  * Lattice constructors
  * ========================================================================= */
-
 
 /** @brief Return a CONST lattice element wrapping the integer @p ival. */
 LatVal lat_set_const_int(int ival);

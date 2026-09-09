@@ -1,21 +1,15 @@
 #ifndef BITSET_H
 #define BITSET_H
 
-#include <stdint.h>
-#include <string.h>
-#include "arena.h"
 
 /**
  * @file bitset.h
  * @brief Generic arena-backed bit-set.
- *
- * Reusable primitive type shared across unrelated domains:
- *   - liveness.h re-exports it as LiveSet (bit = variable id).
- *   - loop.h uses it directly as BitSet (bit = dominator block index).
- *
- * All bit-words are allocated from the caller's Arena; no individual
- * free is required (lifetime is tied to the arena).
  */
+
+#include <stdint.h>
+#include <string.h>
+#include "arena.h"
 
 /**
  * @brief Fixed-capacity bit-set backed by an array of 64-bit words.

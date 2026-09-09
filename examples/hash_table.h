@@ -1,30 +1,13 @@
-/**
- * @file hash_table.h
- * @brief Hash table generica con separate chaining e supporto a chiavi/valori binari.
- *
- * Versione ALLEGGERITA per uso interno single-thread (es. come mattone per
- * la symbol table di un compilatore): rispetto all'originale sono stati
- * rimossi il readers-writer lock (pthread_rwlock_t) e il seed anti hash-
- * flooding (generate_seed/lettura di /dev/urandom), inutili in un contesto
- * dove non c'e' concorrenza e le chiavi non provengono da input ostile.
- * L'API pubblica e la logica di collision/resize restano identiche.
- *
- * Ottimizzazioni applicate (vedi callgrind_report):
- *   1. Capacity della tabella sempre potenza di 2: index = h & (capacity-1)
- *      invece di h % capacity (modulo su primo). ht_get/ht_set sono gli
- *      hotspot #1 e #6 del profiling; l'AND elimina la divisione intera su
- *      ogni singola lookup/insert, in tutte le hash table del progetto
- *      (symtab, varmap, svn, cp). Le hash function usate (FNV-1a, splitmix64
- *      finalizer di varmap_hash) hanno avalanche sufficiente sui bit bassi:
- *      sicuro passare da modulo-primo ad AND-potenza-di-2.
- *   2. Entry.size (byte logici validi) separato da Entry.cap (byte fisici
- *      allocati nell'arena): un update che riduce e poi rialza la dimensione
- *      del valore riusa il buffer esistente invece di allocarne uno nuovo
- *      ogni volta che valueSize supera l'ultimo size registrato.
- */
+
 
 #ifndef HASH_TABLE_H
 #define HASH_TABLE_H
+
+
+/**
+ * @file hash_table.h
+ * @brief Hash table generica con separate chaining e supporto a chiavi/valori binari.
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
