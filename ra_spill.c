@@ -168,15 +168,27 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
         MachOperand *memHolder = isStore ? &in.dst : &in.src1;
         reload_mem_operands_if_spilled(memHolder, origNextVreg, &ss, slot, f, newInstrs, &newCount, cache);
 
-        /* Handle destination (spilled vs unspilled) */
-        int dstSpilled = (in.dst.kind == MO_VREG) && !isStore &&
-                          is_spilled_vreg(&ss, in.dst.vregId, origNextVreg);
+        /* CMP/TEST: dst contiene il lhs del confronto, quindi è un uso, non una def.
+         * Se è spilled, va ricaricato come un normale operando sorgente. */
+        if (in.op == MACH_CMP || in.op == MACH_TEST) {
+            reload_operand_if_spilled(&in.dst, origNextVreg, &ss, slot,
+                                      f, newInstrs, &newCount, cache);
+            reload_mem_operands_if_spilled(&in.dst, origNextVreg, &ss, slot,
+                                           f, newInstrs, &newCount, cache);
+        }
+
+        /* Handle destination (spilled vs unspilled)
+         * Solo chi definisce davvero dst può essere trattato come destinazione. */
+        int dstSpilled = (instr_def(&in, origNextVreg) >= 0) &&
+                         (in.dst.kind == MO_VREG) && !isStore &&
+                         is_spilled_vreg(&ss, in.dst.vregId, origNextVreg);
 
         if (dstSpilled) {
             emit_spilled_destination(&in, slot, f, newInstrs, &newCount, cache);
         } else {
             newInstrs[newCount++] = in;
         }
+        
     }
 
     free(f->instrs);

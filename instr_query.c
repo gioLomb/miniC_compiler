@@ -51,15 +51,20 @@ void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
     *n = 0;
     push_operand_regs(out, n, &in->src1, nextVreg);
     push_operand_regs(out, n, &in->src2, nextVreg);
+
     switch (in->op) {
     case MACH_STORE:
+    case MACH_CMP:      /* dst = lhs del confronto: è un uso */
+    case MACH_TEST:     /* dst = lhs del test: è un uso */
         push_operand_regs(out, n, &in->dst, nextVreg);
         break;
+
     case MACH_PUSH:
     case MACH_IDIV:
     case MACH_CQO:
         push_reg_id(out, n, mach_operand_reg(&in->dst, nextVreg));
         break;
+
     default:
         if (instr_is_rmw(in->op)) {
             push_reg_id(out, n, mach_operand_reg(&in->dst, nextVreg));
