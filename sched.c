@@ -51,9 +51,17 @@ static int sched_find_basic_blocks(const MachFunction *f, BlockRange *outBlocks)
     int start = 0;
 
     for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op == MACH_LABEL && i > start) {
+        MachOpCode op = f->instrs[i].op;
+        if (op == MACH_LABEL && i > start) {
+            // label = jump target: close whatever block was open before it
             outBlocks[count++] = (BlockRange){ start, i };
             start = i;
+        } else if (instr_is_ctrl_transfer(op)) {
+            // JMP/Jcc/CALL/RET end a block too, even with no label right
+            // after (e.g. a conditional branch immediately falling through
+            // to loop body — previously merged into the same block).
+            outBlocks[count++] = (BlockRange){ start, i + 1 };
+            start = i + 1;
         }
     }
     if (start < f->count) {
@@ -62,7 +70,6 @@ static int sched_find_basic_blocks(const MachFunction *f, BlockRange *outBlocks)
 
     return count;
 }
-
 
 
 /**

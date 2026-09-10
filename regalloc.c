@@ -191,35 +191,36 @@ static BasicBlock *regalloc_build_cfg(const MachFunction *f, Arena *arena, int *
     BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
     int start = 0;
 
-    // Partition instructions into basic blocks
     for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op == MACH_LABEL && i > start) {
-            if (count == cap) {
-                cap *= 2;
-                blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
-            }
-            blocks[count++] = (BasicBlock){ start, i, {-1, -1} };
-            start = i;
-        }
-    }
+        MachOpCode op = f->instrs[i].op;
+        int isLabelSplit = (op == MACH_LABEL && i > start);
+        int isCtrlSplit  = instr_is_ctrl_transfer(op);
+        if (!isLabelSplit && !isCtrlSplit) continue;
 
-    if (start < f->count) {
         if (count == cap) {
             cap *= 2;
             blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
         }
+        // control-transfer closes [start, i+1) (branch stays IN the block);
+        // label closes [start, i) and the label opens the next block
+        int end = isLabelSplit ? i : i + 1;
+        blocks[count++] = (BasicBlock){ start, end, {-1, -1} };
+        start = end;
+    }
+
+    if (start < f->count) {
+        if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
         blocks[count++] = (BasicBlock){ start, f->count, {-1, -1} };
     }
 
-    // Build label lookup table and wire CFG edges (Refactoring: Extract Function)
     int minId, mapSize;
     int *labelMap = regalloc_build_label_to_block(f, blocks, count, arena, &minId, &mapSize);
-
     regalloc_wire_block_successors(blocks, count, f, labelMap, minId, mapSize);
 
     *outCount = count;
     return blocks;
 }
+
 
 static inline void rewrite_phys(MachOperand *o, const int *color)
 {
