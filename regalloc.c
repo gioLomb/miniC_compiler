@@ -463,7 +463,14 @@ static void regalloc_function(MachFunction *f)
     regalloc_save_restore_callee(f);
 
     // Align frame size to 16-byte boundary (Refactoring: Replace Magic Literal / Explaining Variable)
-    f->frameSize = (frameOff + (STACK_ALIGNMENT_BYTES - 1)) & ~(STACK_ALIGNMENT_BYTES - 1);
+    int retCount = 0;
+    uint32_t usedMask = collect_used_callee_saved(f, &retCount);
+    int nCalleeSaved = __builtin_popcount(usedMask);
+
+    int frameSize = (frameOff + (STACK_ALIGNMENT_BYTES - 1)) & ~(STACK_ALIGNMENT_BYTES - 1);
+    if (nCalleeSaved & 1)
+        frameSize += 8;
+    f->frameSize = frameSize;
 }
 
 void regalloc(MachProgram *mp)
