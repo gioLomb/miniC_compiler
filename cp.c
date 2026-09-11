@@ -342,7 +342,8 @@ static int *build_label_to_instr(const IRFunction *f, Arena *arena, int *outCap)
     for (int i = 0; i < f->count; i++) {
         if (instrs[i].op == IR_LABEL) {
             int idx = instrs[i].dst.data.labelId - labelBase;
-            map[idx] = i;
+            if (idx >= 0 && idx < cap && map[idx] < 0)
+                map[idx] = i;
         }
     }
 
@@ -367,10 +368,20 @@ static void collect_referenced_labels(const IRFunction *f,
         if (in->op != IR_GOTO && in->op != IR_IF_FALSE) continue;
 
         int idx = in->dst.data.labelId - f->labelBase;
-        if (idx < 0 || idx >= mapCap) continue; // not found -> no-op
+        if (idx < 0 || idx >= mapCap) continue;
 
         int j = labelToInstr[idx];
         if (j >= 0) referenced[j] = 1;
+    }
+    /* Keep every IR_LABEL with a given id if ANY copy is referenced.
+     * Duplicate labels (bad sweep) would otherwise make the first copy
+     * look orphaned because labelToInstr keeps only the last index. */
+    for (int i = 0; i < f->count; i++) {
+        if (f->instrs[i].op != IR_LABEL) continue;
+        int idx = f->instrs[i].dst.data.labelId - f->labelBase;
+        if (idx < 0 || idx >= mapCap) continue;
+        int j = labelToInstr[idx];
+        if (j >= 0 && referenced[j]) referenced[i] = 1;
     }
 }
 
@@ -418,24 +429,23 @@ static int cp_mark_orphan_labels(IRFunction *f, char *eliminate, Arena *arena) {
 static int try_eliminate_redundant_jump(IRFunction *f, int b, int i, char *eliminate) {
     IRInstr *in = &f->instrs[i];
 
-    // taken edge: succ[0] for GOTO (its only edge), succ[1] for IF_FALSE
-    int s = (in->op == IR_GOTO) ? f->blocks[b].bb.succ[0]
-                                 : f->blocks[b].bb.succ[1];
-    if (s >= 0) f->blocks[s].predCount--;
-
     if (in->op == IR_GOTO) {
-        // GOTO had only one successor; nothing left after removing it
-        f->blocks[b].bb.succ[0] = f->blocks[b].bb.succ[1];
-        f->blocks[b].bb.succ[1] = -1;
+        // GOTO's target becomes an implicit fallthrough (jump physically
+        // adjacent to its label): succ[0] already points there and must
+        // stay untouched — the edge survives, only the explicit jump
+        // instruction is removed. No predCount change (edge count unchanged).
     } else {
-        // IF_FALSE: fall-through (succ[0]) stays, only the taken edge is dropped
+        // IF_FALSE: succ[0] (fallthrough) and succ[1] (taken) point to the
+        // SAME block here — that's what makes the jump redundant. Collapse
+        // the now-duplicate taken edge into the fallthrough.
+        int s = f->blocks[b].bb.succ[1];
+        if (s >= 0) f->blocks[s].predCount--;
         f->blocks[b].bb.succ[1] = -1;
     }
 
     eliminate[i] = 1;
     return 1;
 }
-
 /**
  * @brief Fold an IR_IF_FALSE whose condition is (now) known at compile time,
  *        pruning the corresponding CFG edge; otherwise substitute the
