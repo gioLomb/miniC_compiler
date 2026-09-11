@@ -124,28 +124,28 @@ static inline void dce_mark_block_dead(IRFunction *f, int b, char *eliminate) {
 }
 
 
-static int dce_process_instr(IRInstr *in, int idx, BitSet *live,
-                              VarMap *vm, char *eliminate) {
+static int dce_process_instr(IRInstr *in, int idx, BitSet *live, VarMap *vm, char *eliminate) {
     int dstId = varmap_operand_id(vm, in->dst);
     int def   = ir_defines_dst(in->op) && dstId >= 0;
 
-    // dead store: pure, defines dst, dst not live after -> eliminate
     if ((ir_is_pure(in->op) || in->op == IR_LOAD_ARR) && def && !bitset_test(live, dstId)) {
         eliminate[idx] = 1;
         return 1;
     }
+
+    // Backward transfer: LiveIn = Use ∪ (LiveOut − Def). Def MUST be cleared
+    // before uses are added, otherwise a self-referential update (dst == src,
+    // e.g. "x = x + y") loses its own use when def-clear wipes the bit just set.
+    if (def)
+        bitset_clr(live, dstId);
 
     int s1 = varmap_operand_id(vm, in->src1);
     int s2 = varmap_operand_id(vm, in->src2);
     if (s1 >= 0) bitset_set(live, s1);
     if (s2 >= 0) bitset_set(live, s2);
 
-    // STORE_ARR's dst is a base address read, not a write
     if (!ir_defines_dst(in->op) && dstId >= 0)
         bitset_set(live, dstId);
-
-    if (def)
-        bitset_clr(live, dstId); // def kills liveness going further backward
 
     return 0;
 }
