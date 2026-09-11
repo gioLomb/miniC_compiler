@@ -499,26 +499,32 @@ static void isel_select_param(VarMap *operandToVreg, MachFunction *f, const IRIn
 /** @brief Emit the full call sequence (stack args, register args, CALL, cleanup). */
 static void isel_select_call(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
                          PendingArgs *args) {
-    int n = args->count;
-    // overflow args (beyond the 6 ABI registers) pushed in REVERSE order
-    // (rightmost first) so they end up left-to-right in memory
-    for (int k = n - 1; k >= NUM_ARG_REGS; k--)
-        mfunc_emit(f, MACH_PUSH, (MachOperand){ .kind = MO_VREG, .vregId = args->vregs[k] }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    int reg_args = (n < NUM_ARG_REGS) ? n : NUM_ARG_REGS;
+    /* Consume exactly this CALL's arity from the END of the staging buffer.
+     * Leftover prefix belongs to an outer call whose PARAMs were emitted
+     * before a nested call (defensive even after ir_emit_call evaluates
+     * all args first). */
+    int staged = args->count;
+    int arity  = in->src2.kind == OPND_CONST_INT ? (int)in->src2.data.intVal : staged;
+    if (arity < 0) arity = 0;
+    if (arity > staged) arity = staged;
+    int base = staged - arity;
+    int *vregs = &args->vregs[base];
+
+    for (int k = arity - 1; k >= NUM_ARG_REGS; k--)
+        mfunc_emit(f, MACH_PUSH, (MachOperand){ .kind = MO_VREG, .vregId = vregs[k] }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
+    int reg_args = (arity < NUM_ARG_REGS) ? arity : NUM_ARG_REGS;
     for (int k = 0; k < reg_args; k++)
-        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_PHYS, .physReg = ARG_REGS[k] }, (MachOperand){ .kind = MO_VREG, .vregId = args->vregs[k] }, (MachOperand){ .kind = MO_NONE });
+        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_PHYS, .physReg = ARG_REGS[k] }, (MachOperand){ .kind = MO_VREG, .vregId = vregs[k] }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_CALL, (MachOperand){ .kind = MO_FUNC, .func = in->src1.data.funcName }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    // caller cleans up any stack-pushed arguments after the call returns
-    int extra = n - NUM_ARG_REGS;
+    int extra = arity - NUM_ARG_REGS;
     if (extra > 0) {
         int adj = mfunc_new_vreg(f);
         mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = adj }, (MachOperand){ .kind = MO_IMM, .imm = extra * 8L }, (MachOperand){ .kind = MO_NONE });
         mfunc_emit(f, MACH_ADD, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RSP }, (MachOperand){ .kind = MO_VREG, .vregId = adj }, (MachOperand){ .kind = MO_NONE });
     }
-    // return value convention: RAX -> destination vreg
     int dst = varmap_operand_id(operandToVreg, in->dst);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_NONE });
-    args->count = 0; // reset staging buffer for the next call site
+    args->count = base;
 }
 
 static void isel_select_return(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
