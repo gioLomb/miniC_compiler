@@ -487,8 +487,8 @@ static void licm_remap_block_ranges(IRFunction *f, const int *oldToNew, const ch
             newE = oldToNew[j] + 1;
         }
 
-        f->blocks[b].bb.range.start = (newS == -1) ? 0 : newS;
-        f->blocks[b].bb.range.end   = (newE == -1) ? 0 : newE;
+        f->blocks[b].bb.range.start = (newS == -1) ? oldS : newS;
+        f->blocks[b].bb.range.end   = (newE == -1) ? oldS : newE;
     }
 }
 
