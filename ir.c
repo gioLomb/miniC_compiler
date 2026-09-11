@@ -78,49 +78,45 @@ int ir_is_pure(IROp op) {
     return (op < 32) && ((mask >> op) & 1U);
 }
 
-/**
- * @brief Compact one block's instruction range in place, keeping only
- *        surviving (non-eliminated) instructions.
- *
- * Safe in-place write: writeCursor never exceeds the read index i, since
- * it only advances on a kept instruction (and always by <= the number of
- * instructions read so far).
- *
- * @param f           Function whose instrs[] is compacted in place.
- * @param eliminate   Per-instruction elimination flags.
- * @param b           Block index being compacted.
- * @param writeCursor In/out: next free slot in f->instrs; advanced by the
- *                     number of surviving instructions in this block.
- */
-static void ir_compact_block(IRFunction *f, const char *eliminate, int b, int *writeCursor) {
-    int oldStart = f->blocks[b].bb.range.start;
-    int oldEnd   = f->blocks[b].bb.range.end;
-    int newStart = *writeCursor;
-
-    for (int i = oldStart; i < oldEnd; i++)
-        if (!eliminate[i])
-            f->instrs[(*writeCursor)++] = f->instrs[i];
-
-    f->blocks[b].bb.range.start = newStart;
-    f->blocks[b].bb.range.end   = *writeCursor;
-}
-
+/* ir_compact_block removed: ir_sweep now compacts in instruction order. */
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     int nInstrs = f->count;
-    int writeCursor = 0;
+    // Map every old instruction index (and the exclusive-end sentinel
+    // nInstrs) to its position in the compacted array. Compacting in
+    // *instruction* order — not block-index order — is required because
+    // LICM/SR pre-header blocks are appended to f->blocks[] while their
+    // instruction ranges sit in the middle of instrs[]. Sweeping by
+    // block index would copy those ranges last, after earlier blocks had
+    // already overwritten them in place, duplicating labels and leaving
+    // hoisted/SR init code past the function's RET.
+    int *newPos = malloc((size_t)(nInstrs + 1) * sizeof(int));
+    if (!newPos) { ec_report("OOM in ir_sweep\n"); exit(1); }
 
-    for (int b = 0; b < nBlocks; b++)
-        ir_compact_block(f, eliminate, b, &writeCursor);
+    int write = 0;
+    for (int i = 0; i < nInstrs; i++) {
+        newPos[i] = write;
+        if (!eliminate[i])
+            f->instrs[write++] = f->instrs[i];
+    }
+    newPos[nInstrs] = write;
 
-    f->count         = writeCursor;
-    f->capacity      = f->capacity;
+    for (int b = 0; b < nBlocks; b++) {
+        int s = f->blocks[b].bb.range.start;
+        int e = f->blocks[b].bb.range.end;
+        if (s < 0) s = 0;
+        if (e < 0) e = 0;
+        if (s > nInstrs) s = nInstrs;
+        if (e > nInstrs) e = nInstrs;
+        f->blocks[b].bb.range.start = newPos[s];
+        f->blocks[b].bb.range.end   = newPos[e];
+    }
+
+    int changed = (write != nInstrs);
+    f->count         = write;
     f->curBlockStart = 0;
-
-    int changed = (writeCursor != nInstrs);
-    // Instruction indices shifted: any VarMap id cached against the old
-    // indices (varmap_sync_cache) is now misaligned and must be rebuilt.
     if (changed) f->ver++;
 
+    free(newPos);
     return changed;
 }
 
@@ -377,11 +373,18 @@ static Operand ir_emit_assign(ASTNode *expr, IRFunction *out) {
 }
 
 static Operand ir_emit_call(ASTNode *expr, IRFunction *out) {
-    // each argument is pushed via a dedicated IR_PARAM right before the call
-    for (int i = 0; i < expr->nchildren; i++) {
-        Operand arg = ir_emit_expr(expr->children[i], out);
-        ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, arg, (Operand){.kind = OPND_NONE});
-    }
+    // Evaluate every argument to completion BEFORE emitting any IR_PARAM.
+    // Nested calls in an argument list would otherwise interleave their
+    // own PARAM/CALL sequence with the outer call's PARAMs, so the inner
+    // CALL consumed the wrong arity/operands (e.g. ackermann_like(m-1,
+    // ackermann_like(m, n-1))).
+    int n = expr->nchildren;
+    Operand *args = n > 0 ? malloc((size_t)n * sizeof(Operand)) : NULL;
+    for (int i = 0; i < n; i++)
+        args[i] = ir_emit_expr(expr->children[i], out);
+    for (int i = 0; i < n; i++)
+        ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, args[i], (Operand){.kind = OPND_NONE});
+    free(args);
     Operand result = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
     ir_emit_instr(out, IR_CALL, result, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
     return result;
@@ -471,10 +474,13 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
     }
 
     case ND_CALL: {
-        for (int i = 0; i < expr->nchildren; i++) {
-            Operand arg = ir_emit_expr(expr->children[i], out);
-            ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, arg, (Operand){.kind = OPND_NONE});
-        }
+        int n = expr->nchildren;
+        Operand *args = n > 0 ? malloc((size_t)n * sizeof(Operand)) : NULL;
+        for (int i = 0; i < n; i++)
+            args[i] = ir_emit_expr(expr->children[i], out);
+        for (int i = 0; i < n; i++)
+            ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, args[i], (Operand){.kind = OPND_NONE});
+        free(args);
         // unlike ir_emit_call, the CALL result is written straight into dest
         ir_emit_instr(out, IR_CALL, dest, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
         return dest;
