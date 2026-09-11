@@ -138,7 +138,9 @@ static int *regalloc_build_label_to_block(const MachFunction *f, const BasicBloc
     for (int b = 0; b < count; b++) {
         if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
             int lid = f->instrs[blocks[b].range.start].dst.labelId;
-            map[lid - minId] = b;
+            int slot = lid - minId;
+            if (map[slot] == LABEL_MAP_NONE)
+                map[slot] = b;
         }
     }
 
