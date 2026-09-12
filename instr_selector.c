@@ -20,6 +20,11 @@ static const char *phys_name64[] = {
     "%rbp", "%rsp", "%al"
 };
 
+static const char *phys_name_xmm[PHYS_XMM_COUNT] = {
+    "%xmm0","%xmm1","%xmm2","%xmm3","%xmm4","%xmm5","%xmm6","%xmm7"
+};
+static inline int is_xmm_phys(int p) { return p >= PHYS_XMM0 && p < PHYS_XMM0 + PHYS_XMM_COUNT; }
+
 // System V AMD64 ABI: first 6 integer/pointer arguments go in these
 // registers, in this exact order; anything beyond NUM_ARG_REGS is spilled
 // to the stack by the caller (see IR_CALL / IR_PARAM handling below)
@@ -34,10 +39,7 @@ static const MachPhysReg ARG_REGS[] = {
  * that consumes them; the actual register/stack placement only happens
  * once IR_CALL is reached (arity is only known then).
  */
-typedef struct {
-    int vregs[MAX_PARAMS];
-    int count;
-} PendingArgs;
+typedef struct { Operand ops[MAX_PARAMS]; int count; } PendingArgs;
 
 /**
  * @brief State for a comparison instruction whose CMP/SETcc emission is
@@ -197,6 +199,83 @@ static inline MachOpCode isel_comparison_to_setcc(IROp cmpOp) {
 }
 
 
+/* =========================================================================
+ * Float slot manager
+ * ========================================================================= */
+
+/**
+ * @brief Permanent stack-slot bookkeeping for float-typed operands.
+ *
+ * Float values never occupy a MO_VREG and never enter the Chaitin-Briggs
+ * graph coloring pipeline: every float-typed var/temp gets one dedicated
+ * 8-byte stack slot for its entire lifetime, and every float instruction
+ * round-trips its operands through this memory via a fixed pair of scratch
+ * XMM registers (xmm0/xmm1). This keeps interference.c/ra_color.c/
+ * ra_spill.c/bucket.c completely untouched (correctness-first tradeoff:
+ * no register-level optimisation for float-heavy hot loops — flagged as a
+ * possible future improvement, see design notes).
+ */
+typedef struct {
+    int *slotOfId; /**< slotOfId[varmapId] = dense slot index, -1 = unassigned. */
+    int  count;    /**< Number of slots handed out so far.                      */
+} FloatSlots;
+
+static FloatSlots fslots_create(int cap) {
+    FloatSlots fs;
+    fs.slotOfId = malloc((size_t)(cap > 0 ? cap : 1) * sizeof(int));
+    memset(fs.slotOfId, -1, (size_t)(cap > 0 ? cap : 1) * sizeof(int));
+    fs.count = 0;
+    return fs;
+}
+static void fslots_free(FloatSlots *fs) { free(fs->slotOfId); fs->slotOfId = NULL; }
+
+/** Stack offset convention matches isel_emit_operand's "-%d(%%rbp)" printer. */
+static MachOperand fslots_operand(FloatSlots *fs, int varmapId) {
+    if (fs->slotOfId[varmapId] < 0) fs->slotOfId[varmapId] = fs->count++;
+    return (MachOperand){ .kind = MO_STACK, .stackOff = (fs->slotOfId[varmapId] + 1) * 8 };
+}
+
+static int isel_load_float_bits(const Operand *op, MachFunction *f) {
+    union { float fl; int i; } u; u.fl = op->data.floatVal;
+    int tmp = mfunc_new_vreg(f);
+    mfunc_emit(f, MACH_MOV, (MachOperand){.kind=MO_VREG,.vregId=tmp},
+               (MachOperand){.kind=MO_IMM,.imm=u.i}, (MachOperand){.kind=MO_NONE});
+    return tmp;
+}
+
+/** Load a float-typed operand (var/temp slot, or a literal constant) into
+ *  physical XMM register @p xmmPhys. */
+static void isel_load_float_into_xmm(const Operand *op, VarMap *ov, FloatSlots *fs,
+                                     MachFunction *f, int xmmPhys) {
+    if (op->kind == OPND_CONST_FLOAT) {
+        int bits = isel_load_float_bits(op, f);
+        mfunc_emit(f, MACH_MOVQ_TO_XMM, (MachOperand){.kind=MO_PHYS,.physReg=xmmPhys},
+                   (MachOperand){.kind=MO_VREG,.vregId=bits}, (MachOperand){.kind=MO_NONE});
+        return;
+    }
+    int id = varmap_operand_id(ov, *op);
+    mfunc_emit(f, MACH_MOVSS, (MachOperand){.kind=MO_PHYS,.physReg=xmmPhys},
+               fslots_operand(fs, id), (MachOperand){.kind=MO_NONE});
+}
+
+/** Store physical XMM register @p xmmPhys into float operand @p dst's slot. */
+static void isel_store_float_from_xmm(const Operand *dst, VarMap *ov, FloatSlots *fs,
+                                      MachFunction *f, int xmmPhys) {
+    int id = varmap_operand_id(ov, *dst);
+    mfunc_emit(f, MACH_MOVSS, fslots_operand(fs, id),
+               (MachOperand){.kind=MO_PHYS,.physReg=xmmPhys}, (MachOperand){.kind=MO_NONE});
+}
+
+static void isel_select_float_binop(VarMap *ov, FloatSlots *fs, MachFunction *f,
+                                    const IRInstr *in, MachOpCode sseOp) {
+    isel_load_float_into_xmm(&in->src1, ov, fs, f, PHYS_XMM0);
+    isel_load_float_into_xmm(&in->src2, ov, fs, f, PHYS_XMM1);
+    mfunc_emit(f, sseOp, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0},
+               (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1}, (MachOperand){.kind=MO_NONE});
+    isel_store_float_from_xmm(&in->dst, ov, fs, f, PHYS_XMM0);
+}
+
+
 /**
  * @brief Force-materialise a pending comparison as CMP + SETcc + MOVSX.
  *
@@ -204,10 +283,24 @@ static inline MachOpCode isel_comparison_to_setcc(IROp cmpOp) {
  * IR_IF_FALSE (so fusion is not possible) — the boolean value must be
  * computed the "normal" way after all.
  */
-static void isel_flush_pending_cmp(PendingCmp *pcmp, VarMap *operandToVreg, MachFunction *f) {
+static void isel_flush_pending_cmp(PendingCmp *pcmp, VarMap *operandToVreg, FloatSlots *fs, MachFunction *f) {
     if (!pcmp->active) return;
 
     const IRInstr *ci = pcmp->instr;
+
+    if (ci->src1.isFloat) {
+        isel_load_float_into_xmm(&ci->src1, operandToVreg, fs, f, PHYS_XMM0);
+        isel_load_float_into_xmm(&ci->src2, operandToVreg, fs, f, PHYS_XMM1);
+        mfunc_emit(f, MACH_UCOMISS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, isel_comparison_to_setcc(ci->op), (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL},
+                   (MachOperand){.kind=MO_NONE}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, MACH_MOVSX, (MachOperand){.kind=MO_VREG,.vregId=pcmp->dstVreg},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL}, (MachOperand){.kind=MO_NONE});
+        pcmp->active = 0;
+        return;
+    }
+
     MachOperand lhs   = isel_operand_to_mach(&ci->src1, operandToVreg);
     MachOperand rhs   = isel_operand_to_mach(&ci->src2, operandToVreg);
     IROp cmpOp        = ci->op;
@@ -270,15 +363,18 @@ static void isel_select_prescan(const IRFunction *irf, VarMap *operandToVreg,
  * Parameters beyond the 6th (passed on the caller's stack) are not yet
  * supported — flagged with a diagnostic rather than silently miscompiled.
  */
-static void isel_select_bind_params(const IRFunction *irf, VarMap *operandToVreg, MachFunction *f) {
+static void isel_select_bind_params(const IRFunction *irf, VarMap *ov, FloatSlots *fs, MachFunction *f) {
+    int intCursor = 0, floatCursor = 0;
     for (int p = 0; p < irf->paramCount; p++) {
-        int vreg = varmap_operand_id(operandToVreg, irf->params[p]);
-        if (p < NUM_ARG_REGS) {
-            mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = vreg }, (MachOperand){ .kind = MO_PHYS, .physReg = ARG_REGS[p] }, (MachOperand){ .kind = MO_NONE });
+        Operand *param = &irf->params[p];
+        if (param->isFloat) {
+            if (floatCursor >= 8) { ec_report("instr_selector: >8 parametri float non supportato\n"); continue; }
+            isel_store_float_from_xmm(param, ov, fs, f, PHYS_XMM0 + floatCursor++);
         } else {
-            ec_report("instr_selector: parametro #%d di '%s' passato su stack "
-                    "(>%d parametri) non ancora supportato\n",
-                    p + 1, irf->name, NUM_ARG_REGS);
+            if (intCursor >= NUM_ARG_REGS) { ec_report("instr_selector: parametro oltre %d non supportato\n", NUM_ARG_REGS); continue; }
+            int vreg = varmap_operand_id(ov, *param);
+            mfunc_emit(f, MACH_MOV, (MachOperand){.kind=MO_VREG,.vregId=vreg},
+                       (MachOperand){.kind=MO_PHYS,.physReg=ARG_REGS[intCursor++]}, (MachOperand){.kind=MO_NONE});
         }
     }
 }
@@ -297,7 +393,7 @@ static void isel_select_goto(MachFunction *f, const IRInstr *in) {
  *        CMP + Jcc when possible (see PendingCmp doc), otherwise TEST+JE
  *        on an ordinary 0/1-valued vreg.
  */
-static void isel_select_if_false(VarMap *operandToVreg, MachFunction *f, PendingCmp *pcmp,
+static void isel_select_if_false(VarMap *operandToVreg, FloatSlots *fs, MachFunction *f, PendingCmp *pcmp,
                              const IRInstr *in) {
     int cond_vreg = varmap_operand_id(operandToVreg, in->src1);
     int lbl       = in->dst.data.labelId;
@@ -305,6 +401,24 @@ static void isel_select_if_false(VarMap *operandToVreg, MachFunction *f, Pending
     if (pcmp->active && cond_vreg == pcmp->dstVreg) {
         /* CMP + Jcc fusion: skip SETcc/MOVSX entirely. */
         const IRInstr *ci = pcmp->instr;
+
+        if (ci->src1.isFloat) {
+            isel_load_float_into_xmm(&ci->src1, operandToVreg, fs, f, PHYS_XMM0);
+            isel_load_float_into_xmm(&ci->src2, operandToVreg, fs, f, PHYS_XMM1);
+            mfunc_emit(f, MACH_UCOMISS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0},
+                       (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1}, (MachOperand){.kind=MO_NONE});
+            MachOpCode jcc;
+            switch (ci->op) {
+            case IR_LT: jcc = MACH_JAE; break; case IR_LE: jcc = MACH_JA;  break;
+            case IR_GT: jcc = MACH_JBE; break; case IR_GE: jcc = MACH_JB;  break;
+            case IR_EQ: jcc = MACH_JNE; break; case IR_NE: jcc = MACH_JE;  break;
+            default:    jcc = MACH_JMP; break;
+            }
+            mfunc_emit(f, jcc, (MachOperand){ .kind = MO_LABEL, .labelId = lbl }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
+            pcmp->active = 0;
+            return;
+        }
+
         MachOperand lhs   = isel_operand_to_mach(&ci->src1, operandToVreg);
         MachOperand rhs   = isel_operand_to_mach(&ci->src2, operandToVreg);
         IROp cmpOp        = ci->op;
@@ -339,9 +453,21 @@ static void isel_select_if_false(VarMap *operandToVreg, MachFunction *f, Pending
     }
 }
 
-static void isel_select_assign(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int         dst = varmap_operand_id(operandToVreg, in->dst);
-    MachOperand src = isel_operand_to_mach(&in->src1, operandToVreg);
+static void isel_select_assign(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->dst.isFloat) {
+        if (in->src1.isFloat || in->src1.kind == OPND_CONST_FLOAT) {
+            isel_load_float_into_xmm(&in->src1, ov, fs, f, PHYS_XMM0);
+        } else {
+            // implicit int -> float widening (see semantic.c is_type_compatible)
+            int srcVreg = isel_load_operand(&in->src1, ov, f);
+            mfunc_emit(f, MACH_CVTSI2SS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0},
+                       (MachOperand){.kind=MO_VREG,.vregId=srcVreg}, (MachOperand){.kind=MO_NONE});
+        }
+        isel_store_float_from_xmm(&in->dst, ov, fs, f, PHYS_XMM0);
+        return;
+    }
+    int         dst = varmap_operand_id(ov, in->dst);
+    MachOperand src = isel_operand_to_mach(&in->src1, ov);
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, src, (MachOperand){ .kind = MO_NONE });
 }
 
@@ -355,10 +481,14 @@ static void isel_select_global_addr(VarMap *operandToVreg, MachFunction *f, cons
 }
 
 /** @brief IR_ADD/IR_SUB, reusing dst as an operand in place where possible. */
-static void isel_select_add_sub(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int         dst = varmap_operand_id(operandToVreg, in->dst);
-    MachOperand lhs = isel_operand_to_mach(&in->src1, operandToVreg);
-    MachOperand rhs = isel_operand_to_mach(&in->src2, operandToVreg);
+static void isel_select_add_sub(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->dst.isFloat) {
+        isel_select_float_binop(ov, fs, f, in, in->op == IR_ADD ? MACH_ADDSS : MACH_SUBSS);
+        return;
+    }
+    int         dst = varmap_operand_id(ov, in->dst);
+    MachOperand lhs = isel_operand_to_mach(&in->src1, ov);
+    MachOperand rhs = isel_operand_to_mach(&in->src2, ov);
     MachOpCode  mop = (in->op == IR_ADD) ? MACH_ADD : MACH_SUB;
     int lhs_id = (lhs.kind == MO_VREG) ? lhs.vregId : -1;
     int rhs_id = (rhs.kind == MO_VREG) ? rhs.vregId : -1;
@@ -381,10 +511,12 @@ static void isel_select_add_sub(VarMap *operandToVreg, MachFunction *f, const IR
 }
 
 /** @brief IR_MUL, with power-of-2 immediates strength-reduced to a shift. */
-static void isel_select_mul(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int         dst  = varmap_operand_id(operandToVreg, in->dst);
-    MachOperand src1 = isel_operand_to_mach(&in->src1, operandToVreg);
-    MachOperand src2 = isel_operand_to_mach(&in->src2, operandToVreg);
+static void isel_select_mul(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->dst.isFloat) { isel_select_float_binop(ov, fs, f, in, MACH_MULSS); return; }
+
+    int         dst  = varmap_operand_id(ov, in->dst);
+    MachOperand src1 = isel_operand_to_mach(&in->src1, ov);
+    MachOperand src2 = isel_operand_to_mach(&in->src2, ov);
 
     MachOperand reg_side = src1, imm_side = src2;
     if (src1.kind == MO_IMM && src2.kind != MO_IMM) {
@@ -416,10 +548,12 @@ static void isel_select_mul(VarMap *operandToVreg, MachFunction *f, const IRInst
 }
 
 /** @brief IR_DIV/IR_MOD via RDX:RAX IDIV; both operands forced into registers. */
-static void isel_select_div_mod(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int dst = varmap_operand_id(operandToVreg, in->dst);
-    int lhs = isel_load_operand(&in->src1, operandToVreg, f);
-    int rhs = isel_load_operand(&in->src2, operandToVreg, f);
+static void isel_select_div_mod(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->dst.isFloat) { isel_select_float_binop(ov, fs, f, in, MACH_DIVSS); return; }
+
+    int dst = varmap_operand_id(ov, in->dst);
+    int lhs = isel_load_operand(&in->src1, ov, f);
+    int rhs = isel_load_operand(&in->src2, ov, f);
     mfunc_emit(f, MACH_MOV,  (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_VREG, .vregId = lhs }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_CQO,  (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }); // sign-extend RAX into RDX:RAX
     mfunc_emit(f, MACH_IDIV, (MachOperand){ .kind = MO_VREG, .vregId = rhs }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
@@ -428,19 +562,44 @@ static void isel_select_div_mod(VarMap *operandToVreg, MachFunction *f, const IR
     mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = res }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void isel_select_neg(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int dst = varmap_operand_id(operandToVreg, in->dst);
-    MachOperand src = isel_operand_to_mach(&in->src1, operandToVreg);
+static void isel_select_neg(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->dst.isFloat) {
+        isel_load_float_into_xmm(&in->src1, ov, fs, f, PHYS_XMM0);
+        union { float fl; int i; } u; u.fl = -1.0f;
+        int bits = mfunc_new_vreg(f);
+        mfunc_emit(f, MACH_MOV, (MachOperand){.kind=MO_VREG,.vregId=bits},
+                   (MachOperand){.kind=MO_IMM,.imm=u.i}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, MACH_MOVQ_TO_XMM, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1},
+                   (MachOperand){.kind=MO_VREG,.vregId=bits}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, MACH_MULSS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1}, (MachOperand){.kind=MO_NONE});
+        isel_store_float_from_xmm(&in->dst, ov, fs, f, PHYS_XMM0);
+        return;
+    }
+    int dst = varmap_operand_id(ov, in->dst);
+    MachOperand src = isel_operand_to_mach(&in->src1, ov);
     // MACH_NEG is in-place; only copy src into dst first if not already there
     if ((src.kind == MO_VREG ? src.vregId : -1) != dst)
         mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, src, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_NEG, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
 }
 
-static void isel_select_not(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
+static void isel_select_not(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->src1.isFloat) {
+        isel_load_float_into_xmm(&in->src1, ov, fs, f, PHYS_XMM0);
+        mfunc_emit(f, MACH_XORPS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, MACH_UCOMISS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM1}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, MACH_SETE, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL},
+                   (MachOperand){.kind=MO_NONE}, (MachOperand){.kind=MO_NONE});
+        mfunc_emit(f, MACH_MOVSX, (MachOperand){.kind=MO_VREG,.vregId=varmap_operand_id(ov,in->dst)},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL}, (MachOperand){.kind=MO_NONE});
+        return;
+    }
     // MOVSX widens the byte result
-    int dst = varmap_operand_id(operandToVreg, in->dst);
-    int sv  = isel_load_operand(&in->src1, operandToVreg, f);
+    int dst = varmap_operand_id(ov, in->dst);
+    int sv  = isel_load_operand(&in->src1, ov, f);
     mfunc_emit(f, MACH_TEST,  (MachOperand){ .kind = MO_VREG, .vregId = sv },  (MachOperand){ .kind = MO_VREG, .vregId = sv },  (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_SETE,  (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_AL }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
     mfunc_emit(f, MACH_MOVSX, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_AL }, (MachOperand){ .kind = MO_NONE });
@@ -454,83 +613,110 @@ static void isel_select_defer_comparison(VarMap *operandToVreg, PendingCmp *pcmp
     pcmp->dstVreg = dst;
 }
 
-static void isel_select_load_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int dst  = varmap_operand_id(operandToVreg, in->dst);
-    int base = varmap_operand_id(operandToVreg, in->src1);
+static void isel_select_load_arr(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->dst.isFloat) {
+        int base = varmap_operand_id(ov, in->src1);
+        MachOperand memOp;
+        if (in->src2.kind == OPND_CONST_INT) {
+            int disp = in->src2.data.intVal * 8;
+            memOp = (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = -1, .scale = 0, .disp = disp } };
+        } else {
+            int idx = isel_load_operand(&in->src2, ov, f);
+            memOp = (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = idx, .scale = 8, .disp = 0 } };
+        }
+        mfunc_emit(f, MACH_MOVSS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0}, memOp, (MachOperand){.kind=MO_NONE});
+        isel_store_float_from_xmm(&in->dst, ov, fs, f, PHYS_XMM0);
+        return;
+    }
+    int dst  = varmap_operand_id(ov, in->dst);
+    int base = varmap_operand_id(ov, in->src1);
     if (in->src2.kind == OPND_CONST_INT) {
         // constant index folded into the addressing-mode displacement
         int disp = in->src2.data.intVal * 8;
         mfunc_emit(f, MACH_LOAD, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = -1, .scale = 0, .disp = disp } }, (MachOperand){ .kind = MO_NONE });
     } else {
         // dynamic index: real SIB addressing mode (base + idx*8)
-        int idx = isel_load_operand(&in->src2, operandToVreg, f);
+        int idx = isel_load_operand(&in->src2, ov, f);
         mfunc_emit(f, MACH_LOAD, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = idx, .scale = 8, .disp = 0 } }, (MachOperand){ .kind = MO_NONE });
     }
 }
 
-static void isel_select_store_arr(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int base = varmap_operand_id(operandToVreg, in->dst);
+static void isel_select_store_arr(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->src2.isFloat || in->src2.kind == OPND_CONST_FLOAT) {
+        int base = varmap_operand_id(ov, in->dst);
+        isel_load_float_into_xmm(&in->src2, ov, fs, f, PHYS_XMM0);
+        MachOperand memOp;
+        if (in->src1.kind == OPND_CONST_INT) {
+            int disp = in->src1.data.intVal * 8;
+            memOp = (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = -1, .scale = 0, .disp = disp } };
+        } else {
+            int idx = isel_load_operand(&in->src1, ov, f);
+            memOp = (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = idx, .scale = 8, .disp = 0 } };
+        }
+        mfunc_emit(f, MACH_MOVSS, memOp, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0}, (MachOperand){.kind=MO_NONE});
+        return;
+    }
+    int base = varmap_operand_id(ov, in->dst);
     if (in->src1.kind == OPND_CONST_INT) {
         int disp = in->src1.data.intVal * 8;
-        int src  = isel_load_operand(&in->src2, operandToVreg, f);
+        int src  = isel_load_operand(&in->src2, ov, f);
         mfunc_emit(f, MACH_STORE, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = -1, .scale = 0, .disp = disp } }, (MachOperand){ .kind = MO_VREG, .vregId = src }, (MachOperand){ .kind = MO_NONE });
     } else {
-        int idx = isel_load_operand(&in->src1, operandToVreg, f);
-        int src = isel_load_operand(&in->src2, operandToVreg, f);
+        int idx = isel_load_operand(&in->src1, ov, f);
+        int src = isel_load_operand(&in->src2, ov, f);
         mfunc_emit(f, MACH_STORE, (MachOperand){ .kind = MO_MEM, .mem = { .baseVreg = base, .indexVreg = idx, .scale = 8, .disp = 0 } }, (MachOperand){ .kind = MO_VREG, .vregId = src }, (MachOperand){ .kind = MO_NONE });
     }
 }
 
 /** @brief Stage one call argument; actual placement happens at IR_CALL. */
-static void isel_select_param(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
-                          PendingArgs *args) {
-    MachOperand sv = isel_operand_to_mach(&in->src1, operandToVreg);
-    int sv_vreg;
-    if (sv.kind == MO_IMM) {
-        sv_vreg = mfunc_new_vreg(f);
-        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = sv_vreg }, sv, (MachOperand){ .kind = MO_NONE });
-    } else {
-        sv_vreg = sv.vregId;
-    }
-    if (args->count < MAX_PARAMS)
-        args->vregs[args->count++] = sv_vreg;
+static void isel_select_param(const IRInstr *in, PendingArgs *args) {
+    if (args->count < MAX_PARAMS) args->ops[args->count++] = in->src1;
 }
 
 /** @brief Emit the full call sequence (stack args, register args, CALL, cleanup). */
-static void isel_select_call(VarMap *operandToVreg, MachFunction *f, const IRInstr *in,
-                         PendingArgs *args) {
-    /* Consume exactly this CALL's arity from the END of the staging buffer.
-     * Leftover prefix belongs to an outer call whose PARAMs were emitted
-     * before a nested call (defensive even after ir_emit_call evaluates
-     * all args first). */
+static void isel_select_call(VarMap *ov, FloatSlots *fs, MachFunction *f,
+                         const IRInstr *in, PendingArgs *args) {
     int staged = args->count;
     int arity  = in->src2.kind == OPND_CONST_INT ? (int)in->src2.data.intVal : staged;
     if (arity < 0) arity = 0;
     if (arity > staged) arity = staged;
     int base = staged - arity;
-    int *vregs = &args->vregs[base];
+    int intCursor = 0, floatCursor = 0;
 
-    for (int k = arity - 1; k >= NUM_ARG_REGS; k--)
-        mfunc_emit(f, MACH_PUSH, (MachOperand){ .kind = MO_VREG, .vregId = vregs[k] }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    int reg_args = (arity < NUM_ARG_REGS) ? arity : NUM_ARG_REGS;
-    for (int k = 0; k < reg_args; k++)
-        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_PHYS, .physReg = ARG_REGS[k] }, (MachOperand){ .kind = MO_VREG, .vregId = vregs[k] }, (MachOperand){ .kind = MO_NONE });
-    mfunc_emit(f, MACH_CALL, (MachOperand){ .kind = MO_FUNC, .func = in->src1.data.funcName }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    int extra = arity - NUM_ARG_REGS;
-    if (extra > 0) {
-        int adj = mfunc_new_vreg(f);
-        mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = adj }, (MachOperand){ .kind = MO_IMM, .imm = extra * 8L }, (MachOperand){ .kind = MO_NONE });
-        mfunc_emit(f, MACH_ADD, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RSP }, (MachOperand){ .kind = MO_VREG, .vregId = adj }, (MachOperand){ .kind = MO_NONE });
+    for (int k = 0; k < arity; k++) {
+        Operand *op = &args->ops[base + k];
+        if (op->isFloat || op->kind == OPND_CONST_FLOAT) {
+            if (floatCursor >= 8) { ec_report("instr_selector: >8 argomenti float non supportato\n"); continue; }
+            isel_load_float_into_xmm(op, ov, fs, f, PHYS_XMM0 + floatCursor++);
+        } else {
+            if (intCursor >= NUM_ARG_REGS) { ec_report("instr_selector: >%d argomenti interi non supportato\n", NUM_ARG_REGS); continue; }
+            int vreg = isel_load_operand(op, ov, f);
+            mfunc_emit(f, MACH_MOV, (MachOperand){.kind=MO_PHYS,.physReg=ARG_REGS[intCursor++]},
+                       (MachOperand){.kind=MO_VREG,.vregId=vreg}, (MachOperand){.kind=MO_NONE});
+        }
     }
-    int dst = varmap_operand_id(operandToVreg, in->dst);
-    mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_NONE });
+    mfunc_emit(f, MACH_CALL, (MachOperand){.kind=MO_FUNC,.func=in->src1.data.funcName},
+               (MachOperand){.kind=MO_NONE}, (MachOperand){.kind=MO_NONE});
+
+    if (in->dst.isFloat) {
+        isel_store_float_from_xmm(&in->dst, ov, fs, f, PHYS_XMM0);
+    } else {
+        int dst = varmap_operand_id(ov, in->dst);
+        mfunc_emit(f, MACH_MOV, (MachOperand){.kind=MO_VREG,.vregId=dst},
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_RAX}, (MachOperand){.kind=MO_NONE});
+    }
     args->count = base;
 }
 
-static void isel_select_return(VarMap *operandToVreg, MachFunction *f, const IRInstr *in) {
-    int sv = isel_load_operand(&in->src1, operandToVreg, f);
-    mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_PHYS, .physReg = PHYS_RAX }, (MachOperand){ .kind = MO_VREG, .vregId = sv }, (MachOperand){ .kind = MO_NONE });
-    mfunc_emit(f, MACH_RET, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
+static void isel_select_return(VarMap *ov, FloatSlots *fs, MachFunction *f, const IRInstr *in) {
+    if (in->src1.isFloat || in->src1.kind == OPND_CONST_FLOAT) {
+        isel_load_float_into_xmm(&in->src1, ov, fs, f, PHYS_XMM0);
+    } else {
+        int sv = isel_load_operand(&in->src1, ov, f);
+        mfunc_emit(f, MACH_MOV, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_RAX},
+                   (MachOperand){.kind=MO_VREG,.vregId=sv}, (MachOperand){.kind=MO_NONE});
+    }
+    mfunc_emit(f, MACH_RET, (MachOperand){.kind=MO_NONE},(MachOperand){.kind=MO_NONE},(MachOperand){.kind=MO_NONE});
 }
 
 
@@ -544,8 +730,10 @@ static MachFunction *isel_select_function(const IRFunction *irf,
     VarMap operandToVreg = varmap_init();
     isel_select_prescan(irf, &operandToVreg, f);
 
+    FloatSlots fs = fslots_create(f->nextVreg);
+
     mfunc_emit(f, MACH_FUNC_BEGIN, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    isel_select_bind_params(irf, &operandToVreg, f);
+    isel_select_bind_params(irf, &operandToVreg, &fs, f);
 
     PendingArgs args = { .count = 0 };
     PendingCmp  pcmp = { .active = 0 };
@@ -562,37 +750,37 @@ static MachFunction *isel_select_function(const IRFunction *irf,
             if (in->op == IR_IF_FALSE)
                 must_materialize = (varmap_operand_id(&operandToVreg, in->src1) != pcmp.dstVreg);
             if (must_materialize)
-                isel_flush_pending_cmp(&pcmp, &operandToVreg, f);
+                isel_flush_pending_cmp(&pcmp, &operandToVreg, &fs, f);
         }
 
         switch (in->op) {
         case IR_LABEL:       isel_select_label(f, in); break;
         case IR_GOTO:        isel_select_goto(f, in); break;
-        case IR_IF_FALSE:    isel_select_if_false(&operandToVreg, f, &pcmp, in); break;
-        case IR_ASSIGN:      isel_select_assign(&operandToVreg, f, in); break;
+        case IR_IF_FALSE:    isel_select_if_false(&operandToVreg, &fs, f, &pcmp, in); break;
+        case IR_ASSIGN:      isel_select_assign(&operandToVreg, &fs, f, in); break;
         case IR_GLOBAL_ADDR: isel_select_global_addr(&operandToVreg, f, in, globals, globalCount); break;
-        case IR_ADD: case IR_SUB: isel_select_add_sub(&operandToVreg, f, in); break;
-        case IR_MUL:          isel_select_mul(&operandToVreg, f, in); break;
-        case IR_DIV: case IR_MOD: isel_select_div_mod(&operandToVreg, f, in); break;
-        case IR_NEG:          isel_select_neg(&operandToVreg, f, in); break;
-        case IR_NOT:           isel_select_not(&operandToVreg, f, in); break;
+        case IR_ADD: case IR_SUB: isel_select_add_sub(&operandToVreg, &fs, f, in); break;
+        case IR_MUL:          isel_select_mul(&operandToVreg, &fs, f, in); break;
+        case IR_DIV: case IR_MOD: isel_select_div_mod(&operandToVreg, &fs, f, in); break;
+        case IR_NEG:          isel_select_neg(&operandToVreg, &fs, f, in); break;
+        case IR_NOT:           isel_select_not(&operandToVreg, &fs, f, in); break;
         case IR_LT: case IR_LE: case IR_GT: case IR_GE:
         case IR_EQ: case IR_NE: isel_select_defer_comparison(&operandToVreg, &pcmp, in); break;
-        case IR_LOAD_ARR:     isel_select_load_arr(&operandToVreg, f, in); break;
-        case IR_STORE_ARR:    isel_select_store_arr(&operandToVreg, f, in); break;
-        case IR_PARAM:        isel_select_param(&operandToVreg, f, in, &args); break;
-        case IR_CALL:         isel_select_call(&operandToVreg, f, in, &args); break;
-        case IR_RETURN:       isel_select_return(&operandToVreg, f, in); break;
+        case IR_LOAD_ARR:     isel_select_load_arr(&operandToVreg, &fs, f, in); break;
+        case IR_STORE_ARR:    isel_select_store_arr(&operandToVreg, &fs, f, in); break;
+        case IR_PARAM:        isel_select_param(in, &args); break;
+        case IR_CALL:         isel_select_call(&operandToVreg, &fs, f, in, &args); break;
+        case IR_RETURN:       isel_select_return(&operandToVreg, &fs, f, in); break;
         }
     }
 
     // a comparison could be the very last instruction of the function body
     // (e.g. "return a < b;" without an intervening branch): flush it here
-    isel_flush_pending_cmp(&pcmp, &operandToVreg, f);
+    isel_flush_pending_cmp(&pcmp, &operandToVreg, &fs, f);
 
-    // frame size: 8 bytes per vreg slot, rounded up to 16-byte alignment
-    int raw      = f->nextVreg * 8;
-    f->frameSize = (raw + 15) & ~15;
+    // frame size: reserved bytes; regalloc_function continua da qui
+    f->frameSize = fs.count * 8;
+    fslots_free(&fs);
 
     varmap_destroy(&operandToVreg);
     return f;
@@ -622,7 +810,10 @@ static void isel_emit_operand(const MachOperand *o, FILE *out) {
     switch (o->kind) {
     case MO_NONE:   break;
     case MO_VREG:   fprintf(out, "%%v%d",      o->vregId);               break;
-    case MO_PHYS:   fprintf(out, "%s",          phys_name64[o->physReg]); break;
+    case MO_PHYS:
+        fprintf(out, "%s", is_xmm_phys(o->physReg) ? phys_name_xmm[o->physReg-PHYS_XMM0]
+                                                    : phys_name64[o->physReg]);
+        break;
     case MO_IMM:    fprintf(out, "$%ld",        o->imm);                  break;
     case MO_LABEL:  fprintf(out, ".L%d",        o->labelId);              break;
     case MO_FUNC:   fprintf(out, "%s",          o->func);                 break;
@@ -757,6 +948,10 @@ static int isel_emit_fixed_encoding_instr(const MachInstr *in, int frameSize, FI
     case MACH_SETLE: fprintf(out, "\tsetle\t%%al\n"); return 1;
     case MACH_SETG:  fprintf(out, "\tsetg\t%%al\n");  return 1;
     case MACH_SETGE: fprintf(out, "\tsetge\t%%al\n"); return 1;
+    case MACH_SETB:  fprintf(out, "\tsetb\t%%al\n");  return 1;
+    case MACH_SETBE: fprintf(out, "\tsetbe\t%%al\n"); return 1;
+    case MACH_SETA:  fprintf(out, "\tseta\t%%al\n");  return 1;
+    case MACH_SETAE: fprintf(out, "\tsetae\t%%al\n"); return 1;
     // unconditional/conditional jumps: label operand always in dst
     case MACH_JMP:   fprintf(out, "\tjmp\t.L%d\n",  in->dst.labelId); return 1;
     case MACH_JE:    fprintf(out, "\tje\t.L%d\n",   in->dst.labelId); return 1;
@@ -765,6 +960,10 @@ static int isel_emit_fixed_encoding_instr(const MachInstr *in, int frameSize, FI
     case MACH_JLE:   fprintf(out, "\tjle\t.L%d\n",  in->dst.labelId); return 1;
     case MACH_JG:    fprintf(out, "\tjg\t.L%d\n",   in->dst.labelId); return 1;
     case MACH_JGE:   fprintf(out, "\tjge\t.L%d\n",  in->dst.labelId); return 1;
+    case MACH_JB:    fprintf(out, "\tjb\t.L%d\n",   in->dst.labelId); return 1;
+    case MACH_JBE:   fprintf(out, "\tjbe\t.L%d\n",  in->dst.labelId); return 1;
+    case MACH_JA:    fprintf(out, "\tja\t.L%d\n",   in->dst.labelId); return 1;
+    case MACH_JAE:   fprintf(out, "\tjae\t.L%d\n",  in->dst.labelId); return 1;
     default: return 0; // falls through to the generic two-operand printer
     }
 }
@@ -789,6 +988,15 @@ static void isel_emit_generic_instr(const MachInstr *in, FILE *out) {
     case MACH_TEST:  mnem = "testq";  break;
     case MACH_LOAD:  mnem = "movq";   break; // LOAD/STORE both lower to plain movq; direction differs
     case MACH_STORE: mnem = "movq";   break;
+    case MACH_MOVSS:    mnem = "movss";     break;
+    case MACH_ADDSS:    mnem = "addss";     break;
+    case MACH_SUBSS:    mnem = "subss";     break;
+    case MACH_MULSS:    mnem = "mulss";     break;
+    case MACH_DIVSS:    mnem = "divss";     break;
+    case MACH_UCOMISS:  mnem = "ucomiss";   break;
+    case MACH_XORPS:    mnem = "xorps";     break;
+    case MACH_CVTSI2SS: mnem = "cvtsi2ssq"; break;
+    case MACH_MOVQ_TO_XMM: mnem = "movq";   break;
     default:         mnem = "???";    break; // should not happen for a well-formed MachInstr stream
     }
 

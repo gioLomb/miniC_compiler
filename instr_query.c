@@ -9,7 +9,13 @@ static inline int mach_operand_reg(const MachOperand *o, int nextVreg) {
     case MO_VREG: return o->vregId;
     // same id scheme used across sched/regalloc: physical reg P -> id
     // (nextVreg + P), so physical and virtual ids never collide in a bitset
-    case MO_PHYS: return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
+    case MO_PHYS:
+        // XMM registers are a separate file, invisible to the int
+        // interference graph/coloring pipeline (never colored there);
+        // must return -1 or their large enum values index past arrays
+        // sized nextVreg+PHYS_ALLOCATABLE.
+        if (o->physReg >= PHYS_XMM0) return -1;
+        return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
     case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
     default:      return -1;
     }
@@ -34,9 +40,10 @@ static inline void push_operand_regs(int out[], int *n, const MachOperand *o, in
 
 int instr_def(const MachInstr *in, int nextVreg) {
     switch (in->op) {
-    case MACH_CMP: case MACH_TEST:
+    case MACH_CMP: case MACH_TEST: case MACH_UCOMISS:
     case MACH_JMP: case MACH_JE: case MACH_JNE:
     case MACH_JL:  case MACH_JLE: case MACH_JG: case MACH_JGE:
+    case MACH_JB:  case MACH_JBE: case MACH_JA: case MACH_JAE:
     case MACH_CALL: case MACH_RET:
     case MACH_PUSH: case MACH_STORE:
     case MACH_CQO:
@@ -168,6 +175,7 @@ int instr_is_ctrl_transfer(MachOpCode op) {
     // sequential instruction invalidates same-block assumptions
     case MACH_JMP: case MACH_JE: case MACH_JNE: case MACH_JL:
     case MACH_JLE: case MACH_JG: case MACH_JGE:
+    case MACH_JB:  case MACH_JBE: case MACH_JA: case MACH_JAE:
     case MACH_CALL: case MACH_RET:
         return 1;
     default: return 0;

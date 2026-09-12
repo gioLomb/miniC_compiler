@@ -241,7 +241,11 @@ void dag_build(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena) {
     int n = blk.end - blk.start;
 
-    RenameTracker rt = tracker_create(f->nextVreg, PHYS_ALLOCATABLE, n, arena);
+    RenameTracker rt = tracker_create(f->nextVreg, PHYS_COUNT, n, arena);
+    // was: PHYS_ALLOCATABLE — allargato per tracciare correttamente le
+    // dipendenze RAW/WAR/WAW su xmm0/xmm1 usati dal codegen float, senza
+    // farli mai finire nel grafo di interferenza intero (quello resta
+    // PHYS_ALLOCATABLE, invariato).
 
     dag_init_nodes(f, blk, nodes, n, arena);
     dag_pin_fusion_pairs(f, blk, nodes, n);

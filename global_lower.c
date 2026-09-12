@@ -123,10 +123,10 @@ static Operand gl_lower_src1_operand(Operand src1, int isArrBase, Emitter *e, in
 
     int val = ir_alloc_temp_id();
     gl_emitter_push(e, IR_LOAD_ARR,
-                 (Operand){ .kind = OPND_TEMP, .data.tempId = val },
+                 (Operand){ .kind = OPND_TEMP, .isFloat = src1.isFloat, .data.tempId = val },
                  (Operand){ .kind = OPND_TEMP, .data.tempId = addr },
                  (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, loopDepth);
-    return (Operand){ .kind = OPND_TEMP, .data.tempId = val };
+    return (Operand){ .kind = OPND_TEMP, .isFloat = src1.isFloat, .data.tempId = val };
 }
 
 /**
@@ -148,10 +148,10 @@ static Operand gl_lower_src2_operand(Operand src2, Emitter *e, int loopDepth) {
     int addr = gl_emit_global_addr(src2.data.globalOffset, e, loopDepth);
     int val  = ir_alloc_temp_id();
     gl_emitter_push(e, IR_LOAD_ARR,
-                 (Operand){ .kind = OPND_TEMP, .data.tempId = val },
+                 (Operand){ .kind = OPND_TEMP, .isFloat = src2.isFloat, .data.tempId = val },
                  (Operand){ .kind = OPND_TEMP, .data.tempId = addr },
                  (Operand){ .kind = OPND_CONST_INT, .data.intVal = 0 }, loopDepth);
-    return (Operand){ .kind = OPND_TEMP, .data.tempId = val };
+    return (Operand){ .kind = OPND_TEMP, .isFloat = src2.isFloat, .data.tempId = val };
 }
 
 /**
@@ -187,9 +187,9 @@ static Operand gl_lower_dst_operand(Operand dst, int isArrBase,
     // instruction is emitted (handled by the caller)
     int tmpDst = ir_alloc_temp_id();
     out->addr    = (Operand){ .kind = OPND_TEMP, .data.tempId = addr };
-    out->val     = (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
+    out->val     = (Operand){ .kind = OPND_TEMP, .isFloat = dst.isFloat, .data.tempId = tmpDst };
     out->present = 1;
-    return (Operand){ .kind = OPND_TEMP, .data.tempId = tmpDst };
+    return (Operand){ .kind = OPND_TEMP, .isFloat = dst.isFloat, .data.tempId = tmpDst };
 }
 
 

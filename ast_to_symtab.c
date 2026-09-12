@@ -105,6 +105,7 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
 
     node->scopeLevel = sym.scopeLevel;
     node->offset     = sym.offset;
+    node->dataType   = sym.dataType; // covers local var-decls AND params (both routed through here)
     return 1;
 }
 

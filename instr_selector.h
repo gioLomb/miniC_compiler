@@ -1,5 +1,3 @@
-
-
 #ifndef ISEL_H
 #define ISEL_H
 
@@ -32,6 +30,10 @@ typedef enum {
     MACH_CALL, MACH_RET,
     MACH_LEA,                       /**< leaq globalname(%rip), dst          */
     MACH_LABEL, MACH_FUNC_BEGIN, MACH_FUNC_END,
+    MACH_MOVSS, MACH_ADDSS, MACH_SUBSS, MACH_MULSS, MACH_DIVSS,
+    MACH_UCOMISS, MACH_XORPS, MACH_CVTSI2SS, MACH_MOVQ_TO_XMM,
+    MACH_SETB, MACH_SETBE, MACH_SETA, MACH_SETAE,
+    MACH_JB,  MACH_JBE,  MACH_JA,  MACH_JAE,
 } MachOpCode;
 
 /* =========================================================================
@@ -77,12 +79,15 @@ typedef enum {
     PHYS_RSP,
     /* 8-bit alias of RAX; normalised by regalloc_utils before graph build */
     PHYS_AL,
+    PHYS_XMM0, PHYS_XMM1, PHYS_XMM2, PHYS_XMM3,
+    PHYS_XMM4, PHYS_XMM5, PHYS_XMM6, PHYS_XMM7,
     PHYS_COUNT
 } MachPhysReg;
 
 #define PHYS_ALLOCATABLE        14
 #define PHYS_CALLER_SAVED_COUNT  9
 #define PHYS_CALLEE_SAVED_COUNT  5
+#define PHYS_XMM_COUNT 8
 
 /* =========================================================================
  * MachOperand

@@ -7,6 +7,7 @@
 #include "parser/errorCollector.h"
 
 static DataType check_expr_type(ASTNode *expr, Scope *scope, int *errors);
+static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors);
 static void     check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                            Arena *arena, int *errors);
 
@@ -271,7 +272,7 @@ static void check_variable_init(ASTNode *stmt, Scope *scope, DataType declType,
  * @param errors  Incremented once per semantic error found.
  * @return        Inferred DataType of the expression, or T_VOID on error.
  */
-static DataType check_expr_type(ASTNode *expr, Scope *scope, int *errors) {
+static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors) {
     if (!expr) return T_VOID;
 
     switch (expr->kind) {
@@ -395,6 +396,13 @@ static DataType check_expr_type(ASTNode *expr, Scope *scope, int *errors) {
     }
 }
 
+/** Stamps the resolved type onto @p expr so later IR/codegen stages
+ *  (ir_mk_var, instr_selector's float dispatch) don't need to re-derive it. */
+static DataType check_expr_type(ASTNode *expr, Scope *scope, int *errors) {
+    DataType t = check_expr_type_impl(expr, scope, errors);
+    if (expr) expr->dataType = t;
+    return t;
+}
 
 /**
  * @brief Recursively type-check a statement node.

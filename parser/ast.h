@@ -8,6 +8,7 @@
  */
 
 #include "../arena.h"
+#include "../symbol_table.h"   /* for DataType */
 
 /**
  * @brief X-Macro list defining AST node kinds and their string representations.
@@ -57,6 +58,9 @@ typedef struct ASTNode {
     /* Resolution coordinates (populated during semantic analysis pass) */
     int scopeLevel;             /**< Nesting scope level where symbol resolves */
     int offset;                 /**< Memory offset inside frame or storage area */
+    DataType dataType;          /**< Resolved type of this expression/decl node,
+                                  *   stamped during semantic analysis; drives
+                                  *   int-vs-float codegen in instr_selector.c. */
 } ASTNode;
 
 /**

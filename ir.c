@@ -46,13 +46,16 @@ static int currentLoopDepth;
 
 
 static inline Operand ir_mk_var(const ASTNode *node) {
-    if (node->scopeLevel == 0) {
-        return (Operand){ .kind              = OPND_GLOBAL,
+    // Only a plain ND_ID reference is itself float-typed; ND_ARRAY_ACCESS
+    // uses this call to get the array's BASE identity (an address), which
+    // is always an integer regardless of the element type.
+    int isF = (node->kind == ND_ID) && (node->dataType == T_FLOAT);
+    if (node->scopeLevel == 0)
+        return (Operand){ .kind = OPND_GLOBAL, .isFloat = isF,
                           .data.globalOffset = node->offset };
-    }
-    return (Operand){ .kind            = OPND_VAR,
-                      .data.varLevel   = node->scopeLevel,
-                      .data.varOffset  = node->offset,
+    return (Operand){ .kind = OPND_VAR, .isFloat = isF,
+                      .data.varLevel = node->scopeLevel,
+                      .data.varOffset = node->offset,
                       .data.sourceName = node->text };
 }
 
@@ -385,7 +388,7 @@ static Operand ir_emit_call(ASTNode *expr, IRFunction *out) {
     for (int i = 0; i < n; i++)
         ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, args[i], (Operand){.kind = OPND_NONE});
     free(args);
-    Operand result = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
+    Operand result = (Operand){ .kind = OPND_TEMP, .isFloat = (expr->dataType == T_FLOAT), .data.tempId = nextTemp++ };
     ir_emit_instr(out, IR_CALL, result, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
     return result;
 }
@@ -400,14 +403,16 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
     case ND_ARRAY_ACCESS: {
         Operand idx  = ir_emit_expr(expr->children[0], out);
         Operand base = ir_mk_var(expr);
-        Operand t    = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
+        Operand t = (Operand){ .kind = OPND_TEMP, .isFloat = (expr->dataType == T_FLOAT),
+                               .data.tempId = nextTemp++ };
         ir_emit_instr(out, IR_LOAD_ARR, t, base, idx);
         return t;
     }
 
     case ND_UNARY: {
         Operand v = ir_emit_expr(expr->children[0], out);
-        Operand t = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
+        Operand t = (Operand){ .kind = OPND_TEMP, .isFloat = (expr->dataType == T_FLOAT),
+                               .data.tempId = nextTemp++ };
         ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, (Operand){.kind = OPND_NONE});
         return t;
     }
@@ -419,7 +424,8 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
             return ir_emit_short_circuit(expr, out);
         Operand lhs = ir_emit_expr(expr->children[0], out);
         Operand rhs = ir_emit_expr(expr->children[1], out);
-        Operand t   = (Operand){ .kind = OPND_TEMP, .data.tempId = nextTemp++ };
+        Operand t   = (Operand){ .kind = OPND_TEMP, .isFloat = (expr->dataType == T_FLOAT),
+                                 .data.tempId = nextTemp++ };
         ir_emit_instr(out, ir_binop_to_irop(expr->text), t, lhs, rhs);
         return t;
     }
@@ -720,7 +726,7 @@ static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
             gv->initVals[j] = atol(ch->text);
         } else if (ch->kind == ND_NUM_FLOAT) {
             float fv = (float)atof(ch->text);
-            long  lv;
+            long lv = 0;   // was: "long lv;" — upper 4 bytes were garbage, corrupting .quad output
             memcpy(&lv, &fv, sizeof fv); // reinterpret bits, not value
             gv->initVals[j] = lv;
         } else {

@@ -1,5 +1,3 @@
-
-
 #ifndef SCHED_UTILS_H
 #define SCHED_UTILS_H
 
@@ -71,6 +69,8 @@ static inline int sched_is_pinned(MachOpCode op) {
     case MACH_JE:  case MACH_JNE:
     case MACH_JL:  case MACH_JLE:
     case MACH_JG:  case MACH_JGE:
+    case MACH_JB:  case MACH_JBE:
+    case MACH_JA:  case MACH_JAE:
     case MACH_RET: return 1;
     default:       return 0;
     }
@@ -93,8 +93,11 @@ static inline int sched_is_pinned(MachOpCode op) {
 static inline int sched_has_side_effect(MachOpCode op) {
     switch (op) {
     case MACH_STORE: case MACH_PUSH: case MACH_POP:
-    case MACH_CALL:  case MACH_IDIV: case MACH_CQO: return 1;
-    default:                                          return 0;
+    case MACH_CALL:  case MACH_IDIV: case MACH_CQO:
+    case MACH_MOVSS: // touches a permanent float stack slot: no alias
+                      // analysis exists, so serialize like other memory ops
+        return 1;
+    default: return 0;
     }
 }
 
@@ -113,7 +116,9 @@ static inline int sched_is_jcc(MachOpCode op) {
     switch (op) {
     case MACH_JE: case MACH_JNE:
     case MACH_JL: case MACH_JLE:
-    case MACH_JG: case MACH_JGE: return 1;
+    case MACH_JG: case MACH_JGE:
+    case MACH_JB: case MACH_JBE:
+    case MACH_JA: case MACH_JAE: return 1;
     default:                       return 0;
     }
 }
@@ -185,11 +190,13 @@ static inline int sched_reg_idx(const MachOperand *o) {
  */
 static inline int sched_def(const MachInstr *in, int nextVreg) {
     switch (in->op) {
-    case MACH_CMP:  case MACH_TEST:
+    case MACH_CMP: case MACH_TEST: case MACH_UCOMISS:
     case MACH_JMP:
     case MACH_JE:   case MACH_JNE:
     case MACH_JL:   case MACH_JLE:
     case MACH_JG:   case MACH_JGE:
+    case MACH_JB:   case MACH_JBE:
+    case MACH_JA:   case MACH_JAE:
     case MACH_CALL: case MACH_RET:
     case MACH_PUSH: case MACH_STORE:
     case MACH_CQO:
@@ -200,22 +207,6 @@ static inline int sched_def(const MachInstr *in, int nextVreg) {
     }
 }
 
-/**
- * @brief Collect all register ids read (used) by instruction @p in.
- *
- * Fills @p out with the ids of every register the instruction reads,
- * including SIB index registers and instruction-specific implicit reads:
- *   - STORE: reads both base and index registers of the destination MO_MEM
- *            (the address is computed from them).
- *   - PUSH:  reads the dst register (source of the stack write).
- *   - IDIV:  reads the dst register (the divisor operand).
- *   - CQO:   reads the dst register (RAX, the value to sign-extend).
- *
- * @param in       Instruction to inspect.
- * @param nextVreg Base offset for physical-register ids.
- * @param out      Output array; caller must provide at least 5 entries.
- * @param n        Set to the number of ids written into @p out.
- */
 /**
  * @brief Collect all register ids read (used) by instruction @p in.
  *

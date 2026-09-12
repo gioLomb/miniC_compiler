@@ -1,5 +1,3 @@
-
-
 #ifndef IR_H
 #define IR_H
 
@@ -76,6 +74,9 @@ typedef enum {
  */
 typedef struct {
     OperandKind kind;
+    int isFloat;   /**< 1 if this operand carries a float value; set at IR-
+                     *   generation time from the AST's resolved type, never
+                     *   inferred later. See instr_selector.c for consumers. */
     union {
         int tempId;                /**< OPND_TEMP: compiler-generated temporary id. */
         struct {

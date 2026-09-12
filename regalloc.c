@@ -45,41 +45,6 @@
 #include "arena.h"
 
 
-// static int find_label_block(const int *labelIds, const int *blockIdx,
-//                              int n, int labelId)
-// {
-//     for (int i = 0; i < n; i++) {
-//         if (labelIds[i] == labelId) {
-//             return blockIdx[i];
-//         }
-//     }
-//     return -1; // Label not found
-// }
-
-// /**
-//  * Builds the lookup table mapping label IDs to block indices.
-//  */
-// static int build_label_map(const MachFunction *f, const BasicBlock *blocks, int count,
-//                            Arena *arena, int **outLabelIds, int **outBlockIdx)
-// {
-//     int allocSize = (count > 0) ? count : 1;
-//     int *labelIds = arena_alloc(arena, (size_t)allocSize * sizeof(int));
-//     int *blockIdx = arena_alloc(arena, (size_t)allocSize * sizeof(int));
-//     int nLabels = 0;
-
-//     for (int b = 0; b < count; b++) {
-//         if (f->instrs[blocks[b].range.start].op == MACH_LABEL) {
-//             labelIds[nLabels] = f->instrs[blocks[b].range.start].dst.labelId;
-//             blockIdx[nLabels] = b;
-//             nLabels++;
-//         }
-//     }
-
-//     *outLabelIds = labelIds;
-//     *outBlockIdx = blockIdx;
-//     return nLabels;
-// }
-
 #include <limits.h>   // INT_MAX/INT_MIN per il calcolo del range label
 
 /** Sentinel: nessun blocco registrato per questo slot label. */
@@ -170,6 +135,7 @@ static void regalloc_wire_block_successors(BasicBlock *blocks, int count, const 
             break;
         case MACH_JE: case MACH_JNE: case MACH_JL:
         case MACH_JLE: case MACH_JG: case MACH_JGE:
+        case MACH_JB:  case MACH_JBE: case MACH_JA: case MACH_JAE:
             blocks[b].succ[0] = (b + 1 < count) ? b + 1 : -1;
             blocks[b].succ[1] = lookup_label_block(labelMap, minId, mapSize,
                                                     f->instrs[last].dst.labelId);
@@ -455,7 +421,7 @@ static int regalloc_try_round(MachFunction *f, int firstSpillVreg, int *frameOff
 
 static void regalloc_function(MachFunction *f)
 {
-    int frameOff = 0;
+    int frameOff = f->frameSize; // was: 0 — start after isel's reserved float slots
     int firstSpillVreg = f->nextVreg;
 
     // Retry rounds until one colors without spilling.
