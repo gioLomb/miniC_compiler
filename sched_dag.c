@@ -178,6 +178,31 @@ static void dag_pin_fusion_pairs(const MachFunction *f, BlockRange blk,
 }
 
 /**
+ * @brief Track System-V XMM argument / return / clobber traffic around CALL.
+ *
+ * Integer caller-saved regs are already handled by instr_implicit_uses/defs.
+ * XMM0–XMM7 are invisible to the integer interference graph (mach_operand_reg
+ * returns -1 for them) but must still participate in the scheduler's rename
+ * tracker so that:
+ *   - a cvtsi2ssq / movss that sets up a float argument cannot sink past CALL
+ *     (RAW: writer → CALL use of that XMM);
+ *   - a post-call movss that captures the float return in XMM0 cannot float
+ *     above CALL (RAW: CALL def of XMM0 → reader);
+ *   - a later write to the same XMM cannot reorder across CALL (WAW/WAR).
+ *
+ * Ids use the same scheme as sched_reg: nextVreg + PHYS_XMMk.  The tracker
+ * universe is sized with PHYS_COUNT, so these ids are in range.
+ */
+static void track_call_xmm_abi(RenameTracker *rt, DAGNode *nodes, Arena *arena,
+                               int j, int nextVreg) {
+    for (int k = 0; k < PHYS_XMM_COUNT; k++) {
+        int id = nextVreg + PHYS_XMM0 + k;
+        track_read(rt, nodes, arena, j, id);   /* may read as float arg */
+        track_write(rt, nodes, arena, j, id);  /* clobbered / may return in xmm0 */
+    }
+}
+
+/**
  * @brief apply one instruction's register/side-effect/memory dependencies to the DAG.
  */
 static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk, int j,
@@ -192,6 +217,11 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
 
     instr_implicit_uses(in, f->nextVreg, regs, &nregs);
     track_reg_list_reads(rt, nodes, arena, j, regs, nregs);
+
+    // Float ABI: XMM0–7 are used/clobbered by CALL but never appear in the
+    // integer implicit-use lists (they stay out of the interference graph).
+    if (in->op == MACH_CALL)
+        track_call_xmm_abi(rt, nodes, arena, j, f->nextVreg);
 
     // Side-effect serialisation: STORE/PUSH/CALL/IDIV/CQO in program order
     if (sched_has_side_effect(in->op)) {

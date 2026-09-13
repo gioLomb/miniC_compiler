@@ -186,13 +186,15 @@ Operand const_map_try_fold_by_id(Operand op, const ConstMap *m, int cachedId) {
     if (lv.state != LAT_CONST) return op;
 
     if (lv.isFloat) {
-        Operand o;
+        Operand o = {0};
         o.kind          = OPND_CONST_FLOAT;
+        o.isFloat       = 1;
         o.data.floatVal = lv.val.fval;
         return o;
     } else {
-        Operand o;
+        Operand o = {0};
         o.kind        = OPND_CONST_INT;
+        o.isFloat     = 0;
         o.data.intVal = lv.val.ival;
         return o;
     }

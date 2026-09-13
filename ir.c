@@ -46,10 +46,11 @@ static int currentLoopDepth;
 
 
 static inline Operand ir_mk_var(const ASTNode *node) {
-    // Only a plain ND_ID reference is itself float-typed; ND_ARRAY_ACCESS
-    // uses this call to get the array's BASE identity (an address), which
-    // is always an integer regardless of the element type.
-    int isF = (node->kind == ND_ID) && (node->dataType == T_FLOAT);
+    // Array BASE addresses (from ND_ARRAY_ACCESS) are always integer even when
+    // the element type is float.  For every other storage node (ND_ID, ND_PARAM,
+    // ND_VAR_DECL) the isFloat flag follows the resolved dataType so that
+    // instr_selector can dispatch to the SSE path.
+    int isF = (node->kind != ND_ARRAY_ACCESS) && (node->dataType == T_FLOAT);
     if (node->scopeLevel == 0)
         return (Operand){ .kind = OPND_GLOBAL, .isFloat = isF,
                           .data.globalOffset = node->offset };
@@ -397,7 +398,7 @@ static Operand ir_emit_call(ASTNode *expr, IRFunction *out) {
 static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
     switch (expr->kind) {
     case ND_NUM_INT:   return (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) };
-    case ND_NUM_FLOAT: return (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = (float)atof(expr->text) };
+    case ND_NUM_FLOAT: return (Operand){ .kind = OPND_CONST_FLOAT, .isFloat = 1, .data.floatVal = (float)atof(expr->text) };
     case ND_ID:        return ir_mk_var(expr);
 
     case ND_ARRAY_ACCESS: {
@@ -411,7 +412,9 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
 
     case ND_UNARY: {
         Operand v = ir_emit_expr(expr->children[0], out);
-        Operand t = (Operand){ .kind = OPND_TEMP, .isFloat = (expr->dataType == T_FLOAT),
+        int isF = (expr->dataType == T_FLOAT) || v.isFloat || v.kind == OPND_CONST_FLOAT;
+        if (op_key(expr->text) == KEY_NOT) isF = 0; // ! always yields int
+        Operand t = (Operand){ .kind = OPND_TEMP, .isFloat = isF,
                                .data.tempId = nextTemp++ };
         ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, (Operand){.kind = OPND_NONE});
         return t;
@@ -424,7 +427,13 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
             return ir_emit_short_circuit(expr, out);
         Operand lhs = ir_emit_expr(expr->children[0], out);
         Operand rhs = ir_emit_expr(expr->children[1], out);
-        Operand t   = (Operand){ .kind = OPND_TEMP, .isFloat = (expr->dataType == T_FLOAT),
+        // Prefer the AST's stamped type; fall back to operand flags because
+        // the AST optimiser may rebuild binop nodes without copying dataType.
+        int isF = (expr->dataType == T_FLOAT) || lhs.isFloat || rhs.isFloat
+                  || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT;
+        // Relational/logical ops always yield int even on float operands.
+        if (strchr("=!&|<>", expr->text[0]) != NULL) isF = 0;
+        Operand t   = (Operand){ .kind = OPND_TEMP, .isFloat = isF,
                                  .data.tempId = nextTemp++ };
         ir_emit_instr(out, ir_binop_to_irop(expr->text), t, lhs, rhs);
         return t;
@@ -450,7 +459,7 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
         ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) }, (Operand){.kind = OPND_NONE});
         return dest;
     case ND_NUM_FLOAT:
-        ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_FLOAT, .data.floatVal = (float)atof(expr->text) }, (Operand){.kind = OPND_NONE});
+        ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_FLOAT, .isFloat = 1, .data.floatVal = (float)atof(expr->text) }, (Operand){.kind = OPND_NONE});
         return dest;
     case ND_ID:
         ir_emit_instr(out, IR_ASSIGN, dest, ir_mk_var(expr), (Operand){.kind = OPND_NONE});
@@ -475,6 +484,11 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
             return ir_emit_short_circuit_into(expr, out, dest);
         Operand lhs = ir_emit_expr(expr->children[0], out);
         Operand rhs = ir_emit_expr(expr->children[1], out);
+        // Ensure dest inherits float-ness when the optimiser dropped dataType
+        if (!dest.isFloat && (lhs.isFloat || rhs.isFloat
+                || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT)
+                && strchr("=!&|<>", expr->text[0]) == NULL)
+            dest.isFloat = 1;
         ir_emit_instr(out, ir_binop_to_irop(expr->text), dest, lhs, rhs);
         return dest;
     }

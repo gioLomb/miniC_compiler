@@ -674,8 +674,17 @@ static void isel_select_param(const IRInstr *in, PendingArgs *args) {
 }
 
 /** @brief Emit the full call sequence (stack args, register args, CALL, cleanup). */
+static const IRFunction *isel_find_function(const IRProgram *prog, const char *name) {
+    if (!prog || !name) return NULL;
+    for (int i = 0; i < prog->count; i++)
+        if (prog->functions[i] && prog->functions[i]->name &&
+            strcmp(prog->functions[i]->name, name) == 0)
+            return prog->functions[i];
+    return NULL;
+}
+
 static void isel_select_call(VarMap *ov, FloatSlots *fs, MachFunction *f,
-                         const IRInstr *in, PendingArgs *args) {
+                         const IRInstr *in, PendingArgs *args, const IRProgram *prog) {
     int staged = args->count;
     int arity  = in->src2.kind == OPND_CONST_INT ? (int)in->src2.data.intVal : staged;
     if (arity < 0) arity = 0;
@@ -683,11 +692,27 @@ static void isel_select_call(VarMap *ov, FloatSlots *fs, MachFunction *f,
     int base = staged - arity;
     int intCursor = 0, floatCursor = 0;
 
+    const IRFunction *callee = isel_find_function(prog, in->src1.data.funcName);
+
     for (int k = 0; k < arity; k++) {
         Operand *op = &args->ops[base + k];
-        if (op->isFloat || op->kind == OPND_CONST_FLOAT) {
+        // Prefer formal parameter type when available (handles int→float
+        // widening at the call site as required by C semantics).
+        int formalIsFloat = 0;
+        if (callee && k < callee->paramCount)
+            formalIsFloat = callee->params[k].isFloat;
+
+        if (formalIsFloat || op->isFloat || op->kind == OPND_CONST_FLOAT) {
             if (floatCursor >= 8) { ec_report("instr_selector: >8 argomenti float non supportato\n"); continue; }
-            isel_load_float_into_xmm(op, ov, fs, f, PHYS_XMM0 + floatCursor++);
+            if (op->isFloat || op->kind == OPND_CONST_FLOAT) {
+                isel_load_float_into_xmm(op, ov, fs, f, PHYS_XMM0 + floatCursor);
+            } else {
+                // int → float conversion
+                int vreg = isel_load_operand(op, ov, f);
+                mfunc_emit(f, MACH_CVTSI2SS, (MachOperand){.kind=MO_PHYS,.physReg=PHYS_XMM0 + floatCursor},
+                           (MachOperand){.kind=MO_VREG,.vregId=vreg}, (MachOperand){.kind=MO_NONE});
+            }
+            floatCursor++;
         } else {
             if (intCursor >= NUM_ARG_REGS) { ec_report("instr_selector: >%d argomenti interi non supportato\n", NUM_ARG_REGS); continue; }
             int vreg = isel_load_operand(op, ov, f);
@@ -722,7 +747,8 @@ static void isel_select_return(VarMap *ov, FloatSlots *fs, MachFunction *f, cons
 
 static MachFunction *isel_select_function(const IRFunction *irf,
                                       const IRGlobalVar *globals,
-                                      int globalCount) {
+                                      int globalCount,
+                                      const IRProgram *prog) {
     MachFunction *f = mfunc_create(irf->name);
     g_curLoopDepth = 0; /* reset: must not leak from the previously
                             selected function's last instruction */
@@ -769,7 +795,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         case IR_LOAD_ARR:     isel_select_load_arr(&operandToVreg, &fs, f, in); break;
         case IR_STORE_ARR:    isel_select_store_arr(&operandToVreg, &fs, f, in); break;
         case IR_PARAM:        isel_select_param(in, &args); break;
-        case IR_CALL:         isel_select_call(&operandToVreg, &fs, f, in, &args); break;
+        case IR_CALL:         isel_select_call(&operandToVreg, &fs, f, in, &args, prog); break;
         case IR_RETURN:       isel_select_return(&operandToVreg, &fs, f, in); break;
         }
     }
@@ -798,7 +824,8 @@ MachProgram *isel_select(const IRProgram *ir) {
     for (int i = 0; i < ir->count; i++)
         mp->functions[mp->count++] = isel_select_function(ir->functions[i],
                                                        ir->globals,
-                                                       ir->globalCount);
+                                                       ir->globalCount,
+                                                       ir);
     return mp;
 }
 

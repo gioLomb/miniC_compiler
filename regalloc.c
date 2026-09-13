@@ -421,7 +421,7 @@ static int regalloc_try_round(MachFunction *f, int firstSpillVreg, int *frameOff
 
 static void regalloc_function(MachFunction *f)
 {
-    int frameOff = f->frameSize; // was: 0 — start after isel's reserved float slots
+    int frameOff = f->frameSize; //start after isel's reserved float slots
     int firstSpillVreg = f->nextVreg;
 
     // Retry rounds until one colors without spilling.

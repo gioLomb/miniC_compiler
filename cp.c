@@ -279,10 +279,10 @@ static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
         in->src2 = (Operand){.kind = OPND_NONE};
         // comparisons produce int 0/1 even when operands are float
         if (cp_is_comparison_op(origOp)) {
-            in->src1 = (Operand){ .kind = OPND_CONST_INT,
+            in->src1 = (Operand){ .kind = OPND_CONST_INT, .isFloat = 0,
                                   .data.intVal = (int)result };
         } else {
-            in->src1 = (Operand){ .kind = OPND_CONST_FLOAT,
+            in->src1 = (Operand){ .kind = OPND_CONST_FLOAT, .isFloat = 1,
                                   .data.floatVal = result };
         }
 
@@ -293,7 +293,7 @@ static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
         if (!fold_binary_int(origOp, a, b, &result)) return 0; // e.g. div/mod by 0
 
         in->op   = IR_ASSIGN;
-        in->src1 = (Operand){ .kind = OPND_CONST_INT,
+        in->src1 = (Operand){ .kind = OPND_CONST_INT, .isFloat = 0,
                               .data.intVal = result };
         in->src2 = (Operand){.kind = OPND_NONE};
     }
