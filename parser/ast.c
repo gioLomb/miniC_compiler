@@ -26,10 +26,6 @@ void addChild(Arena *arena, ASTNode *parent, ASTNode *child) {
     if (parent->nchildren == parent->capacity) {
         int newCap = parent->capacity == 0 ? INITIAL_CAPACITY : parent->capacity * 2;
 
-        // No realloc in an arena: allocate a fresh (larger) block and copy
-        // the live entries. The old block is simply abandoned in the arena
-        // (never freed individually) -- total waste bounded by ~final size,
-        // same amortised-doubling tradeoff used elsewhere in this codebase.
         ASTNode **grown = arena_alloc(arena, (size_t)newCap * sizeof(ASTNode *));
         if (parent->children)
             memcpy(grown, parent->children, (size_t)parent->nchildren * sizeof(ASTNode *));

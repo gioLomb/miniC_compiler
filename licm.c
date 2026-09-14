@@ -423,9 +423,7 @@ static HoistLayout licm_compact_and_hoist(IRFunction *f, const char *doMove, int
     out.instrs = malloc((size_t)(nInstrs + moved) * sizeof(IRInstr));
     out.count  = 0;
 
-    // --- part a: instructions before the loop header (unchanged position) ---
-    // FIX: oldToNew must be filled here too (identity map), not left at -1,
-    // otherwise licm_remap_block_ranges mistakes "never written" for "hoisted".
+    //instructions before the loop header
     for (int j = 0; j < insertAt; j++) {
         oldToNew[j] = j;
         out.instrs[out.count++] = f->instrs[j];
@@ -480,8 +478,7 @@ static void licm_remap_block_ranges(IRFunction *f, const int *oldToNew, const ch
         int newS = -1, newE = -1;
 
         for (int j = oldS; j < oldE; j++) {
-            // FIX: gate on doMove (ground truth), not on oldToNew's sentinel —
-            // oldToNew is now fully populated for non-hoisted j anyway.
+
             if (doMove[j]) continue; // this instruction was hoisted out of b
             if (newS == -1) newS = oldToNew[j];
             newE = oldToNew[j] + 1;
@@ -536,7 +533,6 @@ static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
                                 header, inBody, instrToBlock, doMove);
     if (!moved) { arena_destroy(localArena); return 0; }
 
-    // insertAt: first instruction index of the loop header block —
     // hoisted instructions are placed in the pre-header just before it
     int insertAt = f->blocks[header].bb.range.start;
 
@@ -558,9 +554,6 @@ static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
     return moved;
 }
 
-/* =========================================================================
- * Public entry point
- * ========================================================================= */
 
 int licm_optimize(IRFunction *f, Arena *arenaScratch) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
@@ -576,11 +569,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
     int      nLoops = loop_find(f, Dom, loops, arenaScratch);
     if (nLoops == 0) return 0;
 
-    // compute initial liveness (needed for live-in check in licm_move_invariants)
-    // livArena stays internally managed: tied to the per-loop scan below and
-    // recreated only when something is actually hoisted. Sharing arenaScratch
-    // here would invalidate Dom/loops still in use by subsequent loop
-    // iterations in this same call.
+
     Arena         *livArena = arena_create(0);
     LivenessResult  liv     = liveness_computeIr(f, NULL, NULL, livArena);
     int totalMoved = 0;

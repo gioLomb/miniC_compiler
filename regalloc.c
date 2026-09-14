@@ -443,7 +443,6 @@ static int regalloc_try_round(MachFunction *f, RegClass cls, int classVregCount,
 }
 
 static void regalloc_function(MachFunction *f) {
-    /* No permanent FloatSlots: spill area starts empty (or any pre-reserved size). */
     int frameOff = 0;
     int firstSpillVreg  = f->nextVreg;
     int firstSpillFVreg = f->fNextVreg;

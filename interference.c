@@ -130,7 +130,6 @@ static void ig_precolor_physicals(IGraph *g, int classVregCount, int allocatable
     for (int p = 0; p < allocatable; p++)
         g->color[classVregCount + p] = p;
 }
-
 static void ig_accumulate_spill_cost(IGraph *g, const MachInstr *in,
                                       int classVregCount, RegClass cls, int *tmpArr) {
     int w = regalloc_spill_weight(in->loopDepth);
@@ -138,6 +137,8 @@ static void ig_accumulate_spill_cost(IGraph *g, const MachInstr *in,
 
     instr_uses(in, classVregCount, cls, tmpArr, &n);
     for (int k = 0; k < n; k++)
+        // only vregs (< classVregCount) get a spill cost: physicals are
+        // never spilled, so their entries would be wasted/out-of-range
         if (tmpArr[k] < classVregCount) g->spillCost[tmpArr[k]] += w;
 
     instr_defs(in, classVregCount, cls, tmpArr, &n);
@@ -152,11 +153,15 @@ static void ig_add_definition_edges(IGraph *g, const MachInstr *in,
     instr_defs(in, classVregCount, cls, defs, &nd);
     instr_implicit_defs(in, classVregCount, cls, idefs, &nid);
 
+    // explicit defs: each one interferes with everything still live right
+    // after this instruction (both must occupy distinct registers)
     int id;
     for (int d = 0; d < nd; d++)
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
             ig_add_edge(g, defs[d], id);
 
+    // implicit defs (e.g. CALL clobbers): same interference rule, separate
+    // loop since defs[]/idefs[] have different sizes and no shared index
     for (int d = 0; d < nid; d++)
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
             ig_add_edge(g, idefs[d], id);
@@ -169,6 +174,8 @@ static void ig_apply_constraint_masks(IGraph *g, const MachInstr *in,
     int id;
 
     if (in->op == MACH_CALL) {
+        // forbid every caller-saved color (both classes) for anything live
+        // across the call, and flag it so the colorer prefers callee-saved
         uint32_t mask = (callerSavedCount >= 32) ? ~0u : ((1U << callerSavedCount) - 1);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); ) {
             if (id < classVregCount) {
@@ -177,10 +184,12 @@ static void ig_apply_constraint_masks(IGraph *g, const MachInstr *in,
             }
         }
     } else if (cls == RC_INT && (in->op == MACH_IDIV || in->op == MACH_CQO)) {
+        // IDIV/CQO implicitly clobber RAX:RDX: only relevant for the int class
         uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
             if (id < classVregCount) g->excl[id] |= mask;
     } else if (cls == RC_INT && instr_is_setcc(in->op)) {
+        // SETcc writes %al (alias of RAX): forbid RAX for live vregs
         uint32_t mask = (1U << PHYS_RAX);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
             if (id < classVregCount) g->excl[id] |= mask;
@@ -197,6 +206,7 @@ IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
     IGraph g;
     ig_alloc_storage(&g, totalNodes, arena);
     ig_precolor_physicals(&g, classVregCount, ci->allocatable);
+    // vregs introduced by a previous spill round get deprioritized in Simplify
     ig_mark_reload_temps(&g, firstSpillVreg, classVregCount);
 
     int tmpArr[LIVENESS_MAX_IDS];

@@ -14,10 +14,12 @@ static inline int mach_operand_reg_c(const MachOperand *o, int classVregCount, R
     case MO_PHYS:
         if (cls == RC_INT) {
             if (o->physReg >= PHYS_XMM0) return -1;
+            // %al and %rax share one architectural register: normalise
             return classVregCount + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
         } else {
             if (o->physReg < PHYS_XMM0 || o->physReg >= PHYS_XMM0 + PHYS_XMM_COUNT)
                 return -1;
+            // re-base into the float class' own 0-based id space
             return classVregCount + (o->physReg - PHYS_XMM0);
         }
     case MO_MEM:
@@ -66,6 +68,7 @@ void instr_uses(const MachInstr *in, int classVregCount, RegClass cls, int out[]
     case MACH_CMP:
     case MACH_TEST:
     case MACH_UCOMISS:
+        // dst read-only here: STORE address, or CMP/TEST/UCOMISS lhs operand
         push_operand_regs_c(out, n, &in->dst, classVregCount, cls);
         break;
     case MACH_PUSH:
@@ -106,6 +109,7 @@ void instr_implicit_uses(const MachInstr *in, int classVregCount, RegClass cls, 
             out[(*n)++] = classVregCount + PHYS_RAX;
             break;
         case MACH_CALL:
+            // conservative: assume callee may read any caller-saved reg as arg
             append_range(out, n, classVregCount, PHYS_CALLER_SAVED_COUNT);
             break;
         case MACH_RET:
@@ -116,12 +120,7 @@ void instr_implicit_uses(const MachInstr *in, int classVregCount, RegClass cls, 
     } else {
         switch (in->op) {
         case MACH_CALL:
-            /* Do NOT mark XMM0-7 as uses here.  Doing so makes every XMM
-             * live across the whole loop (LiveOut carries the uses into the
-             * back-edge), so every float def interferes with all 8 precolored
-             * phys nodes → degree >= 8 = k → nothing is colorable → infinite
-             * spill.  Arg traffic is already explicit (MOVSS to phys before
-             * the call).  Clobbers remain in instr_implicit_defs. */
+            // float args already explicit MOVSS uses emitted by isel
             break;
         case MACH_RET:
             out[(*n)++] = classVregCount; /* XMM0 local color 0 */
@@ -148,6 +147,7 @@ void instr_implicit_defs(const MachInstr *in, int classVregCount, RegClass cls, 
         default: break;
         }
     } else {
+        // whole XMM bank is caller-saved under System V ABI
         if (in->op == MACH_CALL)
             append_range(out, n, classVregCount, PHYS_XMM_COUNT);
     }

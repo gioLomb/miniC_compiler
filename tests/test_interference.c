@@ -30,6 +30,7 @@
 #include "../arena.h"
 #include "../liveness.h"
 #include "../interference.h"
+#include "../reg_class.h"
 
 static MachOperand vreg(int id) { MachOperand o = {0}; o.kind = MO_VREG; o.vregId = id; return o; }
 static MachOperand phys(int p)  { MachOperand o = {0}; o.kind = MO_PHYS; o.physReg = p; return o; }
@@ -71,8 +72,8 @@ int main(void) {
         BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 5 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
-        LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
+        LivenessResult liv = liveness_computeMach(&f, blocks, 1, RC_INT, f.nextVreg, arena);
+        IGraph g = ig_build(&f, blocks, 1, RC_INT, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(has_edge(&g, 0, 1) &&
                "v0 e v1 devono interferire: v0 e' letto E scritto dall'ADD RMW "
@@ -104,8 +105,8 @@ int main(void) {
         BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 4 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
-        LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
+        LivenessResult liv = liveness_computeMach(&f, blocks, 1, RC_INT, f.nextVreg, arena);
+        IGraph g = ig_build(&f, blocks, 1, RC_INT, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(g.crossesCall[0] == 1);
         uint32_t callerMask = (1U << PHYS_CALLER_SAVED_COUNT) - 1;
@@ -139,8 +140,8 @@ int main(void) {
         BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 5 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
-        LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
+        LivenessResult liv = liveness_computeMach(&f, blocks, 1, RC_INT, f.nextVreg, arena);
+        IGraph g = ig_build(&f, blocks, 1, RC_INT, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(!has_edge(&g, 0, 1) &&
                "v0 e v1 non sono mai vivi simultaneamente: nessuna interferenza attesa");
@@ -172,8 +173,8 @@ int main(void) {
         BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 4 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
-        LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
+        LivenessResult liv = liveness_computeMach(&f, blocks, 1, RC_INT, f.nextVreg, arena);
+        IGraph g = ig_build(&f, blocks, 1, RC_INT, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
         assert((g.excl[0] & mask) == mask);
@@ -204,8 +205,8 @@ int main(void) {
         BasicBlock blocks[1] = {{ .range = { .start = 0, .end = 4 }, .succ = {-1, -1} }};
 
         Arena *arena = arena_create(0);
-        LivenessResult liv = liveness_computeMach(&f, blocks, 1, arena);
-        IGraph g = ig_build(&f, blocks, 1, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
+        LivenessResult liv = liveness_computeMach(&f, blocks, 1, RC_INT, f.nextVreg, arena);
+        IGraph g = ig_build(&f, blocks, 1, RC_INT, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         uint32_t raxMask = (1U << PHYS_RAX);
         assert((g.excl[0] & raxMask) == raxMask &&
@@ -255,8 +256,8 @@ int main(void) {
         };
 
         Arena *arena = arena_create(0);
-        LivenessResult liv = liveness_computeMach(&f, blocks, 4, arena);
-        IGraph g = ig_build(&f, blocks, 4, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
+        LivenessResult liv = liveness_computeMach(&f, blocks, 4, RC_INT, f.nextVreg, arena);
+        IGraph g = ig_build(&f, blocks, 4, RC_INT, f.nextVreg, liv.liveAfter, f.nextVreg, arena);
 
         assert(has_edge(&g, 0, 1) && "v0 vivo alla definizione di v1 nel ramo then");
         assert(has_edge(&g, 0, 2) && "v0 vivo alla definizione di v2 nel ramo else");

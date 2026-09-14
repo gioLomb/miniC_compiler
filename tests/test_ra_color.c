@@ -36,7 +36,7 @@
  * range [0,nextVreg)). Tutte le chiamate in questo file sono state
  * aggiornate alla nuova firma a 5 argomenti:
  *
- *   ra_select_colors(g, stack, stackLen, spilled, pl)
+ *   ra_select_colors(g, stack, stackLen, k, callerSavedCount, spilled, pl)
  *
  * invece della vecchia firma a 6 argomenti che includeva 'n' (nextVreg)
  * come secondo parametro.
@@ -78,7 +78,7 @@ static IGraph build_clique(int n, Arena *arena) {
     for (int i = 0; i < n; i++) {
         int_vector_init(&g.adj[i],IG_ADJ_INITIAL_CAPACITY);
         g.degree[i] = 0;
-        g.color[i]  = -1;
+        g.color[i]  = COLOR_NONE;
         g.active[i] = true;
         g.excl[i]   = 0;
         g.spillCost[i] = 1;      /* tutti costo uguale: lo spill e' arbitrario tra pari */
@@ -115,7 +115,7 @@ static IGraph build_path(int n, Arena *arena) {
     memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
     for (int i = 0; i < n; i++) {
         int_vector_init(&g.adj[i],IG_ADJ_INITIAL_CAPACITY);
-        g.degree[i] = 0; g.color[i] = -1; g.active[i] = true;
+        g.degree[i] = 0; g.color[i] = COLOR_NONE; g.active[i] = true;
         g.excl[i] = 0; g.spillCost[i] = 1; g.crossesCall[i] = 0;
     }
     for (int i = 0; i + 1 < n; i++) {
@@ -144,12 +144,12 @@ int main(void) {
         IGraph g = build_clique(n, arena);
 
         int *stack;
-        int stackLen = ra_simplify(&g, n, &stack);
+        int stackLen = ra_simplify(&g, n, PHYS_ALLOCATABLE, &stack);
         assert(stackLen == n && "ogni nodo deve essere rimosso e impilato una volta");
 
         int *spilled = malloc((size_t)n * sizeof(int));
         /* FIX: firma aggiornata, nextVreg rimosso (mai usato nel corpo). */
-        int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, NULL);
+        int nSpilled = ra_select_colors(&g, stack, stackLen, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, NULL);
 
         /* Una cricca di n nodi richiede esattamente n colori: con k
          * disponibili, esattamente (n-k) nodi devono spillare. */
@@ -160,7 +160,7 @@ int main(void) {
         int seenColor[PHYS_ALLOCATABLE]; memset(seenColor, 0, sizeof(seenColor));
         int coloredCount = 0;
         for (int v = 0; v < n; v++) {
-            if (g.color[v] == -2) continue; /* spilled */
+            if (g.color[v] == COLOR_SPILLED) continue;
             assert(g.color[v] >= 0 && g.color[v] < PHYS_ALLOCATABLE);
             assert(!seenColor[g.color[v]] && "due nodi di una cricca non possono condividere colore");
             seenColor[g.color[v]] = 1;
@@ -186,11 +186,11 @@ int main(void) {
         IGraph g = build_clique(n, arena);
 
         int *stack;
-        int stackLen = ra_simplify(&g, n, &stack);
+        int stackLen = ra_simplify(&g, n, PHYS_ALLOCATABLE, &stack);
         assert(stackLen == n);
 
         int *spilled = malloc((size_t)n * sizeof(int));
-        int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, NULL);
+        int nSpilled = ra_select_colors(&g, stack, stackLen, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, NULL);
         assert(nSpilled == 0 && "una cricca di esattamente k nodi deve essere colorabile");
 
         int seen[PHYS_ALLOCATABLE]; memset(seen, 0, sizeof(seen));
@@ -215,11 +215,11 @@ int main(void) {
         IGraph g = build_path(n, arena);
 
         int *stack;
-        int stackLen = ra_simplify(&g, n, &stack);
+        int stackLen = ra_simplify(&g, n, PHYS_ALLOCATABLE, &stack);
         assert(stackLen == n);
 
         int *spilled = malloc((size_t)n * sizeof(int));
-        int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, NULL);
+        int nSpilled = ra_select_colors(&g, stack, stackLen, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, NULL);
         assert(nSpilled == 0 && "un path graph (grado<=2) e' sempre 2-colorabile, a maggior ragione con k=14");
 
         for (int i = 0; i + 1 < n; i++)
@@ -261,7 +261,7 @@ int main(void) {
         memset(g.crossesCall, 0, (size_t)n * sizeof(char));
         memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
         g.active[0] = true; g.active[1] = true;
-        g.color[0] = -1;
+        g.color[0] = COLOR_NONE;
         g.color[1] = 5;          /* partner "gia' colorato" (fuori da Simplify) */
 
         int stack[1] = { 0 };    /* solo v0 va colorato */
@@ -271,7 +271,7 @@ int main(void) {
         pl.pairs[0] = (PartnerPair){ .u = 0, .v = 1 };
         pl.count = 1; pl.cap = 1;
 
-        int nSpilled = ra_select_colors(&g, stack, 1, spilled, &pl);
+        int nSpilled = ra_select_colors(&g, stack, 1, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, &pl);
         assert(nSpilled == 0);
         assert(g.color[0] == 5 && "il biased coloring deve riusare il colore 5 del partner");
 
@@ -303,7 +303,7 @@ int main(void) {
         for (int v = 1; v < n; v++) g.spillCost[v] = 10000;
 
         int *stack;
-        int stackLen = ra_simplify(&g, n, &stack);
+        int stackLen = ra_simplify(&g, n, PHYS_ALLOCATABLE, &stack);
         assert(stackLen == n);
 
         /* stack[0] = primo nodo rimosso = la prima scelta ottimistica
@@ -352,7 +352,7 @@ int main(void) {
         memset(g.isReloadTemp, 0, (size_t)n * sizeof(char));
         g.active[0] = g.active[1] = g.active[2] = true;
 
-        g.color[0] = -1;   /* v0: da colorare */
+        g.color[0] = COLOR_NONE;   /* v0: da colorare */
         g.color[1] = 0;    /* A: gia' colorato a 0 */
         g.color[2] = 3;    /* B: gia' colorato a 3 */
         g.excl[0]  = (1u << 0); /* v0 non puo' MAI ricevere il colore 0 */
@@ -365,7 +365,7 @@ int main(void) {
         pl.pairs[1] = (PartnerPair){ .u = 0, .v = 2 }; /* B: colore 3, disponibile */
         pl.count = 2; pl.cap = 2;
 
-        int nSpilled = ra_select_colors(&g, stack, 1, spilled, &pl);
+        int nSpilled = ra_select_colors(&g, stack, 1, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, &pl);
         assert(nSpilled == 0);
         assert(g.color[0] == 3 &&
                "hint del primo partner (colore escluso) deve essere scartato; "

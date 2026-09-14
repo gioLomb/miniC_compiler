@@ -41,12 +41,12 @@ static RenameTracker tracker_create(int vregCount, int physCount, int n, Arena *
     int *lastReader  = arena_alloc(arena, (size_t)universe * sizeof(int));
     int *lastWriter  = arena_alloc(arena, (size_t)cap * sizeof(int));
 
-    // Inizializzazione identità (0, 1, 2, ...)
+    /* Identity mapping: generation id == architectural register id. */
     for (int r = 0; r < universe; r++) {
         currentName[r] = r;
     }
 
-    // memset a -1 imposta tutti i byte a 0xFF (in complemento a due equivale a -1)
+    /* -1 means "no previous reader/writer". */
     memset(lastReader, -1, (size_t)universe * sizeof(int));
     memset(lastWriter, -1, (size_t)cap * sizeof(int));
 
@@ -260,9 +260,8 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
     int def = sched_def(in, f->nextVreg, f->fNextVreg);
     if (def >= 0) track_write(rt, nodes, arena, j, def);
 
-    /* Implicit integer ABI writes: CQO defs RDX, IDIV defs RAX+RDX, CALL
-     * clobbers caller-saved.  Without these, a later MOV into %rax can sink
-     * *before* CQO/IDIV and destroy the dividend (fee/idiv bugs). */
+    /* Implicit integer ABI writes: CQO defs RDX, IDIV defs RAX+RDX,
+     * CALL clobbers caller-saved. */
     instr_implicit_defs(in, f->nextVreg + f->fNextVreg, RC_INT, regs, &nregs);
     track_reg_list_writes(rt, nodes, arena, j, regs, nregs);
 }
@@ -292,11 +291,8 @@ void dag_build(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena) {
     int n = blk.end - blk.start;
 
+    /* Universe covers int + float vregs and all phys regs (GPR + XMM). */
     RenameTracker rt = tracker_create(f->nextVreg + f->fNextVreg, PHYS_COUNT, n, arena);
-    // was: PHYS_ALLOCATABLE — allargato per tracciare correttamente le
-    // dipendenze RAW/WAR/WAW su xmm0/xmm1 usati dal codegen float, senza
-    // farli mai finire nel grafo di interferenza intero (quello resta
-    // PHYS_ALLOCATABLE, invariato).
 
     dag_init_nodes(f, blk, nodes, n, arena);
     dag_pin_fusion_pairs(f, blk, nodes, n);

@@ -27,7 +27,7 @@ static inline int is_xmm_phys(int p) { return p >= PHYS_XMM0 && p < PHYS_XMM0 + 
 
 // System V AMD64 ABI: first 6 integer/pointer arguments go in these
 // registers, in this exact order; anything beyond NUM_ARG_REGS is spilled
-// to the stack by the caller (see IR_CALL / IR_PARAM handling below)
+// to the stack by the caller
 static const MachPhysReg ARG_REGS[] = {
     PHYS_RDI, PHYS_RSI, PHYS_RDX, PHYS_RCX, PHYS_R8, PHYS_R9
 };
@@ -61,9 +61,6 @@ typedef struct {
 
 static int g_curLoopDepth = 0;
 
-/* =========================================================================
- * MachFunction helpers
- * ========================================================================= */
 
 static MachFunction *mfunc_create(const char *name) {
     MachFunction *f = calloc(1, sizeof(MachFunction));
@@ -121,9 +118,7 @@ static int isel_load_operand(const Operand *op, VarMap *operandToVreg, MachFunct
         return dst;
     }
     case OPND_CONST_FLOAT: {
-        // float constants are moved as their raw bit pattern (no SSE support
-        // in this backend); reinterpret via union to avoid UB from casting
-        // float->long directly, which would convert the VALUE not the bits
+        /* Materialise float bits as an integer immediate (bit pattern, not value). */
         int dst = mfunc_new_vreg(f);
         union { float fl; int i; } u; u.fl = op->data.floatVal;
         mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = u.i }, (MachOperand){ .kind = MO_NONE });
@@ -160,8 +155,6 @@ static inline MachOperand isel_operand_to_mach(const Operand *op, VarMap *operan
 }
 
 
-// linear scan: globalCount is small (typically a handful of top-level
-// declarations), so an O(1) map would be overkill here
 static int isel_find_global_idx(int symOff,
                             const IRGlobalVar *globals, int globalCount) {
     for (int i = 0; i < globalCount; i++)
@@ -169,9 +162,6 @@ static int isel_find_global_idx(int symOff,
     return -1;
 }
 
-/* =========================================================================
- * Comparison helpers
- * ========================================================================= */
 
 /**
  * @brief Swap the sense of a relational operator (a OP b  ->  b OP' a).
@@ -202,7 +192,7 @@ static inline MachOpCode isel_comparison_to_setcc(IROp cmpOp) {
 
 
 /* =========================================================================
- * Float virtual-register map (true XMM coloring via regalloc)
+ * Float virtual-register map
  * ========================================================================= */
 
 /**
@@ -319,9 +309,7 @@ static void isel_flush_pending_cmp(PendingCmp *pcmp, VarMap *operandToVreg, Floa
     pcmp->active = 0;
 }
 
-/* =========================================================================
- * Per-function setup helpers
- * ========================================================================= */
+
 
 /**
  * @brief register every IR operand (including
@@ -395,14 +383,14 @@ static void isel_select_if_false(VarMap *operandToVreg, FloatVregMap *fvm, MachF
 
     if (pcmp->active && cond_vreg == pcmp->dstVreg) {
         /* CMP + Jcc fusion: skip SETcc/MOVSX entirely. */
-        const IRInstr *ci = pcmp->instr;
+        const IRInstr *comparisonInstr = pcmp->instr;
 
-        if (ci->src1.isFloat) {
-            MachOperand a = isel_float_operand(&ci->src1, operandToVreg, fvm, f);
-            MachOperand b = isel_float_operand(&ci->src2, operandToVreg, fvm, f);
+        if (comparisonInstr->src1.isFloat) {
+            MachOperand a = isel_float_operand(&comparisonInstr->src1, operandToVreg, fvm, f);
+            MachOperand b = isel_float_operand(&comparisonInstr->src2, operandToVreg, fvm, f);
             mfunc_emit(f, MACH_UCOMISS, a, b, (MachOperand){.kind=MO_NONE});
             MachOpCode jcc;
-            switch (ci->op) {
+            switch (comparisonInstr->op) {
             case IR_LT: jcc = MACH_JAE; break; case IR_LE: jcc = MACH_JA;  break;
             case IR_GT: jcc = MACH_JBE; break; case IR_GE: jcc = MACH_JB;  break;
             case IR_EQ: jcc = MACH_JNE; break; case IR_NE: jcc = MACH_JE;  break;
@@ -413,9 +401,9 @@ static void isel_select_if_false(VarMap *operandToVreg, FloatVregMap *fvm, MachF
             return;
         }
 
-        MachOperand lhs   = isel_operand_to_mach(&ci->src1, operandToVreg);
-        MachOperand rhs   = isel_operand_to_mach(&ci->src2, operandToVreg);
-        IROp cmpOp        = ci->op;
+        MachOperand lhs   = isel_operand_to_mach(&comparisonInstr->src1, operandToVreg);
+        MachOperand rhs   = isel_operand_to_mach(&comparisonInstr->src2, operandToVreg);
+        IROp cmpOp        = comparisonInstr->op;
 
         if (lhs.kind == MO_IMM && rhs.kind != MO_IMM) {
             MachOperand t = lhs; lhs = rhs; rhs = t;
@@ -599,7 +587,7 @@ static void isel_select_not(VarMap *ov, FloatVregMap *fvm, MachFunction *f, cons
 }
 
 /** @brief Defer comparisons (IR_LT..IR_NE) for possible CMP+Jcc fusion. */
-static void isel_select_defer_comparison(VarMap *operandToVreg, PendingCmp *pcmp, const IRInstr *in) {
+static inline void isel_select_defer_comparison(VarMap *operandToVreg, PendingCmp *pcmp, const IRInstr *in) {
     int dst = varmap_operand_id(operandToVreg, in->dst);
     pcmp->active  = 1;
     pcmp->instr   = in;
@@ -751,8 +739,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
                                       int globalCount,
                                       const IRProgram *prog) {
     MachFunction *f = mfunc_create(irf->name);
-    g_curLoopDepth = 0; /* reset: must not leak from the previously
-                            selected function's last instruction */
+    g_curLoopDepth = 0; /* per-function reset */
 
     VarMap operandToVreg = varmap_init();
     isel_select_prescan(irf, &operandToVreg, f);
@@ -770,8 +757,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         g_curLoopDepth = in->loopDepth;
 
         // flush a deferred comparison if the current instruction can't
-        // fuse with it (fusion only applies when the very next instruction
-        // is the IF_FALSE consuming exactly this comparison's result)
+        // fuse with it
         if (pcmp.active) {
             int must_materialize = 1;
             if (in->op == IR_IF_FALSE)
@@ -801,14 +787,9 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         }
     }
 
-    // a comparison could be the very last instruction of the function body
-    // (e.g. "return a < b;" without an intervening branch): flush it here
+
     isel_flush_pending_cmp(&pcmp, &operandToVreg, &fvm, f);
-
-    // frame size: reserved bytes; regalloc_function continua da qui
-    /* frameSize set by regalloc (spill slots only) */
     fvmap_free(&fvm);
-
     varmap_destroy(&operandToVreg);
     return f;
 }

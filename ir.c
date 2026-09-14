@@ -740,8 +740,8 @@ static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
             gv->initVals[j] = atol(ch->text);
         } else if (ch->kind == ND_NUM_FLOAT) {
             float fv = (float)atof(ch->text);
-            long lv = 0;   // was: "long lv;" — upper 4 bytes were garbage, corrupting .quad output
-            memcpy(&lv, &fv, sizeof fv); // reinterpret bits, not value
+            long lv = 0; /* zero-init: only the float bit pattern is stored */
+            memcpy(&lv, &fv, sizeof fv); /* bit reinterpret, not numeric conversion */
             gv->initVals[j] = lv;
         } else {
             gv->initVals[j] = 0; // non-literal initializer: not supported, default 0
@@ -926,9 +926,6 @@ void ir_print(const IRProgram *prog) {
     }
 }
 
-/* =========================================================================
- * Public API — ir_free
- * ========================================================================= */
 
 void ir_free(IRProgram *prog) {
     if (!prog) return;

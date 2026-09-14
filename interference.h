@@ -28,6 +28,18 @@
 /** Historical alias: adjacency lists are IntVectors. */
 typedef IntVector AdjList;
 
+
+/**
+ * @brief Sentinel values stored in IGraph::color[] during Simplify/Select.
+ *
+ * Physical colours are non-negative (0 .. k-1).  These two negative values
+ * distinguish "not yet assigned" from "Select failed, must spill".
+ */
+typedef enum {
+    COLOR_NONE    = -1,  /**< Not yet coloured (initial state / still on stack). */
+    COLOR_SPILLED = -2,  /**< Uncolorable: node must be spilled. */
+} ColorState;
+
 /**
  * @brief Interference graph for a single machine function.
  *
@@ -39,7 +51,7 @@ typedef struct {
     uint64_t *matrix;        /**< Lower-triangular bit matrix; pair (i,j), i>j, at bit i*(i-1)/2+j. */
     AdjList  *adj;           /**< Per-node adjacency list. */
     int      *degree;        /**< Current interference degree; decremented during Simplify. */
-    int      *color;         /**< Assigned colour: -1=uncoloured, -2=spilled, >=0=phys reg index. */
+    int      *color;         /**< COLOR_NONE, COLOR_SPILLED, or physical colour >= 0. */
     bool     *active;        /**< 1 while node still in the graph. */
     uint32_t *excl;          /**< Forbidden colour bitmask beyond interference edges (e.g. SETcc clobbers %al). */
     int      *spillCost;     /**< Loop-depth-weighted def/use count. */

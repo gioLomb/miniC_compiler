@@ -248,7 +248,7 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen, int k, int callerSaved
         if (chosen >= 0) {
             g->color[v] = chosen;
         } else {
-            g->color[v] = -2;
+            g->color[v] = COLOR_SPILLED;
             spilled[nSpilled++] = v;
         }
     }

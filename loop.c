@@ -1,20 +1,7 @@
 /**
  * @file loop.c
- * @brief Loop detection and pre-header construction — implementation.
- * Predecessor lookups
- * --------------------
- * Both loop_compute_dominators (intersection of predecessor Dom sets at
- * every fixed-point iteration) and loop_collect_body (reverse BFS from the
- * back-edge tail, called once per natural loop found) need, for a given
- * block, the set of blocks whose succ[] targets it. Both now use a shared
- * PredList (ir.h, built via ir_build_pred_list()) instead of independently
- * re-scanning every block's succ[] to find this — the old approach cost
- * O(nBlocks) per lookup, repeated O(nBlocks) times per fixed-point
- * iteration in loop_compute_dominators (O(nBlocks^2) per pass), and was
- * additionally capped at a fixed fan-in of 2 predecessors per block in
- * loop_collect_body's old inline preds[n][2] array — a latent buffer overflow
- * for any block with more than two incoming edges (e.g. several branches
- * converging on the same join block). PredList has no such cap.
+ * @brief Loop detection and pre-header construction.
+
  */
 
 #include <stdlib.h>
@@ -96,24 +83,7 @@ static int loop_update_dominator_set(BitSet *Dom_b, const BitSet *inter, int b, 
     return 0;
 }
 
-/**
- * @brief Compute Dom[] for all blocks via iterative fixed-point dataflow.
- *
- * Allocates one BitSet per block from @p arena; each BitSet has @p words
- * uint64_t words (== ceil(blockCount / 64)).
- *
- * The entry block starts with Dom[0] = {0}; all other blocks start with the
- * universal set (all bits 1), which ensures the intersection-based update
- * produces a correct upper bound on the first pass even if predecessors
- * have not yet been processed in the current iteration.
- *
- * A leftover-bits mask is applied to the last word of the universal sets so
- * that block indices past blockCount are never spuriously set.
- *
- * Predecessor sets are looked up via a PredList built once at the start of
- * this function (see module header) and reused across every iteration of
- * the fixed-point loop below.
- */
+
 BitSet *loop_compute_dominators(IRFunction *f, int words, Arena *arena) {
     int n = f->blockCount;
     BitSet *Dom = arena_alloc(arena, (size_t)n * sizeof(BitSet));
@@ -281,22 +251,7 @@ static void loop_build_natural_loop(Loop *L, IRFunction *f, int h, int b,
     loop_record_loop_exit_blocks(L, f, inBody, body, bodyCount);
 }
 
-/**
- * @brief Find natural loops via back-edge scanning.
- *
- * For every CFG edge b→h, if h dominates b it is a back-edge defining a
- * natural loop.  For each such edge:
- *   1. Call loop_collect_body() to gather all blocks in the loop body.
- *   2. Scan body blocks for exit blocks (have a successor outside the body).
- *      Each distinct exit block is recorded at most once in L->exits[].
- *
- * A single PredList is built once at the top of this function and shared
- * across every loop_collect_body() call below — succ[] is never mutated while
- * loop_find() runs, so the list stays valid for all loops discovered in
- * this call (see module header for the rationale).
- *
- * Stops early if MAX_LOOPS loops have already been found.
- */
+
 int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena) {
     int n = f->blockCount, nLoops = 0;
     // reuse a single body scratch buffer across all loops
@@ -375,32 +330,7 @@ static void loop_reroute_non_body_predecessors(IRFunction *f, int header, int ph
     free(inBody);
 }
 
-/**
- * @brief Insert a synthetic pre-header block before @p L->header.
- *
- * The new block is appended to f->blocks[] (so its index = old blockCount)
- * and given an empty instruction range [f->count, f->count) — instructions
- * will be inserted into it later by LICM or SR.
- *
- * Every predecessor of the header that is NOT part of the loop body is
- * re-routed to the pre-header: their succ[] entry pointing to header is
- * changed to point to the new block.  predCount on both the header and the
- * pre-header is updated accordingly.
- *
- * This function mutates succ[] directly (predecessor rerouting), so it
- * necessarily works on the live succ[] arrays rather than any cached
- * PredList — any PredList built before this call becomes stale afterwards
- * and must be rebuilt by the next pass that needs one (both callers,
- * licm_optimize() and sr_optimize(), only build/use a PredList inside
- * loop_compute_dominators()/loop_find(), which run once per pass before
- * any pre-header is created for that pass — no staleness issue in
- * practice, but any future caller that interleaves pre-header creation
- * with PredList-based lookups must rebuild the list afterwards).
- *
- * A temporary inBody[] membership array is allocated from the heap (not the
- * arena) because the Loop's arena may have been destroyed by the time this
- * function is called; it is freed before returning.
- */
+
 int loop_build_pre_header(IRFunction *f, Loop *L) {
     int header = L->header;
 

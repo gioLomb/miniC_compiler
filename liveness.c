@@ -208,9 +208,7 @@ static void extract_ir(void *ctxP, int instrIdx,
     VarMap  *vm = ctx->vm;
     *nUses = 0; *nDefs = 0;
 
-    // varmap_operand_id() already returns -1 for non-storage kinds and
-    // resolves through VarMap's own internal cache: no per-instruction
-    // id array needed here anymore.
+
     int s1 = varmap_operand_id(vm, in->src1);
     int s2 = varmap_operand_id(vm, in->src2);
     int d  = varmap_operand_id(vm, in->dst);

@@ -23,7 +23,6 @@ typedef struct {
     int       words;  /**< Number of uint64_t words allocated.  */
 } BitSet;
 
-/* ---- Construction ---------------------------------------------------- */
 
 /**
  * @brief Allocate and zero-initialise a BitSet of @p words words.
@@ -40,7 +39,6 @@ static inline BitSet bitset_new(Arena *arena, int words) {
     return s;
 }
 
-/* ---- Single-bit operations -------------------------------------------- */
 
 /**
  * @brief Set bit @p id to 1.
@@ -70,7 +68,6 @@ static inline int bitset_test(const BitSet *s, int id) {
     return (int)((s->bits[id >> 6] >> (id & 63)) & 1ULL);
 }
 
-/* ---- Whole-set operations ---------------------------------------------- */
 
 /**
  * @brief Clear every bit in @p s (set all words to 0).
@@ -144,7 +141,6 @@ static inline void bitset_union_into(BitSet *dst,
     for (int i = 0; i < dst->words; i++) dst->bits[i] = a->bits[i] | b->bits[i];
 }
 
-/* ---- Iterator over set bits -------------------------------------------- */
 
 /**
  * @brief Iterator state for walking the set bits of a BitSet.

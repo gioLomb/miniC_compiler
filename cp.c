@@ -352,36 +352,48 @@ static int *build_label_to_instr(const IRFunction *f, Arena *arena, int *outCap)
 }
 
 
+static int label_map_index(const IRFunction *f, int labelId, int mapCap) {
+    int idx = labelId - f->labelBase;
+    return (idx >= 0 && idx < mapCap) ? idx : -1;
+}
+
 /**
- * @brief Scans instructions to find all jump targets (GOTO/IF_FALSE)
- *        and marks the corresponding target IR_LABEL indices as referenced.
+ * @brief Mark every IR_LABEL that is the target of a GOTO / IF_FALSE.
  *
- * O(n) via the precomputed labelId -> instruction-index map, replacing the
- * previous O(n) inner scan per jump (O(n^2) overall on functions with many
- * branches, e.g. the scFn
- * */
+ * If the same labelId appears more than once, labelToInstr keeps only the
+ * last occurrence; any referenced id is then propagated to all copies so
+ * that no live label is treated as dead.
+ */
 static void collect_referenced_labels(const IRFunction *f,
-                                       const int *labelToInstr, int mapCap,
-                                       char *referenced) {
+                                      const int *labelToInstr, int mapCap,
+                                      char *referenced) {
+    /* Pass 1: mark the canonical (last) copy of each branch target. */
     for (int i = 0; i < f->count; i++) {
         const IRInstr *in = &f->instrs[i];
-        if (in->op != IR_GOTO && in->op != IR_IF_FALSE) continue;
+        if (in->op != IR_GOTO && in->op != IR_IF_FALSE)
+            continue;
 
-        int idx = in->dst.data.labelId - f->labelBase;
-        if (idx < 0 || idx >= mapCap) continue;
+        int idx = label_map_index(f, in->dst.data.labelId, mapCap);
+        if (idx < 0)
+            continue;
 
-        int j = labelToInstr[idx];
-        if (j >= 0) referenced[j] = 1;
+        int at = labelToInstr[idx];
+        if (at >= 0)
+            referenced[at] = 1;
     }
-    /* Keep every IR_LABEL with a given id if ANY copy is referenced.
-     * Duplicate labels (bad sweep) would otherwise make the first copy
-     * look orphaned because labelToInstr keeps only the last index. */
+
+    /* Pass 2: if any copy of a labelId is live, mark every copy live. */
     for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op != IR_LABEL) continue;
-        int idx = f->instrs[i].dst.data.labelId - f->labelBase;
-        if (idx < 0 || idx >= mapCap) continue;
-        int j = labelToInstr[idx];
-        if (j >= 0 && referenced[j]) referenced[i] = 1;
+        if (f->instrs[i].op != IR_LABEL)
+            continue;
+
+        int idx = label_map_index(f, f->instrs[i].dst.data.labelId, mapCap);
+        if (idx < 0)
+            continue;
+
+        int at = labelToInstr[idx];
+        if (at >= 0 && referenced[at])
+            referenced[i] = 1;
     }
 }
 

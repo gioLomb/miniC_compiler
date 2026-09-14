@@ -34,6 +34,7 @@
 #include <assert.h>
 #include "../instr_selector.h"
 #include "../ra_spill.h"
+#include "../reg_class.h"
 
 /* ---- Operand builders (stesso stile di test_interference.c) ---- */
 static MachOperand vreg(int id)  { MachOperand o = {0}; o.kind = MO_VREG; o.vregId = id; return o; }
@@ -77,7 +78,7 @@ int main(void) {
         int spilled[1] = { 0 };
         int frameOff = 0;
 
-        ra_spill_insert(&f, spilled, 1, &frameOff);
+        ra_spill_insert(&f, RC_INT, spilled, 1, &frameOff);
 
         /* atteso: [load t<-slot, ADD v1=t+t, RET] */
         assert(f.count == 3 && "un solo reload atteso (cache hit sul secondo uso)");
@@ -109,7 +110,7 @@ int main(void) {
         int spilled[1] = { 0 };
         int frameOff = 0;
 
-        ra_spill_insert(&f, spilled, 1, &frameOff);
+        ra_spill_insert(&f, RC_INT, spilled, 1, &frameOff);
 
         /* atteso: [load t<-slot(v0), ADD t=t+v1, store slot(v0)<-t, RET] */
         assert(f.count == 4 && "RMW dst spillato: reload + store attorno all'istruzione");
@@ -149,7 +150,7 @@ int main(void) {
         int spilled[1] = { 0 };
         int frameOff = 0;
 
-        ra_spill_insert(&f, spilled, 1, &frameOff);
+        ra_spill_insert(&f, RC_INT, spilled, 1, &frameOff);
 
         /* atteso: [MOV fresh<-7, store slot(v0)<-fresh, RET] -- NESSUN reload */
         assert(f.count == 3 && "pura scrittura: nessun reload, solo store");
@@ -183,7 +184,7 @@ int main(void) {
         int spilled[1] = { 0 };
         int frameOff = 0;
 
-        ra_spill_insert(&f, spilled, 1, &frameOff);
+        ra_spill_insert(&f, RC_INT, spilled, 1, &frameOff);
 
         /* atteso: [load ta, ADD v2=ta+v1, load tb, ADD v3=tb+v1, RET] */
         assert(f.count == 5 && "due reload distinti attesi (cache non persiste tra istruzioni)");
@@ -218,7 +219,7 @@ int main(void) {
         int spilled[2] = { 0, 1 };
         int frameOff = 0;
 
-        ra_spill_insert(&f, spilled, 2, &frameOff);
+        ra_spill_insert(&f, RC_INT, spilled, 2, &frameOff);
 
         /* atteso: [load tbase, load tidx, STORE mem(tbase,tidx)<-v2, RET] */
         assert(f.count == 4 && "base+index spillati: due reload prima dello STORE");
@@ -258,7 +259,7 @@ int main(void) {
         int spilled[3] = { 2, 0, 1 }; /* ordine arbitrario, v0 e' il SECONDO */
         int frameOff = 0;
 
-        ra_spill_insert(&f, spilled, 3, &frameOff);
+        ra_spill_insert(&f, RC_INT, spilled, 3, &frameOff);
 
         assert(frameOff == 24 && "3 slot da 8 byte, incremento indipendente dall'id numerico");
         /* v0 e' il secondo elemento di spilled[] -> secondo increment -> offset 16 */

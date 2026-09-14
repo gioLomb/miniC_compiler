@@ -36,9 +36,6 @@ DataType st_resolve_type(const char *type_name) {
     }
 }
 
-/* =========================================================================
- * Declaration text parsing
- * ========================================================================= */
 
 void st_elaborate_decl(Arena *arena, const char *text,
                        char **outTypeName, char **outName,
@@ -77,9 +74,6 @@ void st_elaborate_decl(Arena *arena, const char *text,
     }
 }
 
-/* =========================================================================
- * Single-symbol binding
- * ========================================================================= */
 
 int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
     char *type_name, *name;
@@ -141,7 +135,6 @@ static inline void st_init_var_symbol(Symbol *sym, int isArray, int arraySize) {
     sym->kind      = SYM_VAR;
     sym->isArray   = isArray;
     sym->arraySize = arraySize;
-    // dataType lasciato intatto: già settato dal chiamante prima dello switch
 }
 
 static inline int st_bind_global_symbol(Scope *global, const char *name, Symbol *sym) {
@@ -159,7 +152,6 @@ static inline int st_bind_global_symbol(Scope *global, const char *name, Symbol 
 int st_resolve_global_namespace(ASTNode *program, Scope *global) {
     int errors = 0;
 
-    // scratch arena for temporary declaration substrings; destroyed on return
     Arena *arena = arena_create(0);
 
     for (int i = 0; i < program->nchildren; i++) {
@@ -190,7 +182,6 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
 
         if (st_bind_global_symbol(global, name, &sym) == 0) {
             // stamp global ND_VAR_DECL nodes with their resolved coordinates
-            // so ir_add_global() in ir.c can match them without a second lookup
             if (sym.kind == SYM_VAR) {
                 decl->scopeLevel = sym.scopeLevel;
                 decl->offset     = sym.offset;

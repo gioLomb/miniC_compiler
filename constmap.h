@@ -42,9 +42,6 @@ typedef struct {
     } val;
 } LatVal;
 
-/* =========================================================================
- * Lattice constructors
- * ========================================================================= */
 
 /** @brief Return a CONST lattice element wrapping the integer @p ival. */
 LatVal lat_set_const_int(int ival);
@@ -55,9 +52,6 @@ LatVal lat_set_const_float(float fval);
 /** @brief Return the CONFLICT (⊥) lattice element. */
 LatVal lat_conflict(void);
 
-/* =========================================================================
- * Lattice operations
- * ========================================================================= */
 
 /**
  * @brief Compute the meet (⊓) of two lattice elements.
@@ -94,9 +88,6 @@ int lat_is_unknown(LatVal v);
 /** @brief Return non-zero if @p v is the CONFLICT lattice element. */
 int lat_is_conflict(LatVal v);
 
-/* =========================================================================
- * ConstMap — per-variable lattice state
- * ========================================================================= */
 
 /**
  * @brief Dense array mapping compact variable ids to their current LatVal.
