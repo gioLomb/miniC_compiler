@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include "liveness.h"
 #include "instr_selector.h"
+#include "reg_class.h"
 #include "regalloc_utils.h"
 #include "arena.h"
 #include "dynamic_array.h"
@@ -107,8 +108,8 @@ int ig_has_edge(const IGraph *g, int i, int j);
  * @return           Fully initialised IGraph; call @c ig_free() when done.
  */
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
-                int nextVreg, const LiveSet *liveAfter, int firstSpillVreg,
-                Arena *arena);
+                RegClass cls, int classVregCount, const LiveSet *liveAfter,
+                int firstSpillVreg, Arena *arena);
 
 /**
  * @brief Free the heap-allocated adjacency-list data of every node.

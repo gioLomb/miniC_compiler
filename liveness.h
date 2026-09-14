@@ -208,6 +208,7 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
  */
 LivenessResult liveness_computeMach(const MachFunction *f,
                                       const BasicBlock *blocks,
-                                      int nBlocks, Arena *arena);
+                                      int nBlocks, RegClass cls, int classVregCount,
+                                      Arena *arena);
 
 #endif /* LIVENESS_H */

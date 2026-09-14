@@ -1,44 +1,46 @@
+/**
+ * @file instr_query.c
+ * @brief Class-aware MachInstr operand extraction and opcode predicates.
+ */
+
 #include "instr_query.h"
 
-/* =========================================================================
- * Operand extraction — internal helpers
- * ========================================================================= */
-
-static inline int mach_operand_reg(const MachOperand *o, int nextVreg) {
+static inline int mach_operand_reg_c(const MachOperand *o, int classVregCount, RegClass cls) {
     switch (o->kind) {
-    case MO_VREG: return o->vregId;
-    // same id scheme used across sched/regalloc: physical reg P -> id
-    // (nextVreg + P), so physical and virtual ids never collide in a bitset
+    case MO_VREG:
+        return (cls == RC_INT) ? o->vregId : -1;
+    case MO_VREG_F:
+        return (cls == RC_FLOAT) ? o->vregId : -1;
     case MO_PHYS:
-        // XMM registers are a separate file, invisible to the int
-        // interference graph/coloring pipeline (never colored there);
-        // must return -1 or their large enum values index past arrays
-        // sized nextVreg+PHYS_ALLOCATABLE.
-        if (o->physReg >= PHYS_XMM0) return -1;
-        return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
-    case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
-    default:      return -1;
+        if (cls == RC_INT) {
+            if (o->physReg >= PHYS_XMM0) return -1;
+            return classVregCount + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
+        } else {
+            if (o->physReg < PHYS_XMM0 || o->physReg >= PHYS_XMM0 + PHYS_XMM_COUNT)
+                return -1;
+            return classVregCount + (o->physReg - PHYS_XMM0);
+        }
+    case MO_MEM:
+        return (cls == RC_INT && o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
+    default:
+        return -1;
     }
 }
 
-// baseVreg/indexVreg in MO_MEM are always plain vreg ids, never physical
-static inline int mach_operand_reg2(const MachOperand *o) {
-    if (o->kind == MO_MEM && o->mem.indexVreg >= 0)
-        return o->mem.indexVreg;
-    return -1;
+static inline int mach_operand_reg2_c(const MachOperand *o, RegClass cls) {
+    return (cls == RC_INT && o->kind == MO_MEM && o->mem.indexVreg >= 0)
+               ? o->mem.indexVreg : -1;
 }
 
-static inline void push_reg_id(int out[], int *n, int id) {
-    if (id >= 0) out[(*n)++] = id;
+static inline void push_operand_regs_c(int out[], int *n, const MachOperand *o,
+                                       int classVregCount, RegClass cls) {
+    int a = mach_operand_reg_c(o, classVregCount, cls);
+    if (a >= 0) out[(*n)++] = a;
+    int b = mach_operand_reg2_c(o, cls);
+    if (b >= 0) out[(*n)++] = b;
 }
 
-// second id only present for MO_MEM (index register)
-static inline void push_operand_regs(int out[], int *n, const MachOperand *o, int nextVreg) {
-    push_reg_id(out, n, mach_operand_reg(o, nextVreg));
-    push_reg_id(out, n, mach_operand_reg2(o));
-}
-
-int instr_def(const MachInstr *in, int nextVreg) {
+int instr_def(const MachInstr *in, int classVregCount, RegClass cls) {
     switch (in->op) {
     case MACH_CMP: case MACH_TEST: case MACH_UCOMISS:
     case MACH_JMP: case MACH_JE: case MACH_JNE:
@@ -50,111 +52,113 @@ int instr_def(const MachInstr *in, int nextVreg) {
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
         return -1;
     default:
-        return mach_operand_reg(&in->dst, nextVreg);
+        return mach_operand_reg_c(&in->dst, classVregCount, cls);
     }
 }
 
-void instr_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
+void instr_uses(const MachInstr *in, int classVregCount, RegClass cls, int out[], int *n) {
     *n = 0;
-    push_operand_regs(out, n, &in->src1, nextVreg);
-    push_operand_regs(out, n, &in->src2, nextVreg);
+    push_operand_regs_c(out, n, &in->src1, classVregCount, cls);
+    push_operand_regs_c(out, n, &in->src2, classVregCount, cls);
 
     switch (in->op) {
     case MACH_STORE:
-    case MACH_CMP:      /* dst = lhs del confronto: è un uso */
-    case MACH_TEST:     /* dst = lhs del test: è un uso */
-        push_operand_regs(out, n, &in->dst, nextVreg);
+    case MACH_CMP:
+    case MACH_TEST:
+    case MACH_UCOMISS:
+        push_operand_regs_c(out, n, &in->dst, classVregCount, cls);
         break;
-
     case MACH_PUSH:
     case MACH_IDIV:
-    case MACH_CQO:
-        push_reg_id(out, n, mach_operand_reg(&in->dst, nextVreg));
+    case MACH_CQO: {
+        int r = mach_operand_reg_c(&in->dst, classVregCount, cls);
+        if (r >= 0) out[(*n)++] = r;
         break;
-
+    }
     default:
         if (instr_is_rmw(in->op)) {
-            push_reg_id(out, n, mach_operand_reg(&in->dst, nextVreg));
+            int r = mach_operand_reg_c(&in->dst, classVregCount, cls);
+            if (r >= 0) out[(*n)++] = r;
         }
         break;
     }
 }
 
-/* =========================================================================
- * Implicit ABI reads/writes
- * ========================================================================= */
-
-static inline void append_caller_saved(int out[], int *n, int nextVreg) {
-    for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++)
-        out[(*n)++] = nextVreg + p;
-}
-
-static inline void append_rax_rdx(int out[], int *n, int nextVreg) {
-    out[(*n)++] = nextVreg + PHYS_RAX;
-    out[(*n)++] = nextVreg + PHYS_RDX;
-}
-
-void instr_implicit_uses(const MachInstr *in, int nextVreg, int out[], int *n) {
+void instr_defs(const MachInstr *in, int classVregCount, RegClass cls, int out[], int *n) {
     *n = 0;
-    switch (in->op) {
-    case MACH_IDIV:
-        /* IDIV reads RDX:RAX as the dividend */
-        append_rax_rdx(out, n, nextVreg);
-        break;
-    case MACH_CQO:
-        /* CQO sign-extends RAX into RDX:RAX; reads RAX */
-        out[(*n)++] = nextVreg + PHYS_RAX;
-        break;
-    case MACH_CALL:
-        /* All caller-saved registers are potentially clobbered */
-        // modelled conservatively as reads too: the callee may read them
-        // as incoming arguments, so they must be excluded from reuse
-        // across the call regardless of direction
-        append_caller_saved(out, n, nextVreg);
-        break;
-    case MACH_RET:
-        /* RET reads the return value from RAX */
-        out[(*n)++] = nextVreg + PHYS_RAX;
-        break;
-    default: break;
-    }
-}
-
-void instr_implicit_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
-    *n = 0;
-    switch (in->op) {
-    case MACH_IDIV:
-        /* IDIV writes quotient -> RAX, remainder -> RDX */
-        append_rax_rdx(out, n, nextVreg);
-        break;
-    case MACH_CQO:
-        /* CQO writes the sign-extension into RDX */
-        out[(*n)++] = nextVreg + PHYS_RDX;
-        break;
-    case MACH_CALL:
-        /* CALL clobbers all caller-saved registers */
-        append_caller_saved(out, n, nextVreg);
-        break;
-    default: break;
-    }
-}
-
-void instr_defs(const MachInstr *in, int nextVreg, int out[], int *n) {
-    *n = 0;
-    // thin wrapper: instr_def already returns -1 or exactly one id
-    int id = instr_def(in, nextVreg);
+    int id = instr_def(in, classVregCount, cls);
     if (id >= 0) out[(*n)++] = id;
 }
 
-/* =========================================================================
- * Opcode predicates
- * ========================================================================= */
+static inline void append_range(int out[], int *n, int base, int count) {
+    for (int p = 0; p < count; p++) out[(*n)++] = base + p;
+}
+
+void instr_implicit_uses(const MachInstr *in, int classVregCount, RegClass cls, int out[], int *n) {
+    *n = 0;
+    if (cls == RC_INT) {
+        switch (in->op) {
+        case MACH_IDIV:
+            out[(*n)++] = classVregCount + PHYS_RAX;
+            out[(*n)++] = classVregCount + PHYS_RDX;
+            break;
+        case MACH_CQO:
+            out[(*n)++] = classVregCount + PHYS_RAX;
+            break;
+        case MACH_CALL:
+            append_range(out, n, classVregCount, PHYS_CALLER_SAVED_COUNT);
+            break;
+        case MACH_RET:
+            out[(*n)++] = classVregCount + PHYS_RAX;
+            break;
+        default: break;
+        }
+    } else {
+        switch (in->op) {
+        case MACH_CALL:
+            /* Do NOT mark XMM0-7 as uses here.  Doing so makes every XMM
+             * live across the whole loop (LiveOut carries the uses into the
+             * back-edge), so every float def interferes with all 8 precolored
+             * phys nodes → degree >= 8 = k → nothing is colorable → infinite
+             * spill.  Arg traffic is already explicit (MOVSS to phys before
+             * the call).  Clobbers remain in instr_implicit_defs. */
+            break;
+        case MACH_RET:
+            out[(*n)++] = classVregCount; /* XMM0 local color 0 */
+            break;
+        default: break;
+        }
+    }
+}
+
+void instr_implicit_defs(const MachInstr *in, int classVregCount, RegClass cls, int out[], int *n) {
+    *n = 0;
+    if (cls == RC_INT) {
+        switch (in->op) {
+        case MACH_IDIV:
+            out[(*n)++] = classVregCount + PHYS_RAX;
+            out[(*n)++] = classVregCount + PHYS_RDX;
+            break;
+        case MACH_CQO:
+            out[(*n)++] = classVregCount + PHYS_RDX;
+            break;
+        case MACH_CALL:
+            append_range(out, n, classVregCount, PHYS_CALLER_SAVED_COUNT);
+            break;
+        default: break;
+        }
+    } else {
+        if (in->op == MACH_CALL)
+            append_range(out, n, classVregCount, PHYS_XMM_COUNT);
+    }
+}
 
 int instr_is_rmw(MachOpCode op) {
     switch (op) {
-    // two-operand ALU ops where dst is both an input and the output
     case MACH_ADD: case MACH_SUB: case MACH_IMUL:
     case MACH_SAL: case MACH_NEG: case MACH_NOT: case MACH_XOR:
+    case MACH_ADDSS: case MACH_SUBSS: case MACH_MULSS:
+    case MACH_DIVSS: case MACH_XORPS:
         return 1;
     default: return 0;
     }
@@ -162,8 +166,11 @@ int instr_is_rmw(MachOpCode op) {
 
 int instr_is_setcc(MachOpCode op) {
     switch (op) {
-    case MACH_SETE: case MACH_SETNE: case MACH_SETL:
-    case MACH_SETLE: case MACH_SETG: case MACH_SETGE:
+    case MACH_SETE: case MACH_SETNE:
+    case MACH_SETL: case MACH_SETLE:
+    case MACH_SETG: case MACH_SETGE:
+    case MACH_SETB: case MACH_SETBE:
+    case MACH_SETA: case MACH_SETAE:
         return 1;
     default: return 0;
     }
@@ -171,10 +178,8 @@ int instr_is_setcc(MachOpCode op) {
 
 int instr_is_ctrl_transfer(MachOpCode op) {
     switch (op) {
-    // any instruction that can transfer control away from the next
-    // sequential instruction invalidates same-block assumptions
-    case MACH_JMP: case MACH_JE: case MACH_JNE: case MACH_JL:
-    case MACH_JLE: case MACH_JG: case MACH_JGE:
+    case MACH_JMP: case MACH_JE: case MACH_JNE:
+    case MACH_JL:  case MACH_JLE: case MACH_JG: case MACH_JGE:
     case MACH_JB:  case MACH_JBE: case MACH_JA: case MACH_JAE:
     case MACH_CALL: case MACH_RET:
         return 1;

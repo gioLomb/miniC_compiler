@@ -39,6 +39,7 @@
 #include "ra_color.h"
 #include "ra_coalesce.h"
 #include "ra_spill.h"
+#include "reg_class.h"
 #include "liveness.h"
 #include "interference.h"
 #include "regalloc_utils.h"
@@ -172,13 +173,13 @@ static BasicBlock *regalloc_build_cfg(const MachFunction *f, Arena *arena, int *
         // control-transfer closes [start, i+1) (branch stays IN the block);
         // label closes [start, i) and the label opens the next block
         int end = isLabelSplit ? i : i + 1;
-        blocks[count++] = (BasicBlock){ start, end, {-1, -1} };
+        blocks[count++] = (BasicBlock){ .range = { start, end }, .succ = {-1, -1} };
         start = end;
     }
 
     if (start < f->count) {
         if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
-        blocks[count++] = (BasicBlock){ start, f->count, {-1, -1} };
+        blocks[count++] = (BasicBlock){ .range = { start, f->count }, .succ = {-1, -1} };
     }
 
     int minId, mapSize;
@@ -190,20 +191,7 @@ static BasicBlock *regalloc_build_cfg(const MachFunction *f, Arena *arena, int *
 }
 
 
-static inline void rewrite_phys(MachOperand *o, const int *color)
-{
-    if (o->kind == MO_VREG) {
-        o->kind    = MO_PHYS;
-        o->physReg = color[o->vregId];
-    }
-}
 
-static inline void rewrite_mem(MachOperand *o, const int *color)
-{
-    if (o->kind != MO_MEM) return;
-    if (o->mem.baseVreg  >= 0) o->mem.baseVreg  = color[o->mem.baseVreg];
-    if (o->mem.indexVreg >= 0) o->mem.indexVreg = color[o->mem.indexVreg];
-}
 
 /**
  * Predicate checking if an instruction is a redundant self-move operation.
@@ -216,29 +204,6 @@ static inline int is_identity_mov(const MachInstr *in)
             in->dst.physReg == in->src1.physReg);
 }
 
-static void regalloc_finalize(MachFunction *f, const int *color)
-{
-    const int count = f->count;
-    MachInstr *instrs = f->instrs;
-    int newCount = 0;
-
-    for (int i = 0; i < count; i++) {
-        MachInstr *in = &instrs[i];
-
-        rewrite_phys(&in->dst,  color);
-        rewrite_phys(&in->src1, color);
-        rewrite_phys(&in->src2, color);
-
-        rewrite_mem(&in->dst,  color);
-        rewrite_mem(&in->src1, color);
-
-        if (!is_identity_mov(in)) {
-            instrs[newCount++] = *in;
-        }
-    }
-
-    f->count = newCount;
-}
 
 
 static inline int is_callee_saved(int physReg)
@@ -377,60 +342,125 @@ static void regalloc_save_restore_callee(MachFunction *f)
  * @return               1 if coloring succeeded (caller should stop looping),
  *                        0 if a spill round was performed (caller must retry).
  */
-static int regalloc_try_round(MachFunction *f, int firstSpillVreg, int *frameOff){
+static void regalloc_finalize_int(MachFunction *f, const int *color) {
+    /* Rewrite MO_VREG -> MO_PHYS; rewrite MO_MEM bases (always int). */
+    const int count = f->count;
+    MachInstr *instrs = f->instrs;
+    int newCount = 0;
+    for (int i = 0; i < count; i++) {
+        MachInstr *in = &instrs[i];
+        if (in->dst.kind == MO_VREG) {
+            in->dst.kind = MO_PHYS;
+            in->dst.physReg = color[in->dst.vregId];
+        }
+        if (in->src1.kind == MO_VREG) {
+            in->src1.kind = MO_PHYS;
+            in->src1.physReg = color[in->src1.vregId];
+        }
+        if (in->src2.kind == MO_VREG) {
+            in->src2.kind = MO_PHYS;
+            in->src2.physReg = color[in->src2.vregId];
+        }
+        if (in->dst.kind == MO_MEM && in->dst.mem.baseVreg >= 0)
+            in->dst.mem.baseVreg = color[in->dst.mem.baseVreg];
+        if (in->src1.kind == MO_MEM && in->src1.mem.baseVreg >= 0)
+            in->src1.mem.baseVreg = color[in->src1.mem.baseVreg];
+        if (in->dst.kind == MO_MEM && in->dst.mem.indexVreg >= 0)
+            in->dst.mem.indexVreg = color[in->dst.mem.indexVreg];
+        if (in->src1.kind == MO_MEM && in->src1.mem.indexVreg >= 0)
+            in->src1.mem.indexVreg = color[in->src1.mem.indexVreg];
+        int identity = (in->op == MACH_MOV && in->dst.kind == MO_PHYS &&
+                        in->src1.kind == MO_PHYS && in->dst.physReg == in->src1.physReg);
+        if (!identity) instrs[newCount++] = *in;
+    }
+    f->count = newCount;
+}
 
+static void regalloc_finalize_float(MachFunction *f, const int *fcolor) {
+    const int count = f->count;
+    MachInstr *instrs = f->instrs;
+    int newCount = 0;
+    for (int i = 0; i < count; i++) {
+        MachInstr *in = &instrs[i];
+        if (in->dst.kind == MO_VREG_F) {
+            in->dst.kind = MO_PHYS;
+            in->dst.physReg = PHYS_XMM0 + fcolor[in->dst.vregId];
+        }
+        if (in->src1.kind == MO_VREG_F) {
+            in->src1.kind = MO_PHYS;
+            in->src1.physReg = PHYS_XMM0 + fcolor[in->src1.vregId];
+        }
+        if (in->src2.kind == MO_VREG_F) {
+            in->src2.kind = MO_PHYS;
+            in->src2.physReg = PHYS_XMM0 + fcolor[in->src2.vregId];
+        }
+        int identity = (in->op == MACH_MOVSS && in->dst.kind == MO_PHYS &&
+                        in->src1.kind == MO_PHYS && in->dst.physReg == in->src1.physReg);
+        if (!identity) instrs[newCount++] = *in;
+    }
+    f->count = newCount;
+}
+
+/**
+ * One coloring attempt for a single register class.
+ * @return 1 on success (no spills), 0 if spill code was inserted.
+ */
+static int regalloc_try_round(MachFunction *f, RegClass cls, int classVregCount,
+                              int firstSpillVreg, int *frameOff) {
     Arena *livArena = arena_create(0);
     int nBlocks;
     BasicBlock *blocks = regalloc_build_cfg(f, livArena, &nBlocks);
 
-    // Backward liveness analysis
-    LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, livArena);
-    IGraph g = ig_build(f, blocks, nBlocks, f->nextVreg, liv.liveAfter,
+    LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, cls, classVregCount, livArena);
+    IGraph g = ig_build(f, blocks, nBlocks, cls, classVregCount, liv.liveAfter,
                         firstSpillVreg, livArena);
 
-    //  Collect MOV-related vreg pairs for biased coloring
-    PartnerList pl = ra_collect_partners(f, &g, f->nextVreg);
+    PartnerList pl = ra_collect_partners(f, &g, cls, classVregCount);
 
-    // Simplification phase
     int *stack = NULL;
-    int stackLen = ra_simplify(&g, f->nextVreg, &stack);
+    const RegClassInfo *ci = reg_class_info(cls);
+    int stackLen = ra_simplify(&g, classVregCount, ci->allocatable, &stack);
 
-    int *spilled = malloc((size_t)(f->nextVreg > 0 ? f->nextVreg : 1) * sizeof(int));
-    int nSpilled = ra_select_colors(&g, stack, stackLen, spilled, &pl);
-
+    int *spilled = malloc((size_t)(classVregCount > 0 ? classVregCount : 1) * sizeof(int));
+    int nSpilled = ra_select_colors(&g, stack, stackLen, ci->allocatable,
+                                    ci->callerSavedCount, spilled, &pl);
     partnerlist_free(&pl);
 
-    // coloring succeeded, or spilling required
     int done = (nSpilled == 0);
     if (done) {
-        regalloc_finalize(f, g.color);
+        if (cls == RC_INT) regalloc_finalize_int(f, g.color);
+        else               regalloc_finalize_float(f, g.color);
     } else {
-        // Spill handling — insert load/store instructions for next round
-        ra_spill_insert(f, spilled, nSpilled, frameOff);
+        ra_spill_insert(f, cls, spilled, nSpilled, frameOff);
     }
-
 
     free(stack);
     free(spilled);
     ig_free(&g);
     arena_destroy(livArena);
     free(blocks);
-
     return done;
 }
 
-static void regalloc_function(MachFunction *f)
-{
-    int frameOff = f->frameSize; //start after isel's reserved float slots
-    int firstSpillVreg = f->nextVreg;
+static void regalloc_function(MachFunction *f) {
+    /* No permanent FloatSlots: spill area starts empty (or any pre-reserved size). */
+    int frameOff = 0;
+    int firstSpillVreg  = f->nextVreg;
+    int firstSpillFVreg = f->fNextVreg;
 
-    // Retry rounds until one colors without spilling.
-    while (!regalloc_try_round(f, firstSpillVreg, &frameOff));
+    {
+        int rounds = 0;
+        while (!regalloc_try_round(f, RC_INT, f->nextVreg, firstSpillVreg, &frameOff)) {
+            if (++rounds > 64) break;
+        }
+        rounds = 0;
+        while (!regalloc_try_round(f, RC_FLOAT, f->fNextVreg, firstSpillFVreg, &frameOff)) {
+            if (++rounds > 64) break;
+        }
+    }
 
-    // Save/restore callee-saved registers in prologue/epilogue
-    regalloc_save_restore_callee(f);
+    regalloc_save_restore_callee(f); /* no XMM is callee-saved */
 
-    // Align frame size to 16-byte boundary (Refactoring: Replace Magic Literal / Explaining Variable)
     int retCount = 0;
     uint32_t usedMask = collect_used_callee_saved(f, &retCount);
     int nCalleeSaved = __builtin_popcount(usedMask);

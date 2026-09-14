@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "liveness.h"
+#include "reg_class.h"
 
 static inline int liveness_words_for(int numVars) {
     return (numVars + 63) / 64;
@@ -249,7 +250,8 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
 /** Context passed from liveness_computeMach to extract_mach. */
 typedef struct {
     const MachFunction *f;
-    int   nextVreg; // base offset: phys reg P → id nextVreg + P
+    RegClass cls;
+    int      classVregCount;
 } MachLivenessCtx;
 
 /**
@@ -271,37 +273,29 @@ static void extract_mach(void *ctxP, int instrIdx,
     int tmp[LIVENESS_MAX_IDS], n;
     *nUses = 0; *nDefs = 0;
 
-    // Collect explicit uses (src1, src2 registers + RMW dsts like STORE base).
-    instr_uses(in, ctx->nextVreg, tmp, &n);
+    instr_uses(in, ctx->classVregCount, ctx->cls, tmp, &n);
     for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
 
-    // Collect implicit ABI uses (e.g. argument registers before CALL).
-    instr_implicit_uses(in, ctx->nextVreg, tmp, &n);
+    instr_implicit_uses(in, ctx->classVregCount, ctx->cls, tmp, &n);
     for (int i = 0; i < n; i++) uses[(*nUses)++] = tmp[i];
 
-    // Collect explicit defs (the single dst register written, if any).
-    instr_defs(in, ctx->nextVreg, tmp, &n);
+    instr_defs(in, ctx->classVregCount, ctx->cls, tmp, &n);
     for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
 
-    // Collect implicit ABI defs
-    instr_implicit_defs(in, ctx->nextVreg, tmp, &n);
+    instr_implicit_defs(in, ctx->classVregCount, ctx->cls, tmp, &n);
     for (int i = 0; i < n; i++) defs[(*nDefs)++] = tmp[i];
 }
 
 LivenessResult liveness_computeMach(const MachFunction *f,
                                       const BasicBlock *blocks,
-                                      int nBlocks, Arena *arena) {
+                                      int nBlocks, RegClass cls, int classVregCount,
+                                      Arena *arena) {
     LivenessResult r = {0};
-    MachLivenessCtx ctx = { f, f->nextVreg };
-    int numVars = f->nextVreg + PHYS_ALLOCATABLE;
+    MachLivenessCtx ctx = { f, cls, classVregCount };
+    int numVars = classVregCount + reg_class_info(cls)->allocatable;
 
-    // Run the backward dataflow engine
     r.blockSets = liveness_computeCore(nBlocks, blocks, numVars, NULL,
                                          extract_mach, &ctx, arena);
-
-    // Compute per-instruction liveAfter[] needed by ig_build().
-    // This is a single additional backward sweep seeded with the fixed-point
-    // LiveOut[] from the engine above.
     r.liveAfter = liveness_computePerInstr(nBlocks, blocks, f->count, numVars,
                                               r.blockSets.LiveOut,
                                               extract_mach, &ctx, arena);

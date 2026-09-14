@@ -42,7 +42,8 @@ typedef enum {
 
 typedef enum {
     MO_NONE,
-    MO_VREG,
+    MO_VREG,    /**< Integer virtual register (colored against GPRs).  */
+    MO_VREG_F,  /**< Float virtual register (colored against XMM regs). */
     MO_PHYS,
     MO_IMM,
     MO_FIMM,
@@ -134,7 +135,8 @@ typedef struct {
     int         count;
     int         capacity;
     int         frameSize;
-    int         nextVreg;
+    int         nextVreg;   /**< Integer vreg universe size. */
+    int         fNextVreg;  /**< Float vreg universe size.   */
 } MachFunction;
 
 /* =========================================================================

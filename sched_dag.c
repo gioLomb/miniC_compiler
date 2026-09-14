@@ -13,6 +13,8 @@
 
 #include <string.h>
 #include "sched_dag.h"
+#include "instr_query.h"
+#include "reg_class.h"
 #include "sched_utils.h"
 #include "regalloc_utils.h"   
 
@@ -193,12 +195,28 @@ static void dag_pin_fusion_pairs(const MachFunction *f, BlockRange blk,
  * Ids use the same scheme as sched_reg: nextVreg + PHYS_XMMk.  The tracker
  * universe is sized with PHYS_COUNT, so these ids are in range.
  */
-static void track_call_xmm_abi(RenameTracker *rt, DAGNode *nodes, Arena *arena,
-                               int j, int nextVreg) {
+/**
+ * @brief apply one instruction's register/side-effect/memory dependencies to the DAG.
+ */
+/**
+ * Track CALL ABI traffic in the global rename universe:
+ *   phys id = nextVreg + fNextVreg + PHYS_*
+ * so it matches sched_reg(MO_PHYS).
+ */
+static void track_call_abi_global(RenameTracker *rt, DAGNode *nodes, Arena *arena,
+                                  int j, int nextVreg, int fNextVreg) {
+    int base = nextVreg + fNextVreg;
+    /* Integer caller-saved (arg regs + clobbers) */
+    for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++) {
+        int id = base + p;
+        track_read(rt, nodes, arena, j, id);
+        track_write(rt, nodes, arena, j, id);
+    }
+    /* XMM0–7: float args / return / clobbers (SysV: all caller-saved) */
     for (int k = 0; k < PHYS_XMM_COUNT; k++) {
-        int id = nextVreg + PHYS_XMM0 + k;
-        track_read(rt, nodes, arena, j, id);   /* may read as float arg */
-        track_write(rt, nodes, arena, j, id);  /* clobbered / may return in xmm0 */
+        int id = base + PHYS_XMM0 + k;
+        track_read(rt, nodes, arena, j, id);
+        track_write(rt, nodes, arena, j, id);
     }
 }
 
@@ -211,41 +229,44 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
     const MachInstr *in = &f->instrs[blk.start + j];
     int regs[SCHED_MAX_REG_IDS], nregs;
 
-    // 1. explicit operands, then implicit ABI reads (e.g. CALL args)
-    sched_uses(in, f->nextVreg, regs, &nregs);
+    /* Explicit register uses (vreg / vreg_f / phys / mem base). */
+    sched_uses(in, f->nextVreg, f->fNextVreg, regs, &nregs);
     track_reg_list_reads(rt, nodes, arena, j, regs, nregs);
 
-    instr_implicit_uses(in, f->nextVreg, regs, &nregs);
+    /* Implicit integer ABI reads: CQO reads RAX, IDIV reads RAX+RDX,
+     * CALL/RET read caller-saved / return regs.
+     * classVregCount = nextVreg+fNextVreg so phys local ids land in the
+     * same global rename universe as sched_reg(MO_PHYS). */
+    instr_implicit_uses(in, f->nextVreg + f->fNextVreg, RC_INT, regs, &nregs);
     track_reg_list_reads(rt, nodes, arena, j, regs, nregs);
 
-    // Float ABI: XMM0–7 are used/clobbered by CALL but never appear in the
-    // integer implicit-use lists (they stay out of the interference graph).
+    /* CALL float ABI (XMM0-7 args/clobbers) — class-local float implicits
+     * use color offsets 0..7 which do NOT match PHYS_XMM0 enum values, so
+     * track them explicitly in the global phys space. */
     if (in->op == MACH_CALL)
-        track_call_xmm_abi(rt, nodes, arena, j, f->nextVreg);
+        track_call_abi_global(rt, nodes, arena, j, f->nextVreg, f->fNextVreg);
 
-    // Side-effect serialisation: STORE/PUSH/CALL/IDIV/CQO in program order
     if (sched_has_side_effect(in->op)) {
         if (*lastSideEffect >= 0) dag_add_edge(nodes, *lastSideEffect, j, arena);
         *lastSideEffect = j;
     }
 
-    // Memory ordering: no alias analysis, so serialise all LOAD/STORE
     if (sched_is_memory_op(in->op)) {
         if (*lastMemoryOp >= 0) dag_add_edge(nodes, *lastMemoryOp, j, arena);
         *lastMemoryOp = j;
     }
 
-    // Writes: explicit dst, then implicit ABI defs
-    int def = sched_def(in, f->nextVreg);
+    /* Explicit def. */
+    int def = sched_def(in, f->nextVreg, f->fNextVreg);
     if (def >= 0) track_write(rt, nodes, arena, j, def);
 
-    instr_implicit_defs(in, f->nextVreg, regs, &nregs);
+    /* Implicit integer ABI writes: CQO defs RDX, IDIV defs RAX+RDX, CALL
+     * clobbers caller-saved.  Without these, a later MOV into %rax can sink
+     * *before* CQO/IDIV and destroy the dividend (fee/idiv bugs). */
+    instr_implicit_defs(in, f->nextVreg + f->fNextVreg, RC_INT, regs, &nregs);
     track_reg_list_writes(rt, nodes, arena, j, regs, nregs);
 }
 
-/**
- * @brief build all RAW/WAR/WAW + side-effect + memory ordering edges for the block.
- */
 static void dag_build_dependencies(const MachFunction *f, BlockRange blk, RenameTracker *rt,
                                     DAGNode *nodes, Arena *arena, int n) {
     int lastSideEffect = -1;
@@ -271,7 +292,7 @@ void dag_build(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena) {
     int n = blk.end - blk.start;
 
-    RenameTracker rt = tracker_create(f->nextVreg, PHYS_COUNT, n, arena);
+    RenameTracker rt = tracker_create(f->nextVreg + f->fNextVreg, PHYS_COUNT, n, arena);
     // was: PHYS_ALLOCATABLE — allargato per tracciare correttamente le
     // dipendenze RAW/WAR/WAW su xmm0/xmm1 usati dal codegen float, senza
     // farli mai finire nel grafo di interferenza intero (quello resta

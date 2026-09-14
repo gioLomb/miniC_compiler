@@ -4,6 +4,7 @@
 #include "interference.h"
 #include "regalloc_utils.h"
 #include "instr_query.h"
+#include "reg_class.h"
 
 /**
  * @brief Map the unordered pair (i, j) to its flat lower-triangular index.
@@ -125,44 +126,31 @@ static void ig_mark_reload_temps(IGraph *g, int firstSpillVreg, int nextVreg) {
 /**
  * @brief Pre-colour every physical-register node: color[nextVreg+p] = p.
  */
-static void ig_precolor_physicals(IGraph *g, int nextVreg) {
-    for (int p = 0; p < PHYS_ALLOCATABLE; p++)
-        g->color[nextVreg + p] = p;
+static void ig_precolor_physicals(IGraph *g, int classVregCount, int allocatable) {
+    for (int p = 0; p < allocatable; p++)
+        g->color[classVregCount + p] = p;
 }
 
-/**
- * @brief Add @p in's loop-depth-weighted spill cost to every vreg it uses or defines.
- *
- * @param tmpArr Scratch array (capacity LIVENESS_MAX_IDS), reused by the caller
- *               across instructions to avoid a stack allocation per call.
- */
 static void ig_accumulate_spill_cost(IGraph *g, const MachInstr *in,
-                                      int nextVreg, int *tmpArr) {
+                                      int classVregCount, RegClass cls, int *tmpArr) {
     int w = regalloc_spill_weight(in->loopDepth);
     int n;
 
-    instr_uses(in, nextVreg, tmpArr, &n);
+    instr_uses(in, classVregCount, cls, tmpArr, &n);
     for (int k = 0; k < n; k++)
-        if (tmpArr[k] < nextVreg) g->spillCost[tmpArr[k]] += w;
+        if (tmpArr[k] < classVregCount) g->spillCost[tmpArr[k]] += w;
 
-    instr_defs(in, nextVreg, tmpArr, &n);
+    instr_defs(in, classVregCount, cls, tmpArr, &n);
     for (int k = 0; k < n; k++)
-        if (tmpArr[k] < nextVreg) g->spillCost[tmpArr[k]] += w;
+        if (tmpArr[k] < classVregCount) g->spillCost[tmpArr[k]] += w;
 }
 
-/**
- * @brief Add interference edges between every register @p in defines
- *        (explicit + implicit) and every register live after @p in.
- *
- * Liveness rule: a register defined at instruction i interferes with
- * every register live immediately after i, since both must occupy
- * distinct physical locations at the moment i commits its result.
- */
 static void ig_add_definition_edges(IGraph *g, const MachInstr *in,
-                                     int nextVreg, const LiveSet *liveAfterInstr) {
+                                     int classVregCount, RegClass cls,
+                                     const LiveSet *liveAfterInstr) {
     int defs[MAX_EXPLICIT_DEFS], nd, idefs[LIVENESS_MAX_IDS], nid;
-    instr_defs(in, nextVreg, defs, &nd);
-    instr_implicit_defs(in, nextVreg, idefs, &nid);   // e.g. CALL clobbers RAX
+    instr_defs(in, classVregCount, cls, defs, &nd);
+    instr_implicit_defs(in, classVregCount, cls, idefs, &nid);
 
     int id;
     for (int d = 0; d < nd; d++)
@@ -174,57 +162,53 @@ static void ig_add_definition_edges(IGraph *g, const MachInstr *in,
             ig_add_edge(g, idefs[d], id);
 }
 
-/**
- * @brief Apply excl[]/crossesCall[] constraints implied by @p in's opcode.
- *
- * Covers the three sources of forbidden colours beyond plain interference
- * edges: CALL (all caller-saved forbidden + crossesCall flag), IDIV/CQO
- * (RAX/RDX forbidden), SETcc (RAX forbidden — writes %al).
- */
 static void ig_apply_constraint_masks(IGraph *g, const MachInstr *in,
-                                       int nextVreg, const LiveSet *liveAfterInstr) {
+                                       int classVregCount, RegClass cls,
+                                       int callerSavedCount,
+                                       const LiveSet *liveAfterInstr) {
     int id;
 
     if (in->op == MACH_CALL) {
+        uint32_t mask = (callerSavedCount >= 32) ? ~0u : ((1U << callerSavedCount) - 1);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); ) {
-            if (id < nextVreg) {
-                g->excl[id] |= ((1U << PHYS_CALLER_SAVED_COUNT) - 1);
+            if (id < classVregCount) {
+                g->excl[id] |= mask;
                 g->crossesCall[id] = 1;
             }
         }
-    } else if (in->op == MACH_IDIV || in->op == MACH_CQO) {
+    } else if (cls == RC_INT && (in->op == MACH_IDIV || in->op == MACH_CQO)) {
         uint32_t mask = (1U << PHYS_RAX) | (1U << PHYS_RDX);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
-            if (id < nextVreg) g->excl[id] |= mask;
-    } else if (instr_is_setcc(in->op)) {
+            if (id < classVregCount) g->excl[id] |= mask;
+    } else if (cls == RC_INT && instr_is_setcc(in->op)) {
         uint32_t mask = (1U << PHYS_RAX);
         for (LiveSetIter it = LIVESET_ITER(liveAfterInstr); LIVESET_NEXT(&it, &id); )
-            if (id < nextVreg) g->excl[id] |= mask;
+            if (id < classVregCount) g->excl[id] |= mask;
     }
 }
 
 
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
-                int nextVreg, const LiveSet *liveAfter, int firstSpillVreg,
-                Arena *arena) {
-
-    int totalNodes = nextVreg + PHYS_ALLOCATABLE;
+                RegClass cls, int classVregCount, const LiveSet *liveAfter,
+                int firstSpillVreg, Arena *arena) {
+    const RegClassInfo *ci = reg_class_info(cls);
+    int totalNodes = classVregCount + ci->allocatable;
 
     IGraph g;
     ig_alloc_storage(&g, totalNodes, arena);
-    ig_precolor_physicals(&g, nextVreg);
-    ig_mark_reload_temps(&g, firstSpillVreg, nextVreg);
+    ig_precolor_physicals(&g, classVregCount, ci->allocatable);
+    ig_mark_reload_temps(&g, firstSpillVreg, classVregCount);
 
-    // scratch array reused across instructions to hold extracted def/use ids
     int tmpArr[LIVENESS_MAX_IDS];
 
     for (int b = 0; b < nBlocks; b++) {
         for (int i = blocks[b].range.start; i < blocks[b].range.end; i++) {
             const MachInstr *in = &f->instrs[i];
 
-            ig_accumulate_spill_cost(&g, in, nextVreg, tmpArr);
-            ig_add_definition_edges(&g, in, nextVreg, &liveAfter[i]);
-            ig_apply_constraint_masks(&g, in, nextVreg, &liveAfter[i]);
+            ig_accumulate_spill_cost(&g, in, classVregCount, cls, tmpArr);
+            ig_add_definition_edges(&g, in, classVregCount, cls, &liveAfter[i]);
+            ig_apply_constraint_masks(&g, in, classVregCount, cls,
+                                      ci->callerSavedCount, &liveAfter[i]);
         }
     }
 

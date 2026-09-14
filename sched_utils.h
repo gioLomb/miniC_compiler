@@ -152,12 +152,14 @@ static inline int sched_is_cmp_or_test(MachOpCode op) {
  * @param nextVreg Base offset for physical-register ids.
  * @return         Non-negative register id, or -1 if the operand carries no id.
  */
-static inline int sched_reg(const MachOperand *o, int nextVreg) {
+static inline int sched_reg(const MachOperand *o, int nextVreg, int fNextVreg) {
     switch (o->kind) {
-    case MO_VREG: return o->vregId;
-    case MO_PHYS: return nextVreg + ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
-    case MO_MEM:  return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
-    default:      return -1;
+    case MO_VREG:   return o->vregId;
+    case MO_VREG_F: return nextVreg + o->vregId;
+    case MO_PHYS:   return nextVreg + fNextVreg +
+                           ((o->physReg == PHYS_AL) ? PHYS_RAX : o->physReg);
+    case MO_MEM:    return (o->mem.baseVreg >= 0) ? o->mem.baseVreg : -1;
+    default:        return -1;
     }
 }
 
@@ -188,7 +190,7 @@ static inline int sched_reg_idx(const MachOperand *o) {
  * @param nextVreg Base offset for physical-register ids (forwarded to sched_reg).
  * @return         Register id of the defined operand, or -1 if none.
  */
-static inline int sched_def(const MachInstr *in, int nextVreg) {
+static inline int sched_def(const MachInstr *in, int nextVreg, int fNextVreg) {
     switch (in->op) {
     case MACH_CMP: case MACH_TEST: case MACH_UCOMISS:
     case MACH_JMP:
@@ -203,7 +205,7 @@ static inline int sched_def(const MachInstr *in, int nextVreg) {
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
         return -1;
     default:
-        return sched_reg(&in->dst, nextVreg);
+        return sched_reg(&in->dst, nextVreg, fNextVreg);
     }
 }
 
@@ -224,36 +226,30 @@ static inline int sched_def(const MachInstr *in, int nextVreg) {
  * @param out      Output array; caller must provide at least 5 entries.
  * @param n        Set to the number of ids written into @p out.
  */
-static inline void sched_uses(const MachInstr *in, int nextVreg,
+static inline void sched_uses(const MachInstr *in, int nextVreg, int fNextVreg,
                                int out[], int *n) {
     *n = 0;
     int r;
 
-    // helper macro: append r to out[] if valid, then check next candidate
 #define SCHED_TRY(x) if ((r = (x)) >= 0) out[(*n)++] = r
-    SCHED_TRY(sched_reg    (&in->src1, nextVreg));
+    SCHED_TRY(sched_reg    (&in->src1, nextVreg, fNextVreg));
     SCHED_TRY(sched_reg_idx(&in->src1));
-    SCHED_TRY(sched_reg    (&in->src2, nextVreg));
+    SCHED_TRY(sched_reg    (&in->src2, nextVreg, fNextVreg));
     SCHED_TRY(sched_reg_idx(&in->src2));
 
-    // instruction-specific additional uses not visible in src1/src2
     switch (in->op) {
     case MACH_STORE:
-        // dst is a MO_MEM address: both base and index are read to form the EA
-        SCHED_TRY(sched_reg    (&in->dst, nextVreg));
+        SCHED_TRY(sched_reg    (&in->dst, nextVreg, fNextVreg));
         SCHED_TRY(sched_reg_idx(&in->dst));
         break;
     case MACH_PUSH:
     case MACH_IDIV:
     case MACH_CQO:
-        // dst field holds the source value (push) or divisor/input (idiv/cqo)
-        SCHED_TRY(sched_reg(&in->dst, nextVreg));
+        SCHED_TRY(sched_reg(&in->dst, nextVreg, fNextVreg));
         break;
     default:
-        // FIX: Istruzioni Read-Modify-Write (ADD, SUB, IMUL, SAL, NEG, NOT, XOR)
-        // leggono 'dst' prima di scriverci.
         if (instr_is_rmw(in->op)) {
-            SCHED_TRY(sched_reg(&in->dst, nextVreg));
+            SCHED_TRY(sched_reg(&in->dst, nextVreg, fNextVreg));
         }
         break;
     }

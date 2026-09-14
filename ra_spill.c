@@ -1,33 +1,36 @@
+/**
+ * @file ra_spill.c
+ * @brief Class-aware spill insertion (GPR MOV or XMM MOVSS).
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include "ra_spill.h"
-#include "instr_query.h"   
+#include "instr_query.h"
 #include "arena.h"
-#include "bitset.h"           
+#include "bitset.h"
 
+static inline int *vreg_counter_of(MachFunction *f, RegClass cls) {
+    return (cls == RC_FLOAT) ? &f->fNextVreg : &f->nextVreg;
+}
+static inline MachOpCode mov_op_of(RegClass cls) {
+    return (cls == RC_FLOAT) ? MACH_MOVSS : MACH_MOV;
+}
+static inline MachOperandKind vreg_kind_of(RegClass cls) {
+    return (cls == RC_FLOAT) ? MO_VREG_F : MO_VREG;
+}
 
-
-static inline void invalidate_cache(int *cache, int n)
-{
+static inline void invalidate_cache(int *cache, int n) {
     memset(cache, 0xFF, (size_t)n * sizeof(int));
 }
 
-/**
- * Checks whether a given virtual register ID is a valid candidate and marked as spilled.
- */
-static inline int is_spilled_vreg(const BitSet *ss, int vreg_id, int orig_next_vreg)
-{
+static inline int is_spilled_vreg(const BitSet *ss, int vreg_id, int orig_next_vreg) {
     return (vreg_id >= 0 && vreg_id < orig_next_vreg && bitset_test(ss, vreg_id));
 }
 
-/**
- * Allocates stack frame offsets and populates the spill BitSet in a single pass.
- * (Refactoring: Extract Function & Slide Statements)
- */
-static void allocate_spill_slots(const int *spilled, int n_spilled, int *slot, 
-                                 int *frame_off, BitSet *ss)
-{
+static void allocate_spill_slots(const int *spilled, int n_spilled, int *slot,
+                                 int *frame_off, BitSet *ss) {
     for (int i = 0; i < n_spilled; i++) {
         int vreg = spilled[i];
         *frame_off += BYTES_PER_QUADWORD;
@@ -36,118 +39,71 @@ static void allocate_spill_slots(const int *spilled, int n_spilled, int *slot,
     }
 }
 
-/**
- * Load spilled vreg 'origVreg' from stack slot 'off' into a temporary,
- * reusing the cached temp if already loaded earlier for the SAME original instruction.
- */
-static void load_spilled(MachOperand *o, int origVreg, MachFunction *f,
-                         int off, MachInstr *newInstrs, int *newCount,
-                         int *cache)
-{
-    // Cache hit: slot reloaded earlier for the same instruction
+static void load_spilled(MachOperand *o, int origVreg, MachFunction *f, RegClass cls,
+                         int off, MachInstr *newInstrs, int *newCount, int *cache) {
     if (cache[origVreg] >= 0) {
-        o->kind   = MO_VREG;
+        o->kind   = vreg_kind_of(cls);
         o->vregId = cache[origVreg];
         return;
     }
-
-    // Cache miss: allocate fresh temp and emit stack load
-    int tmp = f->nextVreg++;
-    MachInstr ld      = {0};
-    ld.op             = MACH_MOV;
-    ld.dst.kind       = MO_VREG;  ld.dst.vregId   = tmp;
-    ld.src1.kind      = MO_STACK; ld.src1.stackOff = off;
+    int tmp = (*vreg_counter_of(f, cls))++;
+    MachInstr ld = {0};
+    ld.op             = mov_op_of(cls);
+    ld.dst.kind       = vreg_kind_of(cls); ld.dst.vregId = tmp;
+    ld.src1.kind      = MO_STACK;          ld.src1.stackOff = off;
     ld.src2.kind      = MO_NONE;
-
     newInstrs[(*newCount)++] = ld;
-    o->kind   = MO_VREG;
+    o->kind   = vreg_kind_of(cls);
     o->vregId = tmp;
     cache[origVreg] = tmp;
 }
 
-/* =========================================================================
- * Sub-pipeline Helpers for Instruction Rewriting (Refactoring: Extract Function)
- * ========================================================================= */
-
 static inline void reload_operand_if_spilled(MachOperand *op, int orig_next_vreg,
                                              const BitSet *ss, const int *slot,
-                                             MachFunction *f, MachInstr *new_instrs,
-                                             int *new_count, int *cache)
-{
-    if (op->kind == MO_VREG && is_spilled_vreg(ss, op->vregId, orig_next_vreg)) {
-        int orig = op->vregId;
-        load_spilled(op, orig, f, slot[orig], new_instrs, new_count, cache);
+                                             MachFunction *f, RegClass cls,
+                                             MachInstr *new_instrs, int *new_count,
+                                             int *cache) {
+    MachOperandKind vk = vreg_kind_of(cls);
+    if (op->kind == vk && is_spilled_vreg(ss, op->vregId, orig_next_vreg))
+        load_spilled(op, op->vregId, f, cls, slot[op->vregId],
+                     new_instrs, new_count, cache);
+}
+
+/* Memory bases/indices are always integer vregs. */
+static inline void reload_mem_operands_if_spilled(MachOperand *op, int orig_next_vreg,
+                                                  const BitSet *ss, const int *slot,
+                                                  MachFunction *f,
+                                                  MachInstr *new_instrs, int *new_count,
+                                                  int *cache) {
+    if (op->kind != MO_MEM) return;
+    if (op->mem.baseVreg >= 0 && is_spilled_vreg(ss, op->mem.baseVreg, orig_next_vreg)) {
+        MachOperand tmp = { .kind = MO_VREG, .vregId = op->mem.baseVreg };
+        load_spilled(&tmp, op->mem.baseVreg, f, RC_INT, slot[op->mem.baseVreg],
+                     new_instrs, new_count, cache);
+        op->mem.baseVreg = tmp.vregId;
+    }
+    if (op->mem.indexVreg >= 0 && is_spilled_vreg(ss, op->mem.indexVreg, orig_next_vreg)) {
+        MachOperand tmp = { .kind = MO_VREG, .vregId = op->mem.indexVreg };
+        load_spilled(&tmp, op->mem.indexVreg, f, RC_INT, slot[op->mem.indexVreg],
+                     new_instrs, new_count, cache);
+        op->mem.indexVreg = tmp.vregId;
     }
 }
 
-static inline void reload_mem_operands_if_spilled(MachOperand *mem_holder, int orig_next_vreg,
-                                                 const BitSet *ss, const int *slot,
-                                                 MachFunction *f, MachInstr *new_instrs,
-                                                 int *new_count, int *cache)
-{
-    if (mem_holder->kind != MO_MEM) return;
+void ra_spill_insert(MachFunction *f, RegClass cls, const int *spilled, int nSpilled,
+                     int *frameOff) {
+    int origNextVreg = *vreg_counter_of(f, cls);
+    MachOperandKind vk = vreg_kind_of(cls);
 
-    if (is_spilled_vreg(ss, mem_holder->mem.baseVreg, orig_next_vreg)) {
-        int orig = mem_holder->mem.baseVreg;
-        MachOperand tmp = { .kind = MO_VREG, .vregId = orig };
-        load_spilled(&tmp, orig, f, slot[orig], new_instrs, new_count, cache);
-        mem_holder->mem.baseVreg = tmp.vregId;
-    }
-
-    if (is_spilled_vreg(ss, mem_holder->mem.indexVreg, orig_next_vreg)) {
-        int orig = mem_holder->mem.indexVreg;
-        MachOperand tmp = { .kind = MO_VREG, .vregId = orig };
-        load_spilled(&tmp, orig, f, slot[orig], new_instrs, new_count, cache);
-        mem_holder->mem.indexVreg = tmp.vregId;
-    }
-}
-
-static inline void emit_spilled_destination(MachInstr *in, const int *slot,
-                                            MachFunction *f, MachInstr *new_instrs,
-                                            int *new_count, int *cache)
-{
-    int orig_dst_vreg = in->dst.vregId;
-    int dst_store_off = slot[orig_dst_vreg];
-    int dst_tmp;
-
-    if (instr_is_rmw(in->op)) {
-        MachOperand tmp = { .kind = MO_VREG, .vregId = orig_dst_vreg };
-        load_spilled(&tmp, orig_dst_vreg, f, dst_store_off, new_instrs, new_count, cache);
-        dst_tmp = tmp.vregId;
-    } else {
-        dst_tmp = f->nextVreg++;
-    }
-
-    in->dst.vregId = dst_tmp;
-    new_instrs[(*new_count)++] = *in;
-
-    MachInstr st = {0};
-    st.op           = MACH_MOV;
-    st.dst.kind     = MO_STACK;
-    st.dst.stackOff = dst_store_off;
-    st.src1.kind    = MO_VREG;
-    st.src1.vregId  = dst_tmp;
-    st.src2.kind    = MO_NONE;
-
-    new_instrs[(*new_count)++] = st;
-    cache[orig_dst_vreg] = dst_tmp;
-}
-
-
-void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
-                     int *frameOff)
-{
-    int origNextVreg = f->nextVreg;
-
-    int *slot = malloc((size_t)origNextVreg * sizeof(int));
-    memset(slot, -1, (size_t)origNextVreg * sizeof(int));
+    int *slot = malloc((size_t)(origNextVreg > 0 ? origNextVreg : 1) * sizeof(int));
+    memset(slot, -1, (size_t)(origNextVreg > 0 ? origNextVreg : 1) * sizeof(int));
 
     Arena *spillArena = arena_create(0);
     BitSet ss = bitset_new(spillArena, (origNextVreg + 63) / 64);
 
     allocate_spill_slots(spilled, nSpilled, slot, frameOff, &ss);
-    int *cache = malloc((size_t)origNextVreg * sizeof(int));
-    invalidate_cache(cache, origNextVreg);
+    int *cache = malloc((size_t)(origNextVreg > 0 ? origNextVreg : 1) * sizeof(int));
+    invalidate_cache(cache, origNextVreg > 0 ? origNextVreg : 1);
 
     int maxNew = f->count * SPILL_MAX_EXPANSION_PER_INSTR + SPILL_EXTRA_MARGIN;
     MachInstr *newInstrs = malloc((size_t)maxNew * sizeof(MachInstr));
@@ -157,38 +113,51 @@ void ra_spill_insert(MachFunction *f, const int *spilled, int nSpilled,
         MachInstr in = f->instrs[i];
         int isStore  = (in.op == MACH_STORE);
 
-        // Reset reload cache before every instruction (per-instruction scope limit)
-        invalidate_cache(cache, origNextVreg);
+        invalidate_cache(cache, origNextVreg > 0 ? origNextVreg : 1);
 
-        /* Reload spilled sources */
-        reload_operand_if_spilled(&in.src1, origNextVreg, &ss, slot, f, newInstrs, &newCount, cache);
-        reload_operand_if_spilled(&in.src2, origNextVreg, &ss, slot, f, newInstrs, &newCount, cache);
+        reload_operand_if_spilled(&in.src1, origNextVreg, &ss, slot, f, cls,
+                                  newInstrs, &newCount, cache);
+        reload_operand_if_spilled(&in.src2, origNextVreg, &ss, slot, f, cls,
+                                  newInstrs, &newCount, cache);
 
-        /* Reload base/index of MO_MEM operand */
-        MachOperand *memHolder = isStore ? &in.dst : &in.src1;
-        reload_mem_operands_if_spilled(memHolder, origNextVreg, &ss, slot, f, newInstrs, &newCount, cache);
-
-        /* CMP/TEST: dst contiene il lhs del confronto, quindi è un uso, non una def.
-         * Se è spilled, va ricaricato come un normale operando sorgente. */
-        if (in.op == MACH_CMP || in.op == MACH_TEST) {
-            reload_operand_if_spilled(&in.dst, origNextVreg, &ss, slot,
-                                      f, newInstrs, &newCount, cache);
-            reload_mem_operands_if_spilled(&in.dst, origNextVreg, &ss, slot,
-                                           f, newInstrs, &newCount, cache);
+        /* MEM bases are integer; only reload them during the INT spill round. */
+        if (cls == RC_INT) {
+            MachOperand *memHolder = isStore ? &in.dst : &in.src1;
+            reload_mem_operands_if_spilled(memHolder, origNextVreg, &ss, slot, f,
+                                           newInstrs, &newCount, cache);
         }
 
-        /* Handle destination (spilled vs unspilled)
-         * Solo chi definisce davvero dst può essere trattato come destinazione. */
-        int dstSpilled = (instr_def(&in, origNextVreg) >= 0) &&
-                         (in.dst.kind == MO_VREG) && !isStore &&
+        if (in.op == MACH_CMP || in.op == MACH_TEST || in.op == MACH_UCOMISS) {
+            reload_operand_if_spilled(&in.dst, origNextVreg, &ss, slot, f, cls,
+                                      newInstrs, &newCount, cache);
+        }
+
+        int dstSpilled = (instr_def(&in, origNextVreg, cls) >= 0) &&
+                         (in.dst.kind == vk) && !isStore &&
                          is_spilled_vreg(&ss, in.dst.vregId, origNextVreg);
 
         if (dstSpilled) {
-            emit_spilled_destination(&in, slot, f, newInstrs, &newCount, cache);
+            int orig = in.dst.vregId;
+            int tmp = (*vreg_counter_of(f, cls))++;
+            if (instr_is_rmw(in.op)) {
+                MachInstr ld = {0};
+                ld.op = mov_op_of(cls);
+                ld.dst.kind = vreg_kind_of(cls); ld.dst.vregId = tmp;
+                ld.src1.kind = MO_STACK; ld.src1.stackOff = slot[orig];
+                newInstrs[newCount++] = ld;
+            }
+            in.dst.kind = vreg_kind_of(cls);
+            in.dst.vregId = tmp;
+            newInstrs[newCount++] = in;
+            MachInstr st = {0};
+            st.op = mov_op_of(cls);
+            st.dst.kind = MO_STACK; st.dst.stackOff = slot[orig];
+            st.src1.kind = vreg_kind_of(cls); st.src1.vregId = tmp;
+            newInstrs[newCount++] = st;
+            cache[orig] = tmp;
         } else {
             newInstrs[newCount++] = in;
         }
-        
     }
 
     free(f->instrs);

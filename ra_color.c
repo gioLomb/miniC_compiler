@@ -62,17 +62,16 @@ static inline void ra_update_neighbor_degrees(IGraph *g, int chosen, int nextVre
 /* =========================================================================
  * ra_simplify — Briggs-optimistic simplification.
  * ========================================================================= */
-int ra_simplify(IGraph *g, int nextVreg, int **outStack)
+int ra_simplify(IGraph *g, int classVregCount, int k, int **outStack)
 {
-    int stackCap = (nextVreg > 0) ? nextVreg : 1;
+    int stackCap = (classVregCount > 0) ? classVregCount : 1;
     *outStack = malloc((size_t)stackCap * sizeof(int));
 
     int stackLen   = 0;
-    const int k    = PHYS_ALLOCATABLE;
-    Buckets buckets = buckets_create(nextVreg, k);
-    int remaining  = nextVreg;
+    Buckets buckets = buckets_create(classVregCount, k);
+    int remaining  = classVregCount;
 
-    for (int v = 0; v < nextVreg; v++) {
+    for (int v = 0; v < classVregCount; v++) {
         if (g->degree[v] < k) {
             bucket_insert(&buckets, v, g->degree[v]);
         }
@@ -84,9 +83,8 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
         int fromBucket = (chosen >= 0);
 
         if (!fromBucket) {
-            // No node has degree < k: select optimistic spill candidate
-            chosen = ra_select_spill_candidate(g, nextVreg, &buckets);
-            if (chosen < 0) break; // Impossible to proceed
+            chosen = ra_select_spill_candidate(g, classVregCount, &buckets);
+            if (chosen < 0) break;
 
             degree = (g->degree[chosen] < k) ? g->degree[chosen] : (k - 1);
         } else {
@@ -97,7 +95,7 @@ int ra_simplify(IGraph *g, int nextVreg, int **outStack)
         remaining--;
         (*outStack)[stackLen++] = chosen;
 
-        ra_update_neighbor_degrees(g, chosen, nextVreg, k, &buckets);
+        ra_update_neighbor_degrees(g, chosen, classVregCount, k, &buckets);
     }
 
     buckets_free();
@@ -184,7 +182,7 @@ static int ra_hint_color(int v, uint32_t available,
     for (int k = pidx->start[v]; k < pidx->start[v + 1]; k++) {
         int partner = pidx->data[k];
         int pc = g->color[partner];
-        if (pc < 0 || (unsigned)pc >= PHYS_ALLOCATABLE) continue;
+        if (pc < 0 || (unsigned)pc >= 32) continue;
 
         // Check if partner's color is available for v
         if ((available >> pc) & 1u) {
@@ -209,35 +207,33 @@ static inline uint32_t ra_compute_forbidden_colors(const IGraph *g, int v) {
 }
 
 
-static inline int ra_choose_color(int v, uint32_t available,
-                               const IGraph *g,const PartnerIndex *pidx){
-    // Priority 1: biased hint from a move-related partner
+static inline int ra_choose_color(int v, uint32_t available, int callerSavedCount,
+                               const IGraph *g, const PartnerIndex *pidx){
     int hint = ra_hint_color(v, available, g, pidx);
     if (hint >= 0) return hint;
 
-    // Priority 2: live across CALL — prefer callee-saved registers
-    if (g->crossesCall[v]) {
-        uint32_t callee = available >> PHYS_CALLER_SAVED_COUNT;
+    /* Live across CALL: prefer callee-saved. For RC_FLOAT callerSavedCount==k
+     * so callee mask is empty and we fall through to lowest available (none). */
+    if (g->crossesCall[v] && callerSavedCount < 32) {
+        uint32_t callee = available >> callerSavedCount;
         if (callee) {
-            return PHYS_CALLER_SAVED_COUNT + __builtin_ctz(callee);
+            return callerSavedCount + __builtin_ctz(callee);
         }
     }
 
-    // Priority 3: fallback to lowest available color
     if (available) {
         return __builtin_ctz(available);
     }
 
-    return -1; // Needs spill
+    return -1;
 }
 
 
-int ra_select_colors(IGraph *g, int *stack, int stackLen,
+int ra_select_colors(IGraph *g, int *stack, int stackLen, int k, int callerSavedCount,
                      int *spilled, const PartnerList *pl){
     int nSpilled = 0;
-    const uint32_t valid_mask = (1u << PHYS_ALLOCATABLE) - 1u;
+    const uint32_t valid_mask = (k >= 32) ? ~0u : ((1u << k) - 1u);
 
-    // built once for the whole coloring pass instead of scanning pl per node
     PartnerIndex pidx = ra_build_partner_index(pl, g->n);
 
     for (int si = stackLen - 1; si >= 0; si--) {
@@ -247,12 +243,12 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen,
         uint32_t forbidden = ra_compute_forbidden_colors(g, v);
         uint32_t available = (~forbidden) & valid_mask;
 
-        int chosen = ra_choose_color(v, available, g, &pidx);
+        int chosen = ra_choose_color(v, available, callerSavedCount, g, &pidx);
 
         if (chosen >= 0) {
             g->color[v] = chosen;
         } else {
-            g->color[v] = -2; // Marked as spilled
+            g->color[v] = -2;
             spilled[nSpilled++] = v;
         }
     }
