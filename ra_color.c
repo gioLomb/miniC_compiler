@@ -4,7 +4,7 @@
 #include <float.h>
 #include "ra_color.h"
 #include "ra_coalesce.h"
-#include "instr_selector.h"   /* PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, PHYS_RBX..R15 */
+#include "instr_selector.h"
 
 /**
  * Scans active, non-bucketed nodes to find the best optimistic spill candidate.
@@ -134,7 +134,7 @@ static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
     PartnerIndex idx = { NULL, NULL };
     if (!pl || pl->count == 0 || n <= 0) return idx;
 
-    // pass 1: count how many pairs touch each node
+    // count how many pairs touch each node
     int *count = calloc((size_t)n, sizeof(int));
     for (int i = 0; i < pl->count; i++) {
         int aVregId = pl->pairs[i].vregId, aPartnerId = pl->pairs[i].partnerId;
@@ -142,13 +142,13 @@ static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
         if (aPartnerId >= 0 && aPartnerId < n) count[aPartnerId]++;
     }
 
-    // pass 2: prefix sum -> offsets
+    // prefix sum -> offsets
     idx.start = malloc((size_t)(n + 1) * sizeof(int));
     int total = 0;
     for (int i = 0; i < n; i++) { idx.start[i] = total; total += count[i]; }
     idx.start[n] = total;
 
-    // pass 3: scatter, using a write cursor seeded from start[]
+    // scatter, using a write cursor seeded from start[]
     idx.data = malloc((size_t)(total > 0 ? total : 1) * sizeof(int));
     int *cursor = malloc((size_t)n * sizeof(int));
     memcpy(cursor, idx.start, (size_t)n * sizeof(int));
@@ -215,7 +215,7 @@ static inline int ra_choose_color(int v, uint32_t available, int callerSavedCoun
 
     /* Live across CALL: prefer callee-saved. For RC_FLOAT callerSavedCount==k
      * so callee mask is empty and we fall through to lowest available (none). */
-    if (g->crossesCall[v] && callerSavedCount < 32) {
+    if (g->crossesCall[v] && callerSavedCount < 32) { // prevent UB shift
         uint32_t callee = available >> callerSavedCount;
         if (callee) {
             return callerSavedCount + __builtin_ctz(callee);

@@ -1,6 +1,12 @@
 /**
  * @file ra_spill.c
  * @brief Class-aware spill insertion (GPR MOV or XMM MOVSS).
+ *
+ * Pipeline per call to ra_spill_insert():
+ *   1. setup   — allocate slots, bitset, reload cache, output buffer
+ *   2. rewrite — for each instruction: reload sources, emit (possibly with
+ *                a spilled destination rewritten through a fresh temp)
+ *   3. commit  — replace f->instrs, free temporaries
  */
 
 #include <stdlib.h>
@@ -11,161 +17,252 @@
 #include "arena.h"
 #include "bitset.h"
 
+/* ---- class helpers ------------------------------------------------------ */
+
 static inline int *vreg_counter_of(MachFunction *f, RegClass cls) {
     return (cls == RC_FLOAT) ? &f->fNextVreg : &f->nextVreg;
 }
+
 static inline MachOpCode mov_op_of(RegClass cls) {
     return (cls == RC_FLOAT) ? MACH_MOVSS : MACH_MOV;
 }
+
 static inline MachOperandKind vreg_kind_of(RegClass cls) {
     return (cls == RC_FLOAT) ? MO_VREG_F : MO_VREG;
 }
 
-static inline void invalidate_cache(int *cache, int n) {
-    memset(cache, 0xFF, (size_t)n * sizeof(int));
+/* ---- spill rewrite context ---------------------------------------------- */
+
+/**
+ * @brief Shared state for one ra_spill_insert() invocation.
+ *
+ * Passed by pointer to every helper so individual functions stay short and
+ * do not need long parameter lists.
+ */
+typedef struct {
+    MachFunction    *f;
+    RegClass         cls;
+    MachOperandKind  vk;            /**< MO_VREG or MO_VREG_F for this class. */
+    int              origNextVreg;  /**< Vreg universe size before this round. */
+    int             *slot;          /**< slot[v] = stack offset, or -1. */
+    BitSet           ss;            /**< Set of spilled vreg ids. */
+    int             *cache;         /**< Per-instruction reload-temp cache. */
+    int              cacheSize;
+    MachInstr       *newInstrs;
+    int              newCount;
+    int              maxNew;        /**< Capacity of newInstrs. */
+    Arena           *arena;
+} SpillCtx;
+
+static inline void spill_emit(SpillCtx *ctx, MachInstr in) {
+    ctx->newInstrs[ctx->newCount++] = in;
 }
 
-static inline int is_spilled_vreg(const BitSet *ss, int vreg_id, int orig_next_vreg) {
-    return (vreg_id >= 0 && vreg_id < orig_next_vreg && bitset_test(ss, vreg_id));
+static inline int spill_fresh_temp(SpillCtx *ctx) {
+    return (*vreg_counter_of(ctx->f, ctx->cls))++;
 }
+
+static inline void invalidate_cache(SpillCtx *ctx) {
+    memset(ctx->cache, 0xFF, (size_t)ctx->cacheSize * sizeof(int));
+}
+
+static inline int is_spilled(const SpillCtx *ctx, int vreg_id) {
+    return (vreg_id >= 0 && vreg_id < ctx->origNextVreg &&
+            bitset_test(&ctx->ss, vreg_id));
+}
+
+/* ---- setup phase -------------------------------------------------------- */
 
 static void allocate_spill_slots(const int *spilled, int n_spilled, int *slot,
                                  int *frame_off, BitSet *ss) {
     for (int i = 0; i < n_spilled; i++) {
-        int vreg = spilled[i];
+        int v = spilled[i];
         *frame_off += BYTES_PER_QUADWORD;
-        slot[vreg] = *frame_off;
-        bitset_set(ss, vreg);
+        slot[v] = *frame_off;
+        bitset_set(ss, v);
     }
 }
 
-static void load_spilled(MachOperand *o, int origVreg, MachFunction *f, RegClass cls,
-                         int off, MachInstr *newInstrs, int *newCount, int *cache) {
-    if (cache[origVreg] >= 0) {
-        o->kind   = vreg_kind_of(cls);
-        o->vregId = cache[origVreg];
+/** @brief Allocate slots, bitset, reload cache and the output instruction buffer. */
+static void spill_setup(SpillCtx *ctx, MachFunction *f, RegClass cls,
+                        const int *spilled, int nSpilled, int *frameOff) {
+    ctx->f            = f;
+    ctx->cls          = cls;
+    ctx->vk           = vreg_kind_of(cls);
+    ctx->origNextVreg = *vreg_counter_of(f, cls);
+    ctx->cacheSize    = ctx->origNextVreg > 0 ? ctx->origNextVreg : 1;
+    ctx->newCount     = 0;
+
+    ctx->slot = malloc((size_t)ctx->cacheSize * sizeof(int));
+    memset(ctx->slot, -1, (size_t)ctx->cacheSize * sizeof(int));
+
+    ctx->arena = arena_create(0);
+    ctx->ss    = bitset_new(ctx->arena, (ctx->origNextVreg + 63) / 64);
+    allocate_spill_slots(spilled, nSpilled, ctx->slot, frameOff, &ctx->ss);
+
+    ctx->cache = malloc((size_t)ctx->cacheSize * sizeof(int));
+    invalidate_cache(ctx);
+
+    ctx->maxNew    = f->count * SPILL_MAX_EXPANSION_PER_INSTR + SPILL_EXTRA_MARGIN;
+    ctx->newInstrs = malloc((size_t)ctx->maxNew * sizeof(MachInstr));
+}
+
+/* ---- reload helpers ----------------------------------------------------- */
+
+/**
+ * @brief Ensure @p o is a register holding the spilled value of @p origVreg.
+ *
+ * Hits the per-instruction cache when the same vreg was already reloaded.
+ */
+static void load_spilled(SpillCtx *ctx, MachOperand *o, int origVreg) {
+    if (ctx->cache[origVreg] >= 0) {
+        o->kind   = ctx->vk;
+        o->vregId = ctx->cache[origVreg];
         return;
     }
-    int tmp = (*vreg_counter_of(f, cls))++;
+    int tmp = spill_fresh_temp(ctx);
     MachInstr ld = {0};
-    ld.op             = mov_op_of(cls);
-    ld.dst.kind       = vreg_kind_of(cls); ld.dst.vregId = tmp;
-    ld.src1.kind      = MO_STACK;          ld.src1.stackOff = off;
-    ld.src2.kind      = MO_NONE;
-    newInstrs[(*newCount)++] = ld;
-    o->kind   = vreg_kind_of(cls);
+    ld.op            = mov_op_of(ctx->cls);
+    ld.dst.kind      = ctx->vk;
+    ld.dst.vregId    = tmp;
+    ld.src1.kind     = MO_STACK;
+    ld.src1.stackOff = ctx->slot[origVreg];
+    ld.src2.kind     = MO_NONE;
+    spill_emit(ctx, ld);
+    o->kind   = ctx->vk;
     o->vregId = tmp;
-    cache[origVreg] = tmp;
+    ctx->cache[origVreg] = tmp;
 }
 
-static inline void reload_operand_if_spilled(MachOperand *op, int orig_next_vreg,
-                                             const BitSet *ss, const int *slot,
-                                             MachFunction *f, RegClass cls,
-                                             MachInstr *new_instrs, int *new_count,
-                                             int *cache) {
-    MachOperandKind vk = vreg_kind_of(cls);
-    if (op->kind == vk && is_spilled_vreg(ss, op->vregId, orig_next_vreg))
-        load_spilled(op, op->vregId, f, cls, slot[op->vregId],
-                     new_instrs, new_count, cache);
+static void reload_operand_if_spilled(SpillCtx *ctx, MachOperand *op) {
+    if (op->kind == ctx->vk && is_spilled(ctx, op->vregId))
+        load_spilled(ctx, op, op->vregId);
 }
 
-/* Memory bases/indices are always integer vregs. */
-static inline void reload_mem_operands_if_spilled(MachOperand *op, int orig_next_vreg,
-                                                  const BitSet *ss, const int *slot,
-                                                  MachFunction *f,
-                                                  MachInstr *new_instrs, int *new_count,
-                                                  int *cache) {
+/**
+ * @brief Reload spilled GPR base/index of a memory operand.
+ *
+ * Address registers are always integers.  Only called from the INT spill round.
+ */
+static void reload_address_operands(SpillCtx *ctx, MachOperand *op) {
     if (op->kind != MO_MEM) return;
-    if (op->mem.baseVreg >= 0 && is_spilled_vreg(ss, op->mem.baseVreg, orig_next_vreg)) {
+
+    if (op->mem.baseVreg >= 0 && is_spilled(ctx, op->mem.baseVreg)) {
         MachOperand tmp = { .kind = MO_VREG, .vregId = op->mem.baseVreg };
-        load_spilled(&tmp, op->mem.baseVreg, f, RC_INT, slot[op->mem.baseVreg],
-                     new_instrs, new_count, cache);
+        load_spilled(ctx, &tmp, op->mem.baseVreg);
         op->mem.baseVreg = tmp.vregId;
     }
-    if (op->mem.indexVreg >= 0 && is_spilled_vreg(ss, op->mem.indexVreg, orig_next_vreg)) {
+    if (op->mem.indexVreg >= 0 && is_spilled(ctx, op->mem.indexVreg)) {
         MachOperand tmp = { .kind = MO_VREG, .vregId = op->mem.indexVreg };
-        load_spilled(&tmp, op->mem.indexVreg, f, RC_INT, slot[op->mem.indexVreg],
-                     new_instrs, new_count, cache);
+        load_spilled(ctx, &tmp, op->mem.indexVreg);
         op->mem.indexVreg = tmp.vregId;
     }
 }
 
-void ra_spill_insert(MachFunction *f, RegClass cls, const int *spilled, int nSpilled,
-                     int *frameOff) {
-    int origNextVreg = *vreg_counter_of(f, cls);
-    MachOperandKind vk = vreg_kind_of(cls);
+/**
+ * @brief Reload every spilled source of @p in (values and, for INT, addresses).
+ */
+static void reload_sources(SpillCtx *ctx, MachInstr *in) {
+    int isStore = (in->op == MACH_STORE);
 
-    int *slot = malloc((size_t)(origNextVreg > 0 ? origNextVreg : 1) * sizeof(int));
-    memset(slot, -1, (size_t)(origNextVreg > 0 ? origNextVreg : 1) * sizeof(int));
+    reload_operand_if_spilled(ctx, &in->src1);
+    reload_operand_if_spilled(ctx, &in->src2);
 
-    Arena *spillArena = arena_create(0);
-    BitSet ss = bitset_new(spillArena, (origNextVreg + 63) / 64);
-
-    allocate_spill_slots(spilled, nSpilled, slot, frameOff, &ss);
-    int *cache = malloc((size_t)(origNextVreg > 0 ? origNextVreg : 1) * sizeof(int));
-    invalidate_cache(cache, origNextVreg > 0 ? origNextVreg : 1);
-
-    int maxNew = f->count * SPILL_MAX_EXPANSION_PER_INSTR + SPILL_EXTRA_MARGIN;
-    MachInstr *newInstrs = malloc((size_t)maxNew * sizeof(MachInstr));
-    int newCount = 0;
-
-    for (int i = 0; i < f->count; i++) {
-        MachInstr in = f->instrs[i];
-        int isStore  = (in.op == MACH_STORE);
-
-        invalidate_cache(cache, origNextVreg > 0 ? origNextVreg : 1);
-
-        reload_operand_if_spilled(&in.src1, origNextVreg, &ss, slot, f, cls,
-                                  newInstrs, &newCount, cache);
-        reload_operand_if_spilled(&in.src2, origNextVreg, &ss, slot, f, cls,
-                                  newInstrs, &newCount, cache);
-
-        /* MEM bases are integer; only reload them during the INT spill round. */
-        if (cls == RC_INT) {
-            MachOperand *memHolder = isStore ? &in.dst : &in.src1;
-            reload_mem_operands_if_spilled(memHolder, origNextVreg, &ss, slot, f,
-                                           newInstrs, &newCount, cache);
-        }
-
-        if (in.op == MACH_CMP || in.op == MACH_TEST || in.op == MACH_UCOMISS) {
-            reload_operand_if_spilled(&in.dst, origNextVreg, &ss, slot, f, cls,
-                                      newInstrs, &newCount, cache);
-        }
-
-        int dstSpilled = (instr_def(&in, origNextVreg, cls) >= 0) &&
-                         (in.dst.kind == vk) && !isStore &&
-                         is_spilled_vreg(&ss, in.dst.vregId, origNextVreg);
-
-        if (dstSpilled) {
-            int orig = in.dst.vregId;
-            int tmp = (*vreg_counter_of(f, cls))++;
-            if (instr_is_rmw(in.op)) {
-                MachInstr ld = {0};
-                ld.op = mov_op_of(cls);
-                ld.dst.kind = vreg_kind_of(cls); ld.dst.vregId = tmp;
-                ld.src1.kind = MO_STACK; ld.src1.stackOff = slot[orig];
-                newInstrs[newCount++] = ld;
-            }
-            in.dst.kind = vreg_kind_of(cls);
-            in.dst.vregId = tmp;
-            newInstrs[newCount++] = in;
-            MachInstr st = {0};
-            st.op = mov_op_of(cls);
-            st.dst.kind = MO_STACK; st.dst.stackOff = slot[orig];
-            st.src1.kind = vreg_kind_of(cls); st.src1.vregId = tmp;
-            newInstrs[newCount++] = st;
-            cache[orig] = tmp;
-        } else {
-            newInstrs[newCount++] = in;
-        }
+    /* MEM bases/indices are GPRs — only handled in the integer spill round. */
+    if (ctx->cls == RC_INT) {
+        MachOperand *memHolder = isStore ? &in->dst : &in->src1;
+        reload_address_operands(ctx, memHolder);
     }
 
-    free(f->instrs);
-    f->instrs   = newInstrs;
-    f->count    = newCount;
-    f->capacity = maxNew;
+    /* CMP / TEST / UCOMISS also read dst. */
+    if (in->op == MACH_CMP || in->op == MACH_TEST || in->op == MACH_UCOMISS)
+        reload_operand_if_spilled(ctx, &in->dst);
+}
 
-    free(slot);
-    free(cache);
-    arena_destroy(spillArena);
+/* ---- destination rewrite ------------------------------------------------ */
+
+static int dst_is_spilled(const SpillCtx *ctx, const MachInstr *in) {
+    if (in->op == MACH_STORE) return 0;
+    if (in->dst.kind != ctx->vk) return 0;
+    if (instr_def(in, ctx->origNextVreg, ctx->cls) < 0) return 0;
+    return is_spilled(ctx, in->dst.vregId);
+}
+
+/**
+ * @brief Emit @p in with a spilled destination rewritten through a fresh temp.
+ *
+ * RMW ops reload the old value first; pure defs only allocate the temp.
+ * After the op, the result is stored back to the spill slot.
+ */
+static void emit_spilled_destination(SpillCtx *ctx, MachInstr in) {
+    int orig = in.dst.vregId;
+    int tmp  = spill_fresh_temp(ctx);
+
+    if (instr_is_rmw(in.op)) {
+        MachInstr ld = {0};
+        ld.op            = mov_op_of(ctx->cls);
+        ld.dst.kind      = ctx->vk;
+        ld.dst.vregId    = tmp;
+        ld.src1.kind     = MO_STACK;
+        ld.src1.stackOff = ctx->slot[orig];
+        spill_emit(ctx, ld);
+    }
+
+    in.dst.kind   = ctx->vk;
+    in.dst.vregId = tmp;
+    spill_emit(ctx, in);
+
+    MachInstr st = {0};
+    st.op            = mov_op_of(ctx->cls);
+    st.dst.kind      = MO_STACK;
+    st.dst.stackOff  = ctx->slot[orig];
+    st.src1.kind     = ctx->vk;
+    st.src1.vregId   = tmp;
+    spill_emit(ctx, st);
+
+    ctx->cache[orig] = tmp;
+}
+
+/* ---- rewrite phase ------------------------------------------------------ */
+
+static void spill_rewrite(SpillCtx *ctx) {
+    const MachFunction *f = ctx->f;
+    for (int i = 0; i < f->count; i++) {
+        MachInstr in = f->instrs[i];
+
+        /* Cache must not persist across instructions: a store can kill the slot. */
+        invalidate_cache(ctx);
+
+        reload_sources(ctx, &in);
+
+        if (dst_is_spilled(ctx, &in))
+            emit_spilled_destination(ctx, in);
+        else
+            spill_emit(ctx, in);
+    }
+}
+
+/* ---- commit phase ------------------------------------------------------- */
+
+static void spill_commit(SpillCtx *ctx) {
+    MachFunction *f = ctx->f;
+
+    free(f->instrs);
+    f->instrs   = ctx->newInstrs;
+    f->count    = ctx->newCount;
+    f->capacity = ctx->maxNew;
+
+    free(ctx->slot);
+    free(ctx->cache);
+    arena_destroy(ctx->arena);
+}
+
+/* ---- public entry ------------------------------------------------------- */
+
+void ra_spill_insert(MachFunction *f, RegClass cls, const int *spilled, int nSpilled,
+                     int *frameOff) {
+    SpillCtx ctx;
+    spill_setup(&ctx, f, cls, spilled, nSpilled, frameOff);
+    spill_rewrite(&ctx);
+    spill_commit(&ctx);
 }

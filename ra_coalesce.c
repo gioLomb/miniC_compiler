@@ -36,19 +36,15 @@ PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g,
         const MachInstr *in = &f->instrs[i];
         if (in->op != wantOp) continue;  // only move instructions are coalesce candidates
 
-        int aVregId = ra_resolve_operand_id(&in->dst,  cls, classVregCount);
-        int aPartnerId = ra_resolve_operand_id(&in->src1, cls, classVregCount);
+        int dstNode = ra_resolve_operand_id(&in->dst,  cls, classVregCount);
+        int srcNode = ra_resolve_operand_id(&in->src1, cls, classVregCount);
 
         // vreg side always becomes .vregId; dst is the vreg unless it's a
         // physical register and src1 is the actual vreg operand
-        // int dstIsVreg   = dstNode >= 0 && dstNode < classVregCount;
-        // int aVregId     = dstIsVreg ? dstNode : srcNode;
-        // int aPartnerId  = dstIsVreg ? srcNode : dstNode;
+        int dstIsVreg   = dstNode >= 0 && dstNode < classVregCount;
+        int aVregId     = dstIsVreg ? dstNode : srcNode;
+        int aPartnerId  = dstIsVreg ? srcNode : dstNode;
     
-         /* Prefer recording (vreg, partner) with vreg as u. */
-       if (aVregId >= classVregCount && aPartnerId < classVregCount) {
-           int t = aVregId; aVregId = aPartnerId;aPartnerId = t;
-        }
         if (ra_is_valid_coalesce_candidate(g, aVregId, aPartnerId, max_node_id, classVregCount)) {
             if (pl.count == pl.cap) {
                 pl.cap = pl.cap ? pl.cap * 2 : 8;
