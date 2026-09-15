@@ -7,6 +7,11 @@
 /**
  * @file interference.h
  * @brief Interference graph (IGraph) construction for register allocation.
+ *
+ * Builds the undirected interference graph from live ranges: two virtual
+ * registers interfere (and therefore cannot share a physical register)
+ * if their live ranges overlap. The graph is later colored by the
+ * Chaitin-Briggs allocator.
  */
 
 #include <stdbool.h>

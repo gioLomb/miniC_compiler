@@ -1,14 +1,3 @@
-/**
- * @file ra_spill.c
- * @brief Class-aware spill insertion (GPR MOV or XMM MOVSS).
- *
- * Pipeline per call to ra_spill_insert():
- *   1. setup   — allocate slots, bitset, reload cache, output buffer
- *   2. rewrite — for each instruction: reload sources, emit (possibly with
- *                a spilled destination rewritten through a fresh temp)
- *   3. commit  — replace f->instrs, free temporaries
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>

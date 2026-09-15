@@ -4,6 +4,10 @@
 /**
  * @file sched_utils.h
  * @brief Utility predicates and operand extractors for the instruction scheduler.
+ *
+ * Helper functions that classify machine instructions (loads, stores,
+ * branches, pure arithmetic ...) and extract the virtual/physical registers
+ * they read or write, used while constructing the dependence DAG.
  */
 
 #include "instr_query.h" 

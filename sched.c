@@ -1,30 +1,3 @@
-/**
- * @file sched.c
- * @brief Local list instruction scheduler (per-block, forward, height-ordered).
- *
- * Pipeline: isel_select() -> sched_schedule() -> regalloc(). See sched.h.
- *
- * Algorithm per basic block (sched_schedule_block):
- *   1. dag_build()           — dependency DAG with RAW/WAR/WAW + ordering edges
- *                               (sched_dag.h/.c). BlockRange passed as a whole
- *                               struct so the [start,end) pair never drifts
- *                               out of sync between caller and callee.
- *   2. sched_emit_pinned_headers() — LABEL/FUNC_BEGIN go first, unconditionally,
- *                               marked scheduled so they never enter the heap.
- *   3. sched_seed_ready_heap()     — every remaining unpinned node with zero
- *                               unresolved predecessors becomes an initial
- *                               candidate.
- *   4. sched_run_list_scheduling() — pop the highest-height ready node, commit it,
- *                               unlock successors whose last predecessor
- *                               just committed.
- *   5. sched_flush_leftovers()     — whatever never entered the heap (terminators,
- *                               CMP/TEST pinned for macro-fusion) is appended
- *                               in original program order.
- *
- * One Arena per function, reset (not destroyed) between blocks to reuse
- * scratch memory (DAGNode[], result[], heap backing array, DAG internals).
- */
-
 #include <string.h>
 #include "sched.h"
 #include "sched_dag.h"
@@ -120,9 +93,7 @@ static void ready_heap_sift_down(ReadyHeap *h, int index) {
         if (r < h->size && ready_heap_height(h, h->data[r]) > ready_heap_height(h, h->data[best])) {
             best = r;
         }
-        if (best == i) {
-            break; /* Proprietà dell'heap soddisfatta */
-        }
+        if (best == i) break;
 
         ready_heap_swap(h->data, i, best);
         i = best;
@@ -258,8 +229,6 @@ static void sched_schedule_block(MachFunction *f, BlockRange blk, Arena *arena) 
 void sched_schedule(MachProgram *mp) {
     if (!mp || mp->count == 0) return;
 
-    // Hoist allocation out of the loop: arenas created once, reset (not
-    // destroyed/recreated) every iteration, avoiding per-function OS calls.
     Arena *blockArena   = arena_create(0);
     Arena *scratchArena = arena_create(0);
 
@@ -276,7 +245,7 @@ void sched_schedule(MachProgram *mp) {
             BlockRange *blocks = arena_alloc(blockArena, allocSize);
 
             const int bbCount = sched_find_basic_blocks(f, blocks);
-            
+
             for (int b = 0; b < bbCount; b++) {
                 sched_schedule_block(f, blocks[b], scratchArena);
             }

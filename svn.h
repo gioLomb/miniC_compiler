@@ -7,6 +7,10 @@
 /**
  * @file svn.h
  * @brief Superlocal Value Numbering (SVN) optimisation pass on the linear IR.
+ *
+ * Performs value numbering across extended basic blocks, eliminating
+ * redundant computations and enabling subsequent constant folding and
+ * dead-code elimination.
  */
 
 #include "ir.h"

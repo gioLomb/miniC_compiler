@@ -5,6 +5,11 @@
 /**
  * @file ir.h
  * @brief Three-address code IR for the miniC compiler.
+ *
+ * Defines the instruction opcodes, the linear IR data structures (functions,
+ * basic blocks, instructions) and the builder / pretty-printer APIs.
+ * Serves as the primary intermediate representation for all optimisation
+ * and code-generation passes after the AST.
  */
 
 #include "parser/ast.h"

@@ -5,6 +5,11 @@
 /**
  * @file ast.h
  * @brief Abstract Syntax Tree (AST) representation and manipulation interface.
+ *
+ * Defines the node kinds, the recursive AST data structures and the
+ * helper functions used to build, traverse and pretty-print the tree
+ * produced by the parser. Serves as the primary intermediate form
+ * between parsing and semantic analysis / IR generation.
  */
 
 #include "../arena.h"

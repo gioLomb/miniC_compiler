@@ -7,6 +7,10 @@
 /**
  * @file bucket.h
  * @brief Degree-indexed bucket list for O(1) node extraction in graph coloring.
+ *
+ * Implements the classic Briggs/Chaitin work-list structure that keeps
+ * nodes ordered by current degree so that the Simplify phase of register
+ * allocation can pick a low-degree node in constant time.
  */
 
 #include <stdint.h>

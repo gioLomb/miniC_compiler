@@ -1,6 +1,14 @@
 #ifndef OPTIMIZE_H
 #define OPTIMIZE_H
 
+
+/**
+ * @file ast_optimizer.h
+ * @brief AST-level optimizer interface: constant folding, dead-branch pruning
+ * for if/while, and height-balancing of associative operator chains.
+ * Runs after semantic analysis and before IR generation.
+ */
+
 #include "parser/ast.h"
 #include "arena.h"
 

@@ -1,3 +1,10 @@
+/**
+ * @file dce.h
+ * @brief Dead Code Elimination (DCE) pass interface for the linear IR.
+ * Removes pure instructions whose results are never used and drops
+ * every instruction inside unreachable basic blocks.
+ */
+
 #include "ir.h"
 #include "varmap.h"
 

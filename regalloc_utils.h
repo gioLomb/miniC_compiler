@@ -7,6 +7,10 @@
 /**
  * @file regalloc_utils.h
  * @brief Instruction-analysis utilities shared across the register allocator.
+ *
+ * Provides operand extraction, definition/use sets and various predicates
+ * on machine instructions that are needed by liveness, interference,
+ * coloring and spill-code insertion.
  */
 
 #include "block.h"

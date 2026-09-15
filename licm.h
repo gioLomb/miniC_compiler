@@ -5,6 +5,10 @@
 /**
  * @file licm.h
  * @brief Loop-Invariant Code Motion (LICM) pass interface.
+ *
+ * Detects computations that are invariant with respect to a natural loop
+ * and hoists them to a newly created pre-header block, reducing the amount
+ * of work performed on every iteration of the loop.
  */
 
 #include "ir.h"

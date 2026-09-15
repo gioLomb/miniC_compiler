@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include "lexer.h"
-// #include "parser/error.h"          // RIMOSSO
-#include "parser/errorCollector.h"           // AGGIUNTO
+#include "parser/errorCollector.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
 #include "arena.h"
@@ -37,7 +36,7 @@ static void printSymbol(void *key, size_t keySize, void *value, size_t valueSize
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Uso: %s <file_sorgente.c>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <source_file.c>\n", argv[0]);
         return 1;
     }
 
@@ -46,17 +45,13 @@ int main(int argc, char **argv) {
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    // Sostituito totalErrorCount() con ec_error_count()
-    printf("Parsing: %d errori.\n", ec_error_count());
-
-    // (Opzionale) pulizia del flag di pending, se il parser non lo ha già fatto
-    // ec_clear_pending();
+    printf("Parsing: %d errors.\n", ec_error_count());
 
     Scope *global = sym_scopeCreate(NULL);
     int symErrors = st_resolve_global_namespace(root, global);
-    printf("Pass 1 (popolamento scope globale): %d errori.\n\n", symErrors);
+    printf("Pass 1 (global scope population): %d errors.\n\n", symErrors);
 
-    printf("=== SCOPE GLOBALE ===\n");
+    printf("=== GLOBAL SCOPE ===\n");
     ht_foreach(global->table, printSymbol, NULL);
 
     sym_finalize(global);

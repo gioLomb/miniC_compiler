@@ -7,6 +7,10 @@
 /**
  * @file cp.h
  * @brief Constant Propagation + CFG Pruning on the linear IR.
+ *
+ * Performs sparse conditional constant propagation, folds arithmetic and
+ * comparison operations, and removes branches that have become constant,
+ * thereby pruning unreachable basic blocks from the control-flow graph.
  */
 
 #include "ir.h"

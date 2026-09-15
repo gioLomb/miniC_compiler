@@ -1,16 +1,3 @@
-/**
- * @file sched_dag.c
- * @brief Dependency DAG construction for the instruction scheduler.
- *
- * See sched_dag.h for the module overview. Internal organisation:
- *   RenameTracker                 — per-register bookkeeping (rename generation,
- *                                    last writer of each generation, last reader).
- *   track_read/track_write         — apply one register access to the tracker,
- *                                    emitting RAW/WAR/WAW edges as needed.
- *   dag_add_edge                   — dedup'd, arena-allocated edge insertion.
- *   dag_build                     — four-pass driver (see header).
- */
-
 #include <string.h>
 #include "sched_dag.h"
 #include "instr_query.h"

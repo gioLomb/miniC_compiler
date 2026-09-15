@@ -4,6 +4,10 @@
 /**
  * @file ra_coalesce.h
  * @brief Biased-coloring partner list (lightweight coalescing hints).
+ *
+ * Maintains, for each virtual register, a short list of preferred physical
+ * registers or partner virtual registers that the coloring phase should
+ * try to assign first, implementing a cheap form of register coalescing.
  */
 
 #include "instr_selector.h"

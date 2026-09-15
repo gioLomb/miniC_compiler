@@ -1,39 +1,3 @@
-/**
- * @file sr.c
- * @brief Strength reduction optimization pass implementation.
- *
- * See sr.h for the module overview and transformation details.
- *
- * Internal organization
- * ---------------------
- *  fold_int                  - Integer constant folding helper.
- *  sr_count_variable_definitions- Counts variable write frequencies within a loop.
- *  sr_collect_base_induction_vars- Filters and extracts basic induction variables.
- *  sr_find_induction_base        - Identifies basic induction variables (i = i +/- c).
- *  sr_try_match_derived_iv     - Matches instructions against the derived IV pattern.
- *  sr_find_derived_induction_vars              - Identifies derived induction variables (t = i * d).
- *  make_instr               - IR instruction factory helper.
- *  sr_emit_preheader_inits     - Emits "t_sr = i * mult" for every derived IV.
- *  sr_patch_body_instruction   - Replaces/appends instructions during body rewrite.
- *  sr_rewrite_loop_body        - Rewrites the body, splicing stride updates in place.
- *  remap_block_ranges       - Recomputes block [start,end) after the rewrite.
- *  sr_apply_strength_reduction   - Orchestrates the rewrite steps for one loop.
- *  sr_optimize              - Driver function for the pass.
- *
- * Why no dominance check is needed (unlike LICM)
- * -----------------------------------------------
- * LICM must verify a hoisted instruction's block dominates every loop exit,
- * because hoisting MOVES code to a different point in the CFG. SR never
- * moves anything out of its original block: the stride update
- * ("t_sr = t_sr + stride") is spliced immediately after the basic IV's own
- * increment instruction, in the very same basic block. Since a variable
- * with defCount == 1 has exactly one instruction that can change it, gluing
- * the shadow update right next to that instruction guarantees
- * "t_sr == i * multiplier" holds at every reachable program point after the
- * pre-header runs — regardless of how deeply the increment or the
- * mul are nested inside conditionals within the loop body.
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include "sr.h"

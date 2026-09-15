@@ -5,6 +5,10 @@
 /**
  * @file errorCollector.h
  * @brief Centralized error reporting/counting for every compiler phase.
+ *
+ * Collects diagnostic messages (errors and warnings) together with source
+ * location information. Provides a single point for printing the final
+ * diagnostic summary and deciding whether compilation should abort.
  */
 
 #include <stdarg.h>

@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../lexer.h"
-#include "parser/errorCollector.h"          
+#include "parser/errorCollector.h"
 #include "../parser/ast.h"
 #include "../parser/parser.h"
 #include "../arena.h"
@@ -24,16 +24,13 @@ static IRProgram *parseAndGenerateIR(const char *src,
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    // (Opzionale) pulizia del pending dopo il parsing
-    // ec_clear_pending();
-
     Scope *global = sym_scopeCreate(NULL);
     st_resolve_global_namespace(root, global);
     int errs = semantic_check(root, global);
     sym_finalize(global);
 
     if (errs > 0) {
-        fprintf(stderr, "errori semantici inattesi (%d) in:\n%s\n", errs, src);
+        fprintf(stderr, "unexpected semantic errors (%d) in:\n%s\n", errs, src);
         exit(1);
     }
 
@@ -42,23 +39,24 @@ static IRProgram *parseAndGenerateIR(const char *src,
     return ir_generate(root);
 }
 
-
 static IRFunction *lastFunc(IRProgram *prog) {
     return prog->functions[prog->count - 1];
 }
 
 static int countOp(IRFunction *f, IROp op) {
     int c = 0;
-    for (int i = 0; i < f->count; i++) if (f->instrs[i].op == op) c++;
+    for (int i = 0; i < f->count; i++)
+        if (f->instrs[i].op == op) c++;
     return c;
 }
 
 static int firstIndexOfOp(IRFunction *f, IROp op) {
-    for (int i = 0; i < f->count; i++) if (f->instrs[i].op == op) return i;
+    for (int i = 0; i < f->count; i++)
+        if (f->instrs[i].op == op) return i;
     return -1;
 }
 
-#define CLEANUP(prog, root, arena) do { ir_free(prog);  arena_destroy(arena); } while(0)
+#define CLEANUP(prog, root, arena) do { ir_free(prog); arena_destroy(arena); } while (0)
 
 int main(void) {
     IRProgram *prog;
@@ -66,7 +64,7 @@ int main(void) {
     Arena     *arena;
     IRFunction *f;
 
-    /* PASS 1 */
+    /* Shadowing */
     prog = parseAndGenerateIR(
         "int main() { int x; x = 1; { int x; x = 2; } return x; }",
         &root, &arena);
@@ -75,19 +73,22 @@ int main(void) {
         f->instrs[0].op != IR_ASSIGN || f->instrs[0].dst.kind != OPND_VAR ||
         f->instrs[1].op != IR_ASSIGN || f->instrs[1].dst.kind != OPND_VAR ||
         f->instrs[2].op != IR_RETURN) {
-        fprintf(stderr, "PASS 1 FALLITO: struttura instr inattesa\n"); return 1;
+        fprintf(stderr, "PASS 1 FAILED: unexpected instruction structure\n");
+        return 1;
     }
     if (f->instrs[0].dst.data.varLevel == f->instrs[1].dst.data.varLevel) {
-        fprintf(stderr, "PASS 1 FALLITO: shadowing non risolto\n"); return 1;
+        fprintf(stderr, "PASS 1 FAILED: shadowing not resolved\n");
+        return 1;
     }
     if (f->instrs[2].src1.data.varLevel != f->instrs[0].dst.data.varLevel ||
         f->instrs[2].src1.data.varOffset != f->instrs[0].dst.data.varOffset) {
-        fprintf(stderr, "PASS 1 FALLITO: 'return x' non risolve sulla x esterna\n"); return 1;
+        fprintf(stderr, "PASS 1 FAILED: 'return x' does not resolve to outer x\n");
+        return 1;
     }
-    printf("PASS 1 ok: shadowing risolto correttamente.\n");
+    printf("PASS 1 ok: shadowing resolved correctly.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 2 */
+    /* Operator precedence */
     prog = parseAndGenerateIR(
         "int main() { int a; int b; int c; a = 1; b = 2; c = a + b * 2; return c; }",
         &root, &arena);
@@ -95,138 +96,153 @@ int main(void) {
     int mulIdx = firstIndexOfOp(f, IR_MUL);
     int addIdx = firstIndexOfOp(f, IR_ADD);
     if (mulIdx < 0 || addIdx < 0 || mulIdx > addIdx) {
-        fprintf(stderr, "PASS 2 FALLITO: moltiplicazione non precede addizione\n"); return 1;
+        fprintf(stderr, "PASS 2 FAILED: multiplication does not precede addition\n");
+        return 1;
     }
-    printf("PASS 2 ok: precedenza rispettata.\n");
+    printf("PASS 2 ok: precedence respected.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 3 */
+    /* if/else control flow */
     prog = parseAndGenerateIR(
         "int main() { int a; if (a) { a = 1; } else { a = 2; } return a; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_IF_FALSE) != 1 || countOp(f, IR_GOTO) != 1 || countOp(f, IR_LABEL) != 2) {
-        fprintf(stderr, "PASS 3 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 3 FAILED\n");
+        return 1;
     }
-    printf("PASS 3 ok: if/else genera 1 IF_FALSE, 1 GOTO, 2 LABEL.\n");
+    printf("PASS 3 ok: if/else generates 1 IF_FALSE, 1 GOTO, 2 LABEL.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 4 */
+    /* if without else */
     prog = parseAndGenerateIR(
         "int main() { int a; if (a) { a = 1; } return a; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_IF_FALSE) != 1 || countOp(f, IR_GOTO) != 0 || countOp(f, IR_LABEL) != 1) {
-        fprintf(stderr, "PASS 4 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 4 FAILED\n");
+        return 1;
     }
-    printf("PASS 4 ok: if senza else genera 1 IF_FALSE, 0 GOTO, 1 LABEL.\n");
+    printf("PASS 4 ok: if without else generates 1 IF_FALSE, 0 GOTO, 1 LABEL.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 5 */
+    /* while loop */
     prog = parseAndGenerateIR(
         "int main() { int a; while (a) { a = a + 1; } return a; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_LABEL) != 2 || countOp(f, IR_IF_FALSE) != 1 || countOp(f, IR_GOTO) != 1) {
-        fprintf(stderr, "PASS 5 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 5 FAILED\n");
+        return 1;
     }
     if (f->instrs[0].op != IR_LABEL) {
-        fprintf(stderr, "PASS 5 FALLITO: ciclo non inizia con etichetta\n"); return 1;
+        fprintf(stderr, "PASS 5 FAILED: loop does not start with a label\n");
+        return 1;
     }
-    printf("PASS 5 ok: while genera testa/coda con salti coerenti.\n");
+    printf("PASS 5 ok: while generates head/tail with coherent jumps.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 6 */
+    /* short-circuit && */
     prog = parseAndGenerateIR(
         "int main() { int r; int a; int b; r = a && b; return r; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_IF_FALSE) != 2 || countOp(f, IR_GOTO) != 1) {
-        fprintf(stderr, "PASS 6 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 6 FAILED\n");
+        return 1;
     }
-    printf("PASS 6 ok: '&&' genera 2 IF_FALSE, 1 GOTO.\n");
+    printf("PASS 6 ok: '&&' generates 2 IF_FALSE, 1 GOTO.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 7 */
+    /* short-circuit || */
     prog = parseAndGenerateIR(
         "int main() { int r; int a; int b; r = a || b; return r; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_IF_FALSE) != 2 || countOp(f, IR_GOTO) != 2) {
-        fprintf(stderr, "PASS 7 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 7 FAILED\n");
+        return 1;
     }
-    printf("PASS 7 ok: '||' genera 2 IF_FALSE, 2 GOTO.\n");
+    printf("PASS 7 ok: '||' generates 2 IF_FALSE, 2 GOTO.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 8 */
+    /* array store/load */
     prog = parseAndGenerateIR(
         "int main() { int v[3]; v[0] = 1; return v[1]; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_STORE_ARR) != 1 || countOp(f, IR_LOAD_ARR) != 1) {
-        fprintf(stderr, "PASS 8 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 8 FAILED\n");
+        return 1;
     }
-    printf("PASS 8 ok: STORE_ARR/LOAD_ARR generati.\n");
+    printf("PASS 8 ok: STORE_ARR/LOAD_ARR generated.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 9 */
+    /* function call */
     prog = parseAndGenerateIR(
         "int f(int n) { return n; }\n"
         "int main() { int x; x = f(5); return x; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_PARAM) != 1 || countOp(f, IR_CALL) != 1) {
-        fprintf(stderr, "PASS 9 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 9 FAILED\n");
+        return 1;
     }
     int callIdx = firstIndexOfOp(f, IR_CALL);
     if (f->instrs[callIdx].src2.kind != OPND_CONST_INT ||
         f->instrs[callIdx].src2.data.intVal != 1) {
-        fprintf(stderr, "PASS 9 FALLITO: nArgs errato\n"); return 1;
+        fprintf(stderr, "PASS 9 FAILED: wrong nArgs\n");
+        return 1;
     }
-    printf("PASS 9 ok: 'f(5)' genera 1 PARAM, CALL nArgs=1.\n");
+    printf("PASS 9 ok: 'f(5)' generates 1 PARAM, CALL nArgs=1.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 10 */
+    /* while with && condition */
     prog = parseAndGenerateIR(
         "int main() { int i; int n; int f; while (i <= n && f != 0) { i = i + 1; } return i; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_IF_FALSE) != 2 || countOp(f, IR_GOTO) != 1 || countOp(f, IR_LABEL) != 2) {
-        fprintf(stderr, "PASS 10 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 10 FAILED\n");
+        return 1;
     }
-    printf("PASS 10 ok: 'while (a && b)' salta direttamente all'uscita.\n");
+    printf("PASS 10 ok: 'while (a && b)' jumps directly to exit.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 11 */
+    /* if with || condition */
     prog = parseAndGenerateIR(
         "int main() { int a; int b; int r; if (a || b) { r = 1; } return r; }",
         &root, &arena);
     f = lastFunc(prog);
     if (countOp(f, IR_IF_FALSE) != 2) {
-        fprintf(stderr, "PASS 11 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 11 FAILED\n");
+        return 1;
     }
-    printf("PASS 11 ok: 'if (a || b)' salta direttamente.\n");
+    printf("PASS 11 ok: 'if (a || b)' jumps directly.\n");
     CLEANUP(prog, root, arena);
 
-    /* PASS 12 */
+    /* chained addition writes directly to variable */
     prog = parseAndGenerateIR(
         "int main() { int a; int b; int c; int cane; cane = a+b+c; return cane; }",
         &root, &arena);
     f = lastFunc(prog);
     int lastAddIdx = -1;
-    for (int i = 0; i < f->count; i++) if (f->instrs[i].op == IR_ADD) lastAddIdx = i;
+    for (int i = 0; i < f->count; i++)
+        if (f->instrs[i].op == IR_ADD) lastAddIdx = i;
     if (lastAddIdx < 0 || f->instrs[lastAddIdx].dst.kind != OPND_VAR) {
-        fprintf(stderr, "PASS 12 FALLITO: ultima ADD non scrive in variabile\n"); return 1;
+        fprintf(stderr, "PASS 12 FAILED: last ADD does not write to a variable\n");
+        return 1;
     }
     for (int i = lastAddIdx + 1; i < f->count; i++) {
         if (f->instrs[i].op == IR_ASSIGN && f->instrs[i].src1.kind == OPND_TEMP) {
-            fprintf(stderr, "PASS 12 FALLITO: copia ridondante temp->var\n"); return 1;
+            fprintf(stderr, "PASS 12 FAILED: redundant temp->var copy\n");
+            return 1;
         }
     }
-    printf("PASS 12 ok: 'cane = a+b+c' scrive direttamente nella variabile.\n");
+    printf("PASS 12 ok: 'cane = a+b+c' writes directly to the variable.\n");
     CLEANUP(prog, root, arena);
 
-    printf("\nTutti i test sono passati.\n");
+    printf("\nAll tests passed.\n");
     remove("/tmp/miniC_test_ir_src.c");
     return 0;
 }

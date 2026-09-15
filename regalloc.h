@@ -5,6 +5,10 @@
 /**
  * @file regalloc.h
  * @brief Register allocation via graph coloring (Chaitin-Briggs, EaC §13.4).
+ *
+ * Top-level driver that orchestrates liveness analysis, interference-graph
+ * construction, coalescing hints, coloring and spill insertion for both
+ * the general-purpose and the XMM register classes of a function.
  */
 
 #include "instr_selector.h"

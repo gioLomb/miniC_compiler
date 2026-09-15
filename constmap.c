@@ -1,30 +1,3 @@
-/**
- * @file constmap.c
- * @brief Constant-propagation lattice and ConstMap implementation.
- *
- * See constmap.h for the module overview, lattice definition, and full API
- * documentation.  This file contains only implementation details.
- *
- * Representation notes
- * --------------------
- * LatVal is a small POD struct (12 bytes on typical 32-bit-aligned targets)
- * stored by value throughout.  Returning and passing LatVal by value avoids
- * heap allocation and pointer indirection in the hot dataflow loop in cp.c.
- *
- * ConstMap is a flat array of LatVal allocated entirely from the caller's
- * Arena.  Indexed access is O(1) and the array is contiguous in memory,
- * which benefits the entry-wise meet (const_map_meet) and equality check
- * (const_map_equal) that iterate over all entries in the fixed-point loop.
- *
- * Division-by-zero policy
- * -----------------------
- * Both fold_binary_int and fold_binary_float return 0 (fold not performed) when
- * the divisor is zero.  This defers the division to runtime, where it will
- * either raise a signal or produce implementation-defined behaviour — the
- * same outcome the unoptimised code would produce.  Folding a division by
- * zero to an arbitrary constant would silently change program semantics.
- */
-
 #include "constmap.h"
 #include "arena.h"
 #include <string.h>

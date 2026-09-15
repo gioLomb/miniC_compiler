@@ -7,6 +7,10 @@
 /**
  * @file dynamic_array.h
  * @brief Generic resizable integer array (IntVector).
+ *
+ * Simple growable array of ints allocated from an Arena. Used as a
+ * lightweight container for instruction lists, successor sets, work-lists
+ * and any other ordered collection of integer identifiers.
  */
 
 /** Initial capacity on the first push (avoids realloc on every early push). */

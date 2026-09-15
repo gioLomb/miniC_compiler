@@ -13,7 +13,6 @@ endif
 BUILD_DIR := build
 BIN_DIR   := bin
 
-# ---- Sorgenti condivisi ----
 SCANNER_SRC     := scanner/re2c/scanner_generated.c
 AST_SRC         := parser/ast.c
 ERROR_SRC       := parser/errorCollector.c
@@ -48,11 +47,6 @@ SCHED_DAG_SRC   := sched_dag.c
 DYN_ARR_SRC     := dynamic_array.c
 GLOBAL_LOWER_SRC := global_lower.c
 
-# NOTA: INSTR_QUERY_SRC aggiunto a COMMON_SRCS. Contiene le query pure su
-# MachInstr (operand extraction, opcode predicates) precedentemente in
-# regalloc_utils.c: sia lo scheduler (sched_dag.c/sched_utils.h) sia il
-# register allocator (interference.c/ra_spill.c) dipendono ora da questo
-# modulo, mai l'uno dall'altro (vedi instr_query.h per la motivazione).
 COMMON_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
                $(OPTIMIZE_SRC) $(IR_SRC) $(SVN_SRC) $(DCE_SRC) $(VARMAP_SRC) \
@@ -74,23 +68,18 @@ TEST_OPTIMIZE_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARE
                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
                       $(OPTIMIZE_SRC) tests/test_optimize.c
 TEST_IR_SRCS      := $(COMMON_SRCS) tests/test_ir.c
-TEST_SVN_SRCS      := $(COMMON_SRCS) test_svn.c
+TEST_SVN_SRCS      := $(COMMON_SRCS) tests/test_svn.c
 
-# ---- Backend unit tests ----
-# test_bucket: nessuna dipendenza da liveness/IR, solo arena + bucket.
+
 TEST_BUCKET_SRCS         := $(ARENA_SRC) $(BUCKET_SRC) \
                             tests/test_bucket.c
 
-# test_regalloc_utils: usa instr_query.h (instr_uses/instr_defs/instr_is_*)
-# e regalloc_utils.h (regalloc_spill_weight). Non serve liveness -> no ir.c.
+
 TEST_REGALLOC_UTILS_SRCS := $(ARENA_SRC) $(HASHTABLE_SRC) $(DYN_ARR_SRC) \
                             $(VARMAP_SRC) $(ERROR_SRC) $(REGALLOC_UTILS_SRC) $(INSTR_QUERY_SRC) \
                             $(INSTR_SEL_SRC) tests/test_regalloc_utils.c
 
-# test_interference e test_ra_color usano liveness_computeMach() che chiama
-# ir_defines_dst / ir_operand_is_storage definite in ir.c. ir.c trascina
-# l'intera catena frontend+ottimizzatori (stesso insieme di COMMON_SRCS):
-# e' la strada piu' semplice senza introdurre nuovi file nel progetto.
+
 TEST_INTERFERENCE_SRCS   := $(COMMON_SRCS) \
                             tests/test_interference.c
 TEST_RA_COLOR_SRCS       := $(COMMON_SRCS) \

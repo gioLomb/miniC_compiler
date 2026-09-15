@@ -7,6 +7,10 @@
 /**
  * @file constmap.h
  * @brief Constant-propagation lattice and per-variable constant map.
+ *
+ * Defines the three-element lattice (UNDEF / CONST / NAC) and a compact
+ * map from SSA-like variable ids to lattice values. Used by the constant-
+ * propagation pass and by subsequent folding / pruning stages.
  */
 
 #include "ir.h"

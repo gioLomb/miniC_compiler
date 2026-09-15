@@ -1,14 +1,6 @@
-/* test_spill_calls_loop.c
- *
- * Obiettivo: forzare spill (16 variabili contemporaneamente vive, > k=14
- * registri allocabili) DENTRO un loop che contiene una CALL. Verifica:
- *   - crossesCall/excl: a2..a16 vivi attraverso la call a helper() devono
- *     escludere i caller-saved e preferire callee-saved in ra_select_colors.
- *   - reload cache per-istruzione: a1 e' letto e riscritto ogni iterazione,
- *     se spillato deve essere ricaricato ad ogni ADD senza persistenza tra
- *     istruzioni diverse (vedi nota in ra_spill.c).
- *   - interazione spill + LICM/SR: helper(a1) non e' loop-invariant (a1
- *     cambia ogni iterazione), quindi non deve essere issata fuori dal loop.
+/* Test: many live variables inside a loop that contains a call.
+ * Forces spills that cross a call (prefer callee-saved) and checks
+ * interaction with LICM/SR (helper call is not loop-invariant).
  */
 
 int helper(int x) {

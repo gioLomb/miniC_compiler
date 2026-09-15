@@ -4,6 +4,10 @@
 /**
  * @file ra_spill.h
  * @brief Spill code insertion for a single register class.
+ *
+ * When the interference graph is not k-colorable, selects virtual registers
+ * to spill, inserts load/store instructions around their uses and rebuilds
+ * the affected live ranges so that a subsequent coloring attempt can succeed.
  */
 
 #include "instr_selector.h"

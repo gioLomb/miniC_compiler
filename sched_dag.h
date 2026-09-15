@@ -7,6 +7,10 @@
 /**
  * @file sched_dag.h
  * @brief Dependency DAG data structures and construction for instruction scheduling.
+ *
+ * Builds a directed acyclic graph of data and anti-dependencies among the
+ * instructions of a basic block; the scheduler then selects a topological
+ * order that maximises available parallelism.
  */
 
 #include "instr_selector.h"

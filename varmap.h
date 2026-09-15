@@ -5,6 +5,10 @@
 /**
  * @file varmap.h
  * @brief Compact operand-to-integer id mapping for IR analysis passes.
+ *
+ * Maps SSA-like virtual registers or temporary names to dense integer
+ * identifiers, enabling efficient bit-set and array-based analyses such
+ * as liveness, constant propagation and value numbering.
  */
 
 #include "ir.h"         

@@ -1,10 +1,3 @@
-/**
- * @file dynamic_array.c
- * @brief Resizable integer array — implementation.
- *
- * See dynamic_array.h for the module overview and public API documentation.
- */
-
 #include <stdlib.h>
 #include "dynamic_array.h"
 

@@ -1,6 +1,14 @@
 #ifndef BLOCK_H
 #define BLOCK_H
 
+
+/**
+ * @file block.h
+ * @brief Minimal basic-block range and CFG-successor descriptor types.
+ * Reused wherever only instruction-range boundaries and up to two
+ * successor edges are needed, e.g. by the scheduler and register allocator.
+ */
+
 /**
  * @brief Minimal [start, end) instruction range, reusable standalone
  *        wherever only block boundaries are needed (no CFG edges) —

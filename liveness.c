@@ -1,8 +1,3 @@
-/**
- * @file liveness.c
- * @brief Liveness analysis engine — implementation (refactored).
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include "liveness.h"

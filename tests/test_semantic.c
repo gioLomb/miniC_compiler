@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include "lexer.h"
-// #include "parser/error.h"          // RIMOSSO
-#include "parser/errorCollector.h"           // AGGIUNTO
+#include "parser/errorCollector.h"
 #include "parser/ast.h"
 #include "parser/parser.h"
 #include "arena.h"
@@ -11,7 +10,7 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Uso: %s <file_sorgente.c>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <source_file.c>\n", argv[0]);
         return 1;
     }
 
@@ -20,22 +19,17 @@ int main(int argc, char **argv) {
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    // Sostituito totalErrorCount() con ec_error_count()
-    printf("Parsing: %d errori.\n", ec_error_count());
-
-    // (Opzionale) pulizia del flag di pending, se il parser non lo ha già fatto
-    // ec_clear_pending();
+    printf("Parsing: %d errors.\n", ec_error_count());
 
     Scope *global = sym_scopeCreate(NULL);
 
     int pass1Errors = st_resolve_global_namespace(root, global);
-    printf("Pass 1 (signature globali): %d errori.\n", pass1Errors);
+    printf("Pass 1 (global signatures): %d errors.\n", pass1Errors);
 
     int semErrors = semantic_check(root, global);
-    printf("Pass 2 + analisi semantica: %d errori.\n", semErrors);
+    printf("Pass 2 + semantic analysis: %d errors.\n", semErrors);
 
     sym_finalize(global);
-    //freeAST(root);
     arena_destroy(astArena);
 
     return (pass1Errors > 0 || semErrors > 0) ? 1 : 0;

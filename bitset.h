@@ -5,6 +5,10 @@
 /**
  * @file bitset.h
  * @brief Generic arena-backed bit-set.
+ *
+ * Fixed-capacity bit vector allocated from an Arena. Provides the usual
+ * set/clear/test operations plus bulk operations used by liveness,
+ * interference-graph construction and other analysis passes.
  */
 
 #include <stdint.h>

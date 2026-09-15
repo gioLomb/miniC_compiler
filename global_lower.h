@@ -5,6 +5,10 @@
 /**
  * @file global_lower.h
  * @brief Module for lowering global variable accesses in the IR.
+ *
+ * Rewrites loads and stores of global variables into explicit address
+ * calculations and memory operations that the later instruction-selection
+ * and register-allocation phases can handle uniformly.
  */
 
 #include "ir.h"

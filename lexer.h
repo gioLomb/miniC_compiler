@@ -5,6 +5,10 @@
 /**
  * @file lexer.h
  * @brief Lexical analyzer interface for reading and tokenizing source files.
+ *
+ * Opens a source file, maintains an internal character buffer and yields
+ * successive tokens (keywords, identifiers, literals, operators) together
+ * with their source locations for the recursive-descent parser.
  */
 
 /**

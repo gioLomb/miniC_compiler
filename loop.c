@@ -1,9 +1,3 @@
-/**
- * @file loop.c
- * @brief Loop detection and pre-header construction.
-
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include "loop.h"

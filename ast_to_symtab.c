@@ -1,24 +1,3 @@
-/**
- * @file ast_to_symtab.c
- * @brief AST → Symbol Table translation — implementation.
- *
- * Arena usage
- * -----------
- * st_elaborate_decl allocates all output substrings from the caller's arena
- * so they are reclaimed in bulk when the arena is destroyed.  Functions that
- * need only temporary substrings (st_bind_symbol, st_resolve_global_namespace)
- * create a local scratch arena and destroy it on return, avoiding lifetime
- * coupling between their temporaries and the AST arena.
- *
- * Offset assignment for globals
- * ------------------------------
- * st_resolve_global_namespace assigns sym.offset = global->table->size
- * before calling sym_bind, mirroring the sequential insertion order.
- * Both ND_VAR_DECL and ND_FUNC_DECL advance the implicit counter so that
- * ir_generate()'s symOffset loop produces the same sequence and OPND_VAR
- * operands correctly identify global variables.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

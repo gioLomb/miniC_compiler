@@ -1,11 +1,5 @@
-/* test_spill_arrays.c
- *
- * Obiettivo: array in loop (indice = induction variable candidato a SR)
- * seguito da un blocco con 15 letture arr[k] contemporaneamente vive
- * (> k=14 registri), forzando spill sui risultati di IR_LOAD_ARR.
- * Verifica anche che STORE_ARR/LOAD_ARR non vengano scambiati da LICM
- * (LOAD_ARR e' impuro in licm.c: nessuna alias analysis) e che il ciclo
- * di scrittura arr[i]=i*2 sfrutti la strength reduction (i*2 -> shift).
+/* Test: array stores in a loop (SR candidate) followed by many simultaneous loads.
+ * Forces spill of load results and checks that LICM does not move impure LOAD_ARR.
  */
 
 int main() {

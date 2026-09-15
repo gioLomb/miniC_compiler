@@ -7,6 +7,10 @@
 /**
  * @file ast_to_symtab.h
  * @brief AST → Symbol Table translation interface.
+ *
+ * Walks the annotated AST and populates (or updates) the lexical-scope
+ * symbol tables with declarations of variables, functions and parameters.
+ * Used both during semantic analysis and when lowering globals.
  */
 
 #include <stddef.h>

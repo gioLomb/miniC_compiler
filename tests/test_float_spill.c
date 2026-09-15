@@ -1,13 +1,5 @@
-/* test_float_spill.c
- *
- * Obiettivo: 20 variabili float assegnate e sommate in un'unica espressione
- * associativa, forzando spill anche su valori float (che in questo backend
- * sono spostati come pattern di bit a 64 bit — vedi isel_load_operand/mo_imm in
- * instr_selector.c, nessun registro SSE). Verifica anche che
- * optimize_ast NON ribilanci la catena '+' (contains_float_literal blocca
- * balance_assoc_chain per preservare la semantica IEEE 754), quindi l'albero
- * resta sbilanciato: piu' pressione sui registri rispetto a una somma
- * intera equivalente, utile a stressare lo spilling float.
+/* Test: many live float values force spilling.
+ * Also checks that AST optimizer does not rebalance float + chains (IEEE semantics).
  */
 
 float main() {

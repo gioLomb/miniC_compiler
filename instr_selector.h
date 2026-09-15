@@ -5,6 +5,10 @@
 /**
  * @file instr_selector.h
  * @brief Instruction selection: lowers the linear IR to machine instructions targeting x86-64 (System V AMD64 ABI).
+ *
+ * Translates each three-address IR instruction into one or more x86-64
+ * machine instructions, inserting the necessary moves, address computations
+ * and ABI-compliant call sequences.
  */
 
 #include "ir.h"

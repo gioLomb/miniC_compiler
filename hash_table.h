@@ -7,6 +7,10 @@
 /**
  * @file hash_table.h
  * @brief Generic hash table with separate chaining and binary key/value support.
+ *
+ * Arena-backed open-addressing or chaining hash map that stores arbitrary
+ * binary keys and values. Used for symbol tables, constant maps, value-
+ * numbering tables and other associative data structures.
  */
 
 #include <stdio.h>

@@ -1,37 +1,3 @@
-/**
- * @file regalloc.c
- * @brief Register allocation via graph coloring (Chaitin-Briggs, EaC §13.4).
- *
- * ### Preconditions
- * Input must be the output of isel_select() + sched_schedule(): a MachProgram
- * where every value lives in a virtual register (MO_VREG) and the frame size
- * is not yet finalised.
- *
- * ### Postconditions
- * - Every MO_VREG replaced by MO_PHYS (physical register) or MO_STACK (spill slot).
- * - MachFunction.frameSize reflects the total spill area (16-byte aligned).
- * - Prologue/epilogue push/pop every callee-saved physical register that was
- *   actually assigned during coloring.
- *
- * ### Algorithm per function (regalloc_function)
- * ```
- *   loop:
- *     1. regalloc_build_cfg        — derive basic-block ranges + CFG edges from MACH_LABEL/Jcc/RET
- *     2. liveness_computeMach — backward dataflow: liveAfter[i] for each instruction
- *     3. ig_build         — interference graph (bit matrix + adjacency lists)
- *     4. ra_collect_partners — collect non-interfering MOV pairs for biased coloring
- *     5. ra_simplify      — Briggs-optimistic: remove nodes bucket-by-degree,
- *                           picking lowest spillCost/degree if no safe node exists
- *                           (reload/spill temps from earlier rounds are skipped
- *                           as optimistic-spill candidates — see interference.h)
- *     6. ra_select_colors — pop stack, assign colors; prefer partner hint, then
- *                           callee-saved if live across CALL, else lowest available
- *     7. if nSpilled == 0 → regalloc_finalize() and break
- *        else             → ra_spill_insert(), free temporaries, continue
- *   regalloc_save_restore_callee   — insert push/pop in prologue/epilogue for used callee-saved regs
- * ```
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>

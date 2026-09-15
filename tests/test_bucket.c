@@ -1,21 +1,9 @@
-/**
- * @file test_bucket.c
- * @brief Unit test per bucket.h/bucket.c (degree-indexed bucket list).
- *
- * Copre:
- *  - insert/remove di base e coerenza di inBucket[]/nonempty
- *  - pop_any_low restituisce sempre il grado minimo non vuoto (O(1) via ctz)
- *  - transizione di un nodo tra bucket diversi (simula il decremento di
- *    grado che avviene in ra_simplify quando un vicino viene rimosso)
- *  - pop su struttura vuota ritorna -1 senza side effect
- */
-
 #include <stdio.h>
 #include <assert.h>
 #include "../bucket.h"
 
 int main(void) {
-    /* PASS 1: insert + pop_any_low sceglie il bucket di grado minimo */
+    /* insert + pop_any_low returns the minimum-degree bucket */
     {
         Buckets b = buckets_create(/*nextVreg=*/10, /*k=*/14);
         bucket_insert(&b, 5, 3);
@@ -30,30 +18,27 @@ int main(void) {
 
         n = bucket_pop_any_low(&b, &deg);
         assert(deg == 1 && (n == 2 || n == 7));
-        printf("PASS 1 ok: pop_any_low restituisce sempre il grado minimo.\n");
+        printf("PASS 1 ok: pop_any_low always returns the minimum degree.\n");
         buckets_free();
     }
 
-    /* PASS 2: rimozione di un nodo intermedio non rompe la lista collegata */
+    /* Removing a middle node does not break the linked list */
     {
         Buckets b = buckets_create(10, 14);
         bucket_insert(&b, 1, 2);
         bucket_insert(&b, 2, 2);
-        bucket_insert(&b, 3, 2);   /* lista bucket[2]: 3 -> 2 -> 1 (prepend) */
+        bucket_insert(&b, 3, 2);
 
-        bucket_remove(&b, 2, 2);   /* rimuove il nodo centrale */
+        bucket_remove(&b, 2, 2);
         assert(b.inBucket[2] == 0);
         assert(b.inBucket[1] == 1 && b.inBucket[3] == 1);
-
-        /* la lista deve restare attraversabile: 3 -> 1 */
         assert(b.next[3] == 1);
         assert(b.prev[1] == 3);
-        printf("PASS 2 ok: rimozione nodo intermedio preserva la lista.\n");
+        printf("PASS 2 ok: middle-node removal preserves the list.\n");
         buckets_free();
     }
 
-    /* PASS 3: spostamento di un nodo tra bucket (come fa ra_simplify quando
-     * il grado di un vicino attivo scende) */
+    /* Moving a node between buckets (degree change) */
     {
         Buckets b = buckets_create(10, 14);
         bucket_insert(&b, 4, 5);
@@ -62,34 +47,34 @@ int main(void) {
 
         bucket_remove(&b, 4, 5);
         bucket_insert(&b, 4, 4);
-        assert(!((b.nonempty >> 5) & 1u));   /* bucket 5 ora vuoto */
-        assert((b.nonempty >> 4) & 1u);      /* bucket 4 ora popolato */
+        assert(!((b.nonempty >> 5) & 1u));
+        assert((b.nonempty >> 4) & 1u);
 
         int deg;
         int n = bucket_pop_any_low(&b, &deg);
         assert(n == 4 && deg == 4);
-        printf("PASS 3 ok: transizione di grado sposta correttamente il nodo.\n");
+        printf("PASS 3 ok: degree transition moves the node correctly.\n");
         buckets_free();
     }
 
-    /* PASS 4: pop su struttura vuota ritorna -1, nessun crash */
+    /* pop on empty structure returns -1 */
     {
         Buckets b = buckets_create(10, 14);
         int deg = -99;
         int n = bucket_pop_any_low(&b, &deg);
         assert(n == -1);
-        printf("PASS 4 ok: pop su bucket vuoto ritorna -1.\n");
+        printf("PASS 4 ok: pop on empty bucket returns -1.\n");
         buckets_free();
     }
 
-    /* PASS 5: piu' nodi nello stesso bucket, tutti estraibili senza duplicati */
+    /* Multiple nodes in the same bucket are all extracted without duplicates */
     {
         Buckets b = buckets_create(10, 14);
         bucket_insert(&b, 0, 0);
         bucket_insert(&b, 1, 0);
         bucket_insert(&b, 2, 0);
 
-        int seen[3] = {0,0,0}, deg;
+        int seen[3] = {0, 0, 0}, deg;
         for (int i = 0; i < 3; i++) {
             int n = bucket_pop_any_low(&b, &deg);
             assert(n >= 0 && deg == 0);
@@ -99,10 +84,10 @@ int main(void) {
         }
         int deg2;
         assert(bucket_pop_any_low(&b, &deg2) == -1);
-        printf("PASS 5 ok: tutti i nodi dello stesso bucket estratti senza duplicati.\n");
+        printf("PASS 5 ok: all nodes of the same bucket extracted without duplicates.\n");
         buckets_free();
     }
 
-    printf("\nTutti i test bucket sono passati.\n");
+    printf("\nAll bucket tests passed.\n");
     return 0;
 }

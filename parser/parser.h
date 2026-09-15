@@ -5,6 +5,10 @@
 /**
  * @file parser.h
  * @brief Recursive-descent parser interface.
+ *
+ * Consumes the token stream produced by the lexer and builds the Abstract
+ * Syntax Tree according to the miniC grammar. Reports syntax errors through
+ * the centralized error collector.
  */
 
 #include "ast.h"

@@ -5,6 +5,10 @@
 /**
  * @file sched.h
  * @brief Instruction Scheduler interface — Local List Scheduling per basic block.
+ *
+ * Reorders the machine instructions inside each basic block to improve
+ * instruction-level parallelism and reduce pipeline stalls, respecting
+ * data dependencies and resource constraints of the target micro-architecture.
  */
 
 #include "instr_selector.h"

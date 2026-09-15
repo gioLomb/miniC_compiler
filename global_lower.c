@@ -1,8 +1,3 @@
-/**
- * @file global_lower.c
- * @brief Lowering OPND_GLOBAL -> IR_GLOBAL_ADDR + LOAD/STORE_ARR.
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include "global_lower.h"

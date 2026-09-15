@@ -2,8 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../lexer.h"
-// #include "../parser/error.h"          // RIMOSSO
-#include "parser/errorCollector.h"          // AGGIUNTO
+#include "parser/errorCollector.h"
 #include "../parser/ast.h"
 #include "../parser/parser.h"
 #include "../symbol_table.h"
@@ -23,9 +22,6 @@ static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     ASTNode *root     = ParseProgram(astArena);
     lexer_close();
 
-    // (Opzionale) pulizia del pending dopo il parsing
-    // ec_clear_pending();
-
     Scope *global = sym_scopeCreate(NULL);
     st_resolve_global_namespace(root, global);
     semantic_check(root, global);
@@ -36,7 +32,6 @@ static ASTNode *parseAndOptimize(const char *src, Arena **outArena) {
     *outArena = astArena;
     return root;
 }
-
 
 static ASTNode *lastFuncBody(ASTNode *root) {
     ASTNode *decl = root->children[root->nchildren - 1];
@@ -76,147 +71,162 @@ static int binopHeight(ASTNode *node) {
     return 1 + (l > r ? l : r);
 }
 
-/* macro per ridurre boilerplate cleanup */
-#define CLEANUP(root, arena) do {arena_destroy(arena); } while(0)
+#define CLEANUP(root, arena) do { arena_destroy(arena); } while (0)
 
 int main(void) {
     ASTNode *root, *body, *node;
     Arena   *arena;
 
-    /* PASS 1 */
+    /* Constant folding of addition */
     root = parseAndOptimize("int main() { int z; z = 3 + 2; return z; }", &arena);
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN);
     if (!node || node->children[1]->kind != ND_NUM_INT ||
         strcmp(node->children[1]->text, "5") != 0) {
-        fprintf(stderr, "PASS 1 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 1 FAILED\n");
+        return 1;
     }
-    printf("PASS 1 ok: 'z = 3 + 2;' viene foldato in 'z = 5;'.\n");
+    printf("PASS 1 ok: 'z = 3 + 2;' folded to 'z = 5;'.\n");
     CLEANUP(root, arena);
 
-    /* PASS 2 */
+    /* Algebraic simplification y + 0 -> y */
     root = parseAndOptimize(
         "int main() { int x; int y; y = 1; x = y + 0; return x; }", &arena);
     body = lastFuncBody(root);
-    ASTNode *assigns[8]; int nAssigns = 0;
+    ASTNode *assigns[8];
+    int nAssigns = 0;
     collectOfKind(body, ND_ASSIGN, assigns, 8, &nAssigns);
     if (nAssigns < 2 || assigns[1]->children[1]->kind != ND_ID ||
         strcmp(assigns[1]->children[1]->text, "y") != 0) {
-        fprintf(stderr, "PASS 2 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 2 FAILED\n");
+        return 1;
     }
-    printf("PASS 2 ok: 'x = y + 0;' viene semplificato in 'x = y;'.\n");
+    printf("PASS 2 ok: 'x = y + 0;' simplified to 'x = y;'.\n");
     CLEANUP(root, arena);
 
-    /* PASS 3 */
+    /* Dead if(0) branch pruning */
     root = parseAndOptimize(
         "int main() { int a; if (0) { a = 1; } else { a = 2; } return a; }", &arena);
     body = lastFuncBody(root);
     if (countOfKind(body, ND_IF) != 0) {
-        fprintf(stderr, "PASS 3 FALLITO: l'ND_IF non e' stato rimosso\n"); return 1;
+        fprintf(stderr, "PASS 3 FAILED: ND_IF was not removed\n");
+        return 1;
     }
     node = findFirstOfKind(body, ND_ASSIGN);
     if (!node || node->children[1]->kind != ND_NUM_INT ||
         strcmp(node->children[1]->text, "2") != 0) {
-        fprintf(stderr, "PASS 3 FALLITO: non e' rimasto 'a = 2;'\n"); return 1;
+        fprintf(stderr, "PASS 3 FAILED: 'a = 2;' not remaining\n");
+        return 1;
     }
-    printf("PASS 3 ok: 'if(0){a=1;}else{a=2;}' si riduce al solo ramo else.\n");
+    printf("PASS 3 ok: 'if(0){a=1;}else{a=2;}' reduces to the else branch only.\n");
     CLEANUP(root, arena);
 
-    /* PASS 4 */
+    /* while(0) removed entirely */
     root = parseAndOptimize(
         "int main() { int a; a = 1; while (0) { a = a + 1; } return a; }", &arena);
     body = lastFuncBody(root);
     if (countOfKind(body, ND_WHILE) != 0) {
-        fprintf(stderr, "PASS 4 FALLITO: il while(0) non e' stato rimosso\n"); return 1;
+        fprintf(stderr, "PASS 4 FAILED: while(0) was not removed\n");
+        return 1;
     }
-    printf("PASS 4 ok: 'while(0){...}' viene rimosso interamente.\n");
+    printf("PASS 4 ok: 'while(0){...}' is removed entirely.\n");
     CLEANUP(root, arena);
 
-    /* PASS 5 */
+    /* Call with side effect is not eliminated by *0 */
     root = parseAndOptimize(
         "int f(int n) { return n; }\n"
         "int main() { int x; x = f(5) * 0; return x; }", &arena);
     body = lastFuncBody(root);
     if (countOfKind(body, ND_CALL) != 1) {
-        fprintf(stderr, "PASS 5 FALLITO: 'f(5)' e' stata eliminata insieme a '*0'\n"); return 1;
+        fprintf(stderr, "PASS 5 FAILED: 'f(5)' was eliminated together with '*0'\n");
+        return 1;
     }
-    printf("PASS 5 ok: 'f(5) * 0' NON elide la chiamata (ha un effetto collaterale).\n");
+    printf("PASS 5 ok: 'f(5) * 0' does not eliminate the call (side effect).\n");
     CLEANUP(root, arena);
 
-    /* PASS 6 */
+    /* Pure *0 folds to 0 */
     root = parseAndOptimize(
         "int main() { int x; int y; y = 5; x = y * 0; return x; }", &arena);
     body = lastFuncBody(root);
-    assigns[0] = NULL; nAssigns = 0;
+    assigns[0] = NULL;
+    nAssigns = 0;
     collectOfKind(body, ND_ASSIGN, assigns, 8, &nAssigns);
     if (nAssigns < 2 || assigns[1]->children[1]->kind != ND_NUM_INT ||
         strcmp(assigns[1]->children[1]->text, "0") != 0) {
-        fprintf(stderr, "PASS 6 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 6 FAILED\n");
+        return 1;
     }
-    printf("PASS 6 ok: 'y * 0' (senza effetti collaterali) viene foldato in '0'.\n");
+    printf("PASS 6 ok: 'y * 0' (no side effects) folded to '0'.\n");
     CLEANUP(root, arena);
 
-    /* PASS 7 */
+    /* Double negation folds */
     root = parseAndOptimize("int main() { int x; x = -(-5); return x; }", &arena);
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN);
     if (!node || node->children[1]->kind != ND_NUM_INT ||
         strcmp(node->children[1]->text, "5") != 0) {
-        fprintf(stderr, "PASS 7 FALLITO\n"); return 1;
+        fprintf(stderr, "PASS 7 FAILED\n");
+        return 1;
     }
-    printf("PASS 7 ok: '-(-5)' viene foldato ricorsivamente in '5'.\n");
+    printf("PASS 7 ok: '-(-5)' folded recursively to '5'.\n");
     CLEANUP(root, arena);
 
-    /* PASS 8 */
+    /* Division by zero is not folded */
     root = parseAndOptimize("int main() { int x; x = 5 / 0; return x; }", &arena);
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN);
     if (!node || node->children[1]->kind != ND_BINOP) {
-        fprintf(stderr, "PASS 8 FALLITO: '5 / 0' non doveva essere foldato\n"); return 1;
+        fprintf(stderr, "PASS 8 FAILED: '5 / 0' should not have been folded\n");
+        return 1;
     }
-    printf("PASS 8 ok: '5 / 0' resta un ND_BINOP (non foldato).\n");
+    printf("PASS 8 ok: '5 / 0' remains an ND_BINOP (not folded).\n");
     CLEANUP(root, arena);
 
-    /* PASS 9 */
+    /* Associative chain balancing (int) */
     root = parseAndOptimize(
         "int main() { int a; int b; int c; int d; int x; x = a+b+c+d; return x; }", &arena);
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN)->children[1];
     if (binopHeight(node) != 2) {
-        fprintf(stderr, "PASS 9 FALLITO: altezza attesa 2, trovata %d\n", binopHeight(node)); return 1;
+        fprintf(stderr, "PASS 9 FAILED: expected height 2, found %d\n", binopHeight(node));
+        return 1;
     }
     if (countOfKind(node, ND_ID) != 4 || countOfKind(node, ND_BINOP) != 3) {
-        fprintf(stderr, "PASS 9 FALLITO: foglie/operatori non coerenti\n"); return 1;
+        fprintf(stderr, "PASS 9 FAILED: leaves/operators inconsistent\n");
+        return 1;
     }
-    printf("PASS 9 ok: 'a+b+c+d' ribilanciato da altezza 3 a 2.\n");
+    printf("PASS 9 ok: 'a+b+c+d' rebalanced from height 3 to 2.\n");
     CLEANUP(root, arena);
 
-    /* PASS 10 */
+    /* Float chains are not balanced */
     root = parseAndOptimize(
         "float main() { float a; float b; float c; float x; x = a+1.5+b+c; return x; }", &arena);
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN)->children[1];
     if (binopHeight(node) != 3) {
-        fprintf(stderr, "PASS 10 FALLITO: altezza %d, attesa 3\n", binopHeight(node)); return 1;
+        fprintf(stderr, "PASS 10 FAILED: height %d, expected 3\n", binopHeight(node));
+        return 1;
     }
-    printf("PASS 10 ok: catena con float NON bilanciata (altezza 3).\n");
+    printf("PASS 10 ok: float chain NOT balanced (height 3).\n");
     CLEANUP(root, arena);
 
-    /* PASS 11 */
+    /* Longer int chain is balanced */
     root = parseAndOptimize(
         "int main() { int a; int b; int c; int d; int e; int x; x = a+b+c+d+e; return x; }", &arena);
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN)->children[1];
     if (countOfKind(node, ND_ID) != 5 || countOfKind(node, ND_BINOP) != 4) {
-        fprintf(stderr, "PASS 11 FALLITO: foglie/operatori non coerenti\n"); return 1;
+        fprintf(stderr, "PASS 11 FAILED: leaves/operators inconsistent\n");
+        return 1;
     }
     if (binopHeight(node) >= 4) {
-        fprintf(stderr, "PASS 11 FALLITO: altezza non ridotta (trovata %d)\n", binopHeight(node)); return 1;
+        fprintf(stderr, "PASS 11 FAILED: height not reduced (found %d)\n", binopHeight(node));
+        return 1;
     }
-    printf("PASS 11 ok: 5 addendi, altezza ridotta a %d (naive: 4).\n", binopHeight(node));
+    printf("PASS 11 ok: 5 addends, height reduced to %d (naive: 4).\n", binopHeight(node));
     CLEANUP(root, arena);
 
-    printf("\nTutti i test sono passati. Cleanup completato senza errori.\n");
+    printf("\nAll tests passed. Cleanup completed without errors.\n");
     remove("/tmp/miniC_test_optimize_src.c");
     return 0;
 }

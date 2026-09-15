@@ -1,6 +1,14 @@
 #ifndef TOKENS_H
 #define TOKENS_H
 
+
+/**
+ * @file tokens.h
+ * @brief Token type identifiers shared between the scanner and the parser.
+ * Defines the enum of keyword, operator, delimiter, and literal token
+ * codes produced by lexer_next_token().
+ */
+
 // Esempio di enum con i token necessari
 enum {
     TOK_EOF = 0,

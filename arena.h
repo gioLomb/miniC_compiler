@@ -5,6 +5,11 @@
 /**
  * @file arena.h
  * @brief Fast arena (bump/region) memory allocator interface.
+ *
+ * Provides a simple linear allocator that hands out memory from large
+ * contiguous blocks. Individual allocations cannot be freed; the whole
+ * arena is released at once. Used throughout the compiler for AST nodes,
+ * IR instructions, symbol tables and temporary analysis structures.
  */
 
 #include <stddef.h>

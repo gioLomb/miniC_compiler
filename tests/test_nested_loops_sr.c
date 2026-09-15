@@ -1,17 +1,6 @@
-/* test_nested_loops_sr.c
- *
- * Obiettivo: loop annidati su matrice linearizzata. Verifica:
- *   - 'base = i * 10' e' loop-invariant rispetto al loop interno (dipende
- *     solo da i, non modificato nel corpo interno): LICM deve issarlo nel
- *     pre-header del loop INTERNO ad ogni iterazione esterna.
- *   - 'j' e' basic induction variable del loop interno; 'idx = base + j'
- *     e' un derived pattern (somma, non moltiplicazione: SR in questo
- *     compilatore riconosce solo t = i*CONST, quindi qui NON deve scattare
- *     SR — verifica che l'assenza di strength reduction non comprometta
- *     comunque la correttezza del risultato).
- *   - STORE_ARR seguita da LOAD_ARR sullo stesso indice nella stessa
- *     iterazione: nessuna passata deve riordinarle (dipendenza di alias
- *     conservativa in DCE/LICM).
+/* Test: nested loops on a linearized matrix.
+ * Checks LICM of outer-loop-invariant 'base' into the inner pre-header,
+ * and that derived idx = base + j does not trigger strength reduction.
  */
 
 int main() {

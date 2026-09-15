@@ -1,13 +1,3 @@
-/**
- * @file bucket.c
- * @brief Degree-indexed bucket list — implementation.
- *
- * All storage is allocated from a module-level arena created by
- * buckets_create() and released by buckets_free().  The arena avoids
- * per-array malloc/free pairs and guarantees a single contiguous
- * allocation for the lifetime of one register-allocation round.
- */
-
 #include "bucket.h"
 #include "arena.h"
 #include <string.h>

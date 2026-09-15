@@ -7,6 +7,10 @@
 /**
  * @file loop.h
  * @brief Loop detection and pre-header construction shared by LICM and SR.
+ *
+ * Identifies natural loops from the control-flow graph, builds the loop
+ * nesting forest and inserts pre-header blocks so that loop-invariant
+ * code and induction-variable updates can be placed safely outside the loop.
  */
 
 #include "ir.h"

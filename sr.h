@@ -5,6 +5,11 @@
 /**
  * @file sr.h
  * @brief Strength reduction loop optimization pass interface.
+ *
+ * Identifies induction variables and expensive operations (multiplications,
+ * array-index calculations) inside loops and replaces them by cheaper
+ * equivalent sequences of additions, thereby reducing the cost of each
+ * iteration.
  */
 
 #include "ir.h"

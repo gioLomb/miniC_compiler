@@ -1,27 +1,3 @@
-/**
- * @file svn.c
- * @brief Superlocal Value Numbering (SVN) pass implementation.
- *
- * Internal organization
- * ---------------------
- *  svn_hash                 - FNV-1a hash function over raw key bytes.
- *  svn_build_value_key      - Constructs a ValueKey for an IR operand.
- *  svn_build_expr_key       - Constructs an ExprKey for an expression.
- *  svn_scope_init           - Allocates and initialises a scope from an Arena.
- *  svn_scope_destroy        - Destroys scope resources and hash tables.
- *  svn_add_leader_for_value - Adds an operand leader for a value number.
- *  svn_define_value         - Associates a destination operand with a value number.
- *  svn_is_leader_still_valid- Verifies if a leader operand has not been reassigned.
- *  svn_find_valid_leader    - Returns a valid leader operand for a value number.
- *  svn_value_number_of      - Retrieves or assigns a value number for an operand.
- *  svn_lookup_or_insert_expr- Looks up an expression key or assigns a new VN.
- *  svn_process_binary       - Handles binary and relational IR instructions.
- *  svn_process_unary        - Handles unary IR instructions.
- *  svn_process_instr        - Master instruction dispatch handler for SVN.
- *  svn_process_ebb          - Traverses an Extended Basic Block recursively.
- *  svn_optimize             - Public entry point for the SVN pass.
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include "svn.h"

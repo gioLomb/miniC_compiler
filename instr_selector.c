@@ -1,9 +1,3 @@
-/**
- * @file instr_selector.c
- * @brief Instruction selection: IR -> x86-64 MachInstr.
- *
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

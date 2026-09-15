@@ -7,6 +7,10 @@
 /**
  * @file liveness.h
  * @brief Liveness analysis engine shared by DCE, LICM, SR (IR front-end) and register allocation / interference-graph construction (machine-code front-end).
+ *
+ * Computes live-in / live-out sets for every instruction or basic block.
+ * The same core algorithm is reused both on the linear IR and on the
+ * machine-instruction representation.
  */
 
 #include <stdint.h>

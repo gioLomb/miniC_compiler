@@ -1,8 +1,3 @@
-/**
- * @file instr_query.c
- * @brief Class-aware MachInstr operand extraction and opcode predicates.
- */
-
 #include "instr_query.h"
 
 static inline int mach_operand_reg_c(const MachOperand *o, int classVregCount, RegClass cls) {
