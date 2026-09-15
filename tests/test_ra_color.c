@@ -40,6 +40,12 @@
  *
  * invece della vecchia firma a 6 argomenti che includeva 'n' (nextVreg)
  * come secondo parametro.
+ *
+ * NOTA (rename campi PartnerPair): .u/.v sono stati rinominati in
+ * .vregId/.partnerId per riflettere il significato reale (vreg da colorare
+ * vs. il suo partner di move-coalescing) invece di nomi generici da teoria
+ * dei grafi. PASS 4 e PASS 6 qui sotto costruiscono PartnerPair letterali e
+ * sono stati aggiornati di conseguenza.
  */
 
 #include <stdio.h>
@@ -268,7 +274,7 @@ int main(void) {
         int spilled[1];
         PartnerList pl = { NULL, 0, 0 };
         pl.pairs = malloc(sizeof *pl.pairs);
-        pl.pairs[0] = (PartnerPair){ .u = 0, .v = 1 };
+        pl.pairs[0] = (PartnerPair){ .vregId = 0, .partnerId = 1 };
         pl.count = 1; pl.cap = 1;
 
         int nSpilled = ra_select_colors(&g, stack, 1, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, &pl);
@@ -361,8 +367,8 @@ int main(void) {
         int spilled[1];
         PartnerList pl = { NULL, 0, 0 };
         pl.pairs = malloc(2 * sizeof *pl.pairs);
-        pl.pairs[0] = (PartnerPair){ .u = 0, .v = 1 }; /* A: colore 0, non disponibile */
-        pl.pairs[1] = (PartnerPair){ .u = 0, .v = 2 }; /* B: colore 3, disponibile */
+        pl.pairs[0] = (PartnerPair){ .vregId = 0, .partnerId = 1 }; /* A: colore 0, non disponibile */
+        pl.pairs[1] = (PartnerPair){ .vregId = 0, .partnerId = 2 }; /* B: colore 3, disponibile */
         pl.count = 2; pl.cap = 2;
 
         int nSpilled = ra_select_colors(&g, stack, 1, PHYS_ALLOCATABLE, PHYS_CALLER_SAVED_COUNT, spilled, &pl);

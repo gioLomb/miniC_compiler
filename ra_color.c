@@ -120,10 +120,11 @@ typedef struct {
 /**
  * @brief Build the node -> partners CSR index from @p pl.
  *
- * Each PartnerPair(u,v) contributes one entry to u's list and one to v's
- * list (undirected: coloring either endpoint may want to check the other).
- * Entries within a node's slice preserve @p pl's original pair order, so
- * scan-order-dependent tie-breaking (first valid hint wins) is unaffected.
+ * Each PartnerPair(vregId,partnerId) contributes one entry to vregId's list
+ * and one to partnerId's list (undirected: coloring either endpoint may want
+ * to check the other). Entries within a node's slice preserve @p pl's
+ * original pair order, so scan-order-dependent tie-breaking (first valid
+ * hint wins) is unaffected.
  *
  * @param pl  Partner list to index; NULL or empty yields an empty index.
  * @param n   Total node count (== IGraph.n), sizes the start[] array.
@@ -136,9 +137,9 @@ static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
     // pass 1: count how many pairs touch each node
     int *count = calloc((size_t)n, sizeof(int));
     for (int i = 0; i < pl->count; i++) {
-        int u = pl->pairs[i].u, v = pl->pairs[i].v;
-        if (u >= 0 && u < n) count[u]++;
-        if (v >= 0 && v < n) count[v]++;
+        int aVregId = pl->pairs[i].vregId, aPartnerId = pl->pairs[i].partnerId;
+        if (aVregId >= 0 && aVregId < n) count[aVregId]++;
+        if (aPartnerId >= 0 && aPartnerId < n) count[aPartnerId]++;
     }
 
     // pass 2: prefix sum -> offsets
@@ -153,10 +154,10 @@ static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
     memcpy(cursor, idx.start, (size_t)n * sizeof(int));
 
     for (int i = 0; i < pl->count; i++) {
-        int u = pl->pairs[i].u, v = pl->pairs[i].v;
-        if (u >= 0 && u < n && v >= 0 && v < n) {
-            idx.data[cursor[u]++] = v;
-            idx.data[cursor[v]++] = u;
+        int aVregId = pl->pairs[i].vregId, aPartnerId = pl->pairs[i].partnerId;
+        if (aVregId >= 0 && aVregId < n && aPartnerId >= 0 && aPartnerId < n) {
+            idx.data[cursor[aVregId]++] = aPartnerId;
+            idx.data[cursor[aPartnerId]++] = aVregId;
         }
     }
 

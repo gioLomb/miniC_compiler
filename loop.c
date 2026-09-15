@@ -54,8 +54,7 @@ static void loop_intersect_predecessor_dominators(BitSet *inter, const BitSet *D
                                              const PredList *preds, int b, int words) {
     int start = preds->predStart[b];
 
-    // intersect Dom sets of all predecessors, resolved via the
-    // precomputed CSR list instead of re-scanning every block's succ[] to find them
+    // intersect Dom sets of all predecessors, resolved via the precomputed CSR list 
     bitset_copy(inter, &Dom[preds->predData[start]]); // first pred: copy
     for (int i = 1; i < preds->predCount[b]; i++) {
         int p = preds->predData[start + i];
@@ -133,9 +132,7 @@ static void loop_bfs_traverse_loop_body(int header, int tail, char *inBody,
 
     while (head < tail_q) {
         int b = queue[head++];
-        // walk b's actual predecessors via the CSR list — unlike the old
-        // fixed-size preds[n][2] array this had no cap on fan-in, so a
-        // join block with more than two incoming edges is handled correctly
+        // walk b's actual predecessors via the CSR list
         int start = preds->predStart[b];
         for (int k = 0; k < preds->predCount[b]; k++) {
             int p = preds->predData[start + k];

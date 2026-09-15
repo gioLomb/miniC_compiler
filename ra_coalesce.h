@@ -10,9 +10,12 @@
 #include "interference.h"
 #include "reg_class.h"
 
+/**
+ * @brief One coalescing hint: a virtual register paired with a non-interfering partner.
+ */
 typedef struct {
-    int u;  /**< Virtual register id (u < classVregCount). */
-    int v;  /**< Partner: vreg id or classVregCount+localColor for a phys. */
+    int vregId;     /**< Virtual register id (vregId < classVregCount). */
+    int partnerId;  /**< Partner: vreg id or classVregCount+localColor for a phys. */
 } PartnerPair;
 
 typedef struct {

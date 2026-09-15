@@ -16,12 +16,12 @@ static inline int ra_resolve_operand_id(const MachOperand *op, RegClass cls, int
     return -1;
 }
 
-static inline int ra_is_valid_coalesce_candidate(const IGraph *g, int u, int v,
+static inline int ra_is_valid_coalesce_candidate(const IGraph *g, int aVregId, int aPartnerId,
                                                  int max_node_id, int classVregCount) {
-    if (u < 0 || v < 0) return 0;
-    if (u >= max_node_id || v >= max_node_id) return 0;
-    if (u >= classVregCount && v >= classVregCount) return 0; /* phys↔phys */
-    if (ig_has_edge(g, u, v)) return 0;
+    if (aVregId < 0 || aPartnerId < 0) return 0;
+    if (aVregId >= max_node_id || aPartnerId >= max_node_id) return 0;
+    if (aVregId >= classVregCount && aPartnerId >= classVregCount) return 0; /* phys↔phys */
+    if (ig_has_edge(g, aVregId, aPartnerId)) return 0;
     return 1;
 }
 
@@ -34,22 +34,27 @@ PartnerList ra_collect_partners(const MachFunction *f, const IGraph *g,
 
     for (int i = 0; i < f->count; i++) {
         const MachInstr *in = &f->instrs[i];
-        if (in->op != wantOp) continue;
+        if (in->op != wantOp) continue;  // only move instructions are coalesce candidates
 
-        int u = ra_resolve_operand_id(&in->dst,  cls, classVregCount);
-        int v = ra_resolve_operand_id(&in->src1, cls, classVregCount);
+        int aVregId = ra_resolve_operand_id(&in->dst,  cls, classVregCount);
+        int aPartnerId = ra_resolve_operand_id(&in->src1, cls, classVregCount);
 
-        /* Prefer recording (vreg, partner) with vreg as u. */
-        if (u >= classVregCount && v < classVregCount) {
-            int t = u; u = v; v = t;
+        // vreg side always becomes .vregId; dst is the vreg unless it's a
+        // physical register and src1 is the actual vreg operand
+        // int dstIsVreg   = dstNode >= 0 && dstNode < classVregCount;
+        // int aVregId     = dstIsVreg ? dstNode : srcNode;
+        // int aPartnerId  = dstIsVreg ? srcNode : dstNode;
+    
+         /* Prefer recording (vreg, partner) with vreg as u. */
+       if (aVregId >= classVregCount && aPartnerId < classVregCount) {
+           int t = aVregId; aVregId = aPartnerId;aPartnerId = t;
         }
-
-        if (ra_is_valid_coalesce_candidate(g, u, v, max_node_id, classVregCount)) {
+        if (ra_is_valid_coalesce_candidate(g, aVregId, aPartnerId, max_node_id, classVregCount)) {
             if (pl.count == pl.cap) {
                 pl.cap = pl.cap ? pl.cap * 2 : 8;
                 pl.pairs = realloc(pl.pairs, (size_t)pl.cap * sizeof(PartnerPair));
             }
-            pl.pairs[pl.count++] = (PartnerPair){ .u = u, .v = v };
+            pl.pairs[pl.count++] = (PartnerPair){ .vregId = aVregId, .partnerId = aPartnerId };
         }
     }
     return pl;
