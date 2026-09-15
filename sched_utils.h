@@ -10,6 +10,19 @@
 #include "instr_selector.h"
 
 /**
+ * @brief Conservative Haswell/Broadwell execution latencies (cycles).
+ *
+ * Shared by the list scheduler when weighting DAG edges / ranking ready ops.
+ */
+typedef enum {
+    LAT_NONE =  0,  /**< Labels and structural markers — no execution cost. */
+    LAT_ALU  =  1,  /**< Simple integer/SSE ALU, shifts, compares, branches. */
+    LAT_MUL  =  3,  /**< Integer multiply; also used as CALL/RET approximation. */
+    LAT_MEM  =  4,  /**< Load / store / push / pop. */
+    LAT_DIV  = 20,  /**< Integer divide (worst-case 64-bit). */
+} SchedLatency;
+
+/**
  * @brief Return the execution latency in cycles for machine opcode @p op.
  *
  * Values are conservative Haswell/Broadwell estimates:
@@ -27,26 +40,35 @@
 static inline int sched_latency_of(MachOpCode op) {
     switch (op) {
     case MACH_ADD: case MACH_SUB: case MACH_NEG: case MACH_NOT:
-    case MACH_XOR:  return 1;
-    case MACH_IMUL: return 3;
-    case MACH_IDIV: return 20;
-    case MACH_SAL:  return 1;
-    case MACH_MOV: case MACH_MOVSX: return 1;
-    case MACH_LOAD: case MACH_STORE:
-    case MACH_PUSH: case MACH_POP:  return 4;
-    case MACH_CMP: case MACH_TEST:  return 1;
+    case MACH_XOR: case MACH_SAL:
+    case MACH_MOV: case MACH_MOVSX:
+    case MACH_CMP: case MACH_TEST:
     case MACH_SETE: case MACH_SETNE:
     case MACH_SETL: case MACH_SETLE:
-    case MACH_SETG: case MACH_SETGE: return 1;
+    case MACH_SETG: case MACH_SETGE:
     case MACH_JMP:
     case MACH_JE:  case MACH_JNE:
     case MACH_JL:  case MACH_JLE:
-    case MACH_JG:  case MACH_JGE:  return 1;
-    case MACH_CALL: case MACH_RET: return 3;
-    case MACH_CQO:  return 1;
-    case MACH_LEA:  return 1;   // address-generation unit: 1 cycle
-    case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END: return 0;
-    default: return 1;
+    case MACH_JG:  case MACH_JGE:
+    case MACH_CQO: case MACH_LEA:
+        return LAT_ALU;
+
+    case MACH_IMUL:
+    case MACH_CALL: case MACH_RET:
+        return LAT_MUL;
+
+    case MACH_IDIV:
+        return LAT_DIV;
+
+    case MACH_LOAD: case MACH_STORE:
+    case MACH_PUSH: case MACH_POP:
+        return LAT_MEM;
+
+    case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
+        return LAT_NONE;
+
+    default:
+        return LAT_ALU;
     }
 }
 

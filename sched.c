@@ -269,8 +269,6 @@ void sched_schedule(MachProgram *mp) {
     for (int fi = 0; fi < funcCount; fi++) {
         MachFunction *f = functions[fi];
 
-        // Guard inverted: hot branch (non-empty function) is the fall-through
-        // path, not nested inside an early-continue.
         if (f && f->count > 0) {
             arena_reset(blockArena);
 
@@ -278,9 +276,7 @@ void sched_schedule(MachProgram *mp) {
             BlockRange *blocks = arena_alloc(blockArena, allocSize);
 
             const int bbCount = sched_find_basic_blocks(f, blocks);
-
-            // scratchArena is reset once per block inside sched_schedule_block(),
-            // so its lifetime spans every block of every function here.
+            
             for (int b = 0; b < bbCount; b++) {
                 sched_schedule_block(f, blocks[b], scratchArena);
             }

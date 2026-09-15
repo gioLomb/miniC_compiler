@@ -179,22 +179,7 @@ static void dag_pin_fusion_pairs(const MachFunction *f, BlockRange blk,
     }
 }
 
-/**
- * @brief Track System-V XMM argument / return / clobber traffic around CALL.
- *
- * Integer caller-saved regs are already handled by instr_implicit_uses/defs.
- * XMM0–XMM7 are invisible to the integer interference graph (mach_operand_reg
- * returns -1 for them) but must still participate in the scheduler's rename
- * tracker so that:
- *   - a cvtsi2ssq / movss that sets up a float argument cannot sink past CALL
- *     (RAW: writer → CALL use of that XMM);
- *   - a post-call movss that captures the float return in XMM0 cannot float
- *     above CALL (RAW: CALL def of XMM0 → reader);
- *   - a later write to the same XMM cannot reorder across CALL (WAW/WAR).
- *
- * Ids use the same scheme as sched_reg: nextVreg + PHYS_XMMk.  The tracker
- * universe is sized with PHYS_COUNT, so these ids are in range.
- */
+
 /**
  * @brief apply one instruction's register/side-effect/memory dependencies to the DAG.
  */
@@ -229,7 +214,7 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
     const MachInstr *in = &f->instrs[blk.start + j];
     int regs[SCHED_MAX_REG_IDS], nregs;
 
-    /* Explicit register uses (vreg / vreg_f / phys / mem base). */
+    // Explicit register uses (vreg / vreg_f / phys / mem base)
     sched_uses(in, f->nextVreg, f->fNextVreg, regs, &nregs);
     track_reg_list_reads(rt, nodes, arena, j, regs, nregs);
 
@@ -256,7 +241,7 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
         *lastMemoryOp = j;
     }
 
-    /* Explicit def. */
+    // Explicit def
     int def = sched_def(in, f->nextVreg, f->fNextVreg);
     if (def >= 0) track_write(rt, nodes, arena, j, def);
 

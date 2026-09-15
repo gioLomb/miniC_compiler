@@ -14,6 +14,7 @@
 
 #define INITIAL_BLOCK_CAPACITY 8
 #define STACK_ALIGNMENT_BYTES 16
+#define REGALLOC_MAX_ROUNDS 64
 
 /**
  * @brief Run register allocation on every function in @p mp.

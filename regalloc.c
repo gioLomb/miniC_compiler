@@ -442,21 +442,27 @@ static int regalloc_try_round(MachFunction *f, RegClass cls, int classVregCount,
     return done;
 }
 
+/**
+ * @brief Run Simplify/Select/Spill for @p cls until the class is fully colored.
+ * @return 1 if colored within the round limit, 0 if the cap was hit.
+ */
+static int regalloc_class(MachFunction *f, RegClass cls,
+                          int classVregCount, int firstSpillVreg, int *frameOff) {
+    for (int round = 0; round < REGALLOC_MAX_ROUNDS; round++) {
+        if (regalloc_try_round(f, cls, classVregCount, firstSpillVreg, frameOff))
+            return 1;
+    }
+    return 0;
+}
+
 static void regalloc_function(MachFunction *f) {
     int frameOff = 0;
     int firstSpillVreg  = f->nextVreg;
     int firstSpillFVreg = f->fNextVreg;
 
-    {
-        int rounds = 0;
-        while (!regalloc_try_round(f, RC_INT, f->nextVreg, firstSpillVreg, &frameOff)) {
-            if (++rounds > 64) break;
-        }
-        rounds = 0;
-        while (!regalloc_try_round(f, RC_FLOAT, f->fNextVreg, firstSpillFVreg, &frameOff)) {
-            if (++rounds > 64) break;
-        }
-    }
+    // Colour each register class independently
+    regalloc_class(f, RC_INT,   f->nextVreg,  firstSpillVreg,  &frameOff);
+    regalloc_class(f, RC_FLOAT, f->fNextVreg, firstSpillFVreg, &frameOff);
 
     regalloc_save_restore_callee(f); /* no XMM is callee-saved */
 
