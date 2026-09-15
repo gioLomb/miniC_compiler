@@ -371,8 +371,23 @@ static void regalloc_finalize_float(MachFunction *f, const int *fcolor) {
  * One coloring attempt for a single register class.
  * @return 1 on success (no spills), 0 if spill code was inserted.
  */
-static int regalloc_try_round(MachFunction *f, RegClass cls, int classVregCount,
+/**
+ * One coloring attempt for a single register class.
+ * @return 1 on success (no spills), 0 if spill code was inserted.
+ */
+static int regalloc_try_round(MachFunction *f, RegClass cls, int *pVregCount,
                               int firstSpillVreg, int *frameOff) {
+    // Snapshot *pVregCount at round entry: this is the vreg universe size to
+    // build liveness/interference/coloring against for THIS round. If this
+    // round fails and spills, ra_spill_insert bumps *pVregCount in place
+    // (spill_fresh_temp -> (*vreg_counter_of(f, cls))++, same f->nextVreg /
+    // f->fNextVreg cell pVregCount points at). The NEXT call to
+    // regalloc_try_round re-reads through the pointer here and picks up the
+    // grown count -> graph/bitsets always sized to match the vregs actually
+    // referenced by instructions, no more stale snapshot -> no more OOB write
+    // in ig_add_edge / liveness bitsets.
+    int classVregCount = *pVregCount;
+
     Arena *livArena = arena_create(0);
     int nBlocks;
     BasicBlock *blocks = regalloc_build_cfg(f, livArena, &nBlocks);
@@ -397,7 +412,7 @@ static int regalloc_try_round(MachFunction *f, RegClass cls, int classVregCount,
         if (cls == RC_INT) regalloc_finalize_int(f, g.color);
         else               regalloc_finalize_float(f, g.color);
     } else {
-        ra_spill_insert(f, cls, spilled, nSpilled, frameOff);
+        ra_spill_insert(f, cls, spilled, nSpilled, frameOff); // bumps *pVregCount in place for next round
     }
 
     free(stack);
@@ -408,14 +423,13 @@ static int regalloc_try_round(MachFunction *f, RegClass cls, int classVregCount,
     return done;
 }
 
-/**
- * @brief Run Simplify/Select/Spill for @p cls until the class is fully colored.
- * @return 1 if colored within the round limit, 0 if the cap was hit.
- */
 static int regalloc_class(MachFunction *f, RegClass cls,
-                          int classVregCount, int firstSpillVreg, int *frameOff) {
+                          int *pVregCount, int *frameOff) {
+
+    int firstSpillVreg = *pVregCount;
+
     for (int round = 0; round < REGALLOC_MAX_ROUNDS; round++) {
-        if (regalloc_try_round(f, cls, classVregCount, firstSpillVreg, frameOff))
+        if (regalloc_try_round(f, cls, pVregCount, firstSpillVreg, frameOff))
             return 1;
     }
     return 0;
@@ -423,12 +437,9 @@ static int regalloc_class(MachFunction *f, RegClass cls,
 
 static void regalloc_function(MachFunction *f) {
     int frameOff = 0;
-    int firstSpillVreg  = f->nextVreg;
-    int firstSpillFVreg = f->fNextVreg;
 
-    // Colour each register class independently
-    regalloc_class(f, RC_INT,   f->nextVreg,  firstSpillVreg,  &frameOff);
-    regalloc_class(f, RC_FLOAT, f->fNextVreg, firstSpillFVreg, &frameOff);
+    regalloc_class(f, RC_INT,   &f->nextVreg,  &frameOff);
+    regalloc_class(f, RC_FLOAT, &f->fNextVreg, &frameOff);
 
     regalloc_save_restore_callee(f); /* no XMM is callee-saved */
 
