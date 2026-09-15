@@ -12,3 +12,6 @@ report/
 report/*
 heap*
 examples/*.txt
+algorithms/*
+algorithms/
+*.py
