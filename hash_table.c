@@ -1,5 +1,24 @@
 #include "hash_table.h"
 
+typedef struct Entry {
+    void *key;
+    size_t keySize;
+    void *value;
+    size_t size;          /**< Logical byte count currently valid in @c value. */
+    size_t cap;            /**< Physical byte count allocated for @c value (>= size). */
+    unsigned long hash;
+    struct Entry *next;
+} Entry;
+
+struct Hash_Table {
+    Entry **pool;
+    size_t size;
+    size_t capacity;        /**< Always a power of 2: index = h & (capacity - 1). */
+    hash_func hashFunction;
+    Arena *arena;   /* backs every Entry + key/value bytes: bump alloc,
+                        no malloc/free per insert (see profiling) */
+};
+
 /* ── Forward declarations ───────────────────────────────────────────────── */
 
 static Entry *create_entry(Arena *arena, void *key, size_t keySize,
@@ -257,6 +276,10 @@ void ht_foreach(Hash_Table *table, ht_foreach_cb callback, void *userdata) {
             callback(e->key, e->keySize, e->value, e->size, userdata);
         }
     }
+}
+
+size_t ht_size(const Hash_Table *table) {
+    return table->size;
 }
 
 /* ── Static helpers ──────────────────────────────────────────────────── */

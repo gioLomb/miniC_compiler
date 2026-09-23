@@ -1,5 +1,3 @@
-
-
 #ifndef HASH_TABLE_H
 #define HASH_TABLE_H
 
@@ -37,24 +35,7 @@ typedef void (*ht_foreach_cb)(void *key, size_t keySize,
                                void *value, size_t valueSize,
                                void *userdata);
 
-typedef struct Entry {
-    void *key;
-    size_t keySize;
-    void *value;
-    size_t size;          /**< Logical byte count currently valid in @c value. */
-    size_t cap;            /**< Physical byte count allocated for @c value (>= size). */
-    unsigned long hash;
-    struct Entry *next;
-} Entry;
-
-typedef struct {
-    Entry **pool;
-    size_t size;
-    size_t capacity;        /**< Always a power of 2: index = h & (capacity - 1). */
-    hash_func hashFunction;
-    Arena *arena;   /* backs every Entry + key/value bytes: bump alloc,
-                        no malloc/free per insert (see profiling) */
-} Hash_Table;
+typedef struct Hash_Table Hash_Table;
 
 /* ── API ─────────────────────────────────────────────────────────────── */
 
@@ -111,5 +92,13 @@ int ht_load(Hash_Table *table, const char *path);
  * @brief Iterates over every entry in the table.
  */
 void ht_foreach(Hash_Table *table, ht_foreach_cb cb, void *userdata);
+
+/**
+ * @brief Returns the number of entries currently stored in the table.
+ *
+ * @param table  Hash table instance (must not be NULL).
+ * @return       Current entry count.
+ */
+size_t ht_size(const Hash_Table *table);
 
 #endif

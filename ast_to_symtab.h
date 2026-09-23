@@ -91,7 +91,7 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
  *   - ND_FUNC_DECL nodes → SYM_FUNC symbols with packed parameter types.
  *   - ND_VAR_DECL nodes  → SYM_VAR symbols (scalars and arrays).
  *
- * Each symbol receives a unique sequential offset (global->table->size
+ * Each symbol receives a unique sequential offset (ht_size(global->table)
  * before the sym_bind call) so that OPND_VAR operands emitted by
  * ir_generate() can identify globals by (varLevel=0, varOffset=offset).
  * The offset counter advances for both vars and funcs to stay in sync with
