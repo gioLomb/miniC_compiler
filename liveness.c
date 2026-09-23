@@ -218,22 +218,21 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
                                     VarMap *sharedVarMap, Arena *arena) {
     LivenessResult r = {0};
 
-    VarMap  owned;
     VarMap *vm = sharedVarMap;
-    if (!vm) { owned = varmap_init(); vm = &owned; }
+    if (!vm) vm = varmap_create();
 
     // Prescan: register every operand of f (get-or-create) so numVars
     // below is final before the bitsets are sized.
     populate_varmap(f, vm);
 
-    int numVars = vm->nextId;
+    int numVars = varmap_count(vm);
     BasicBlock *lb = convert_blocks(f, arena);
 
     IRLivenessCtx ctx = { f, vm };
     r.blockSets = liveness_computeCore(f->blockCount, lb, numVars, reachable,
                                          extract_ir, &ctx, arena);
     r.liveAfter = NULL;
-    r.varMap    = *vm;
+    r.varMap    = vm;
     return r;
 }
 /* 

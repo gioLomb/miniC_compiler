@@ -506,7 +506,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
         // insert the synthetic pre-header block before processing this loop
         loop_build_pre_header(f, L);
 
-        VarMap *vm  = &liv.varMap;
+        VarMap *vm  = liv.varMap;
         int numVars = liv.blockSets.numVars;
 
         int *defInstrIdx;
@@ -522,14 +522,14 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
 
         if (moved) {
             // liveness is stale after motion: recompute before the next loop
-            varmap_destroy(&liv.varMap);
+            varmap_destroy(liv.varMap);
             arena_destroy(livArena);
             livArena = arena_create(0);
             liv = liveness_computeIr(f, NULL, NULL, livArena);
         }
     }
 
-    varmap_destroy(&liv.varMap);
+    varmap_destroy(liv.varMap);
     arena_destroy(livArena);
     return totalMoved > 0;
 }

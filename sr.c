@@ -126,7 +126,7 @@ static int sr_collect_base_induction_vars(const IRFunction *irFunction, const Lo
  */
 static int sr_find_induction_base(IRFunction *irFunction, Loop *targetLoop, VarMap *variableMap,
                              InductionBase *baseVars, Arena *arena) {
-    int totalVars = variableMap->nextId;
+    int totalVars = varmap_count(variableMap);
     // per-variable def count, arena-owned
     int *definitionCounts = arena_alloc(arena, (size_t)totalVars * sizeof(int));
     memset(definitionCounts, 0, (size_t)totalVars * sizeof(int));
@@ -426,7 +426,7 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
     // throughout to count/track definitions per variable.
     Arena         *livenessArena  = arena_create(0);
     LivenessResult livenessResult = liveness_computeIr(irFunction, NULL, NULL, livenessArena);
-    VarMap        *variableMap    = &livenessResult.varMap;
+    VarMap        *variableMap    = livenessResult.varMap;
 
     int nextTempId = ir_alloc_temp_id();
 
@@ -452,7 +452,7 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
                                                               derivedVars, derivedVarCount, arenaScratch);
     }
 
-    varmap_destroy(&livenessResult.varMap);
+    varmap_destroy(livenessResult.varMap);
     arena_destroy(livenessArena);
     return totalTransformationsApplied > 0;
 }

@@ -107,7 +107,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
 
         // reverse scan: liveness is a backward dataflow
         for (int i = f->blocks[b].bb.range.end - 1; i >= f->blocks[b].bb.range.start; i--)
-            dce_process_instr(&f->instrs[i], i, &live, &liv->varMap, eliminate);
+            dce_process_instr(&f->instrs[i], i, &live, liv->varMap, eliminate);
     }
 }
 

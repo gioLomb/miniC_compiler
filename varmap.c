@@ -1,4 +1,24 @@
 #include "varmap.h"
+#include <stdlib.h>
+#include <string.h>
+
+/** Direct-mapped cache size; must be a power of 2. */
+#define VARMAP_CACHE_SIZE 256
+
+struct VarMap {
+    Hash_Table *table;
+    int         nextId;
+
+    /* --- internal, key-based id cache (never stale, see file doc) ---
+     * Slot = hash(key) & (VARMAP_CACHE_SIZE-1). Single-way, direct-mapped:
+     * a lookup either hits (occupied slot, matching key) or falls through
+     * to the hash table and unconditionally overwrites the slot — no
+     * eviction policy needed. Not to be read/written by any code outside
+     * varmap.c. */
+    uint64_t cacheKeys[VARMAP_CACHE_SIZE];
+    int      cacheIds[VARMAP_CACHE_SIZE];
+    char     cacheOccupied[VARMAP_CACHE_SIZE];
+};
 
 /**
  * @brief 64-bit finalizer hash (splitmix64 / Murmur3 constants).
@@ -96,18 +116,28 @@ int varmap_operand_id(VarMap *m, Operand op) {
 }
 
 /**
- * @brief Initialise a VarMap with an empty hash table.
+ * @brief Create a VarMap with an empty hash table.
  *
  * Initial capacity 32 is deliberately small: most functions have far fewer
  * than 32 distinct variables/temporaries, so this avoids over-allocating
  * while the hash table's built-in resize handles larger functions.
  */
-VarMap varmap_init() {
-    return (VarMap){
+VarMap *varmap_create(void) {
+    VarMap *m = malloc(sizeof(VarMap));
+    if (!m) return NULL;
+    *m = (VarMap){
         .table  = ht_create(32, varmap_hash),
         .nextId = 0,
     };
+    return m;
 }
+
+int varmap_count(const VarMap *m) {
+    return m->nextId;
+}
+
 void varmap_destroy(VarMap *m) {
+    if (!m) return;
     ht_destroy(m->table, NULL);
+    free(m);
 }

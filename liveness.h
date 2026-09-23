@@ -169,23 +169,22 @@ LiveSet *liveness_computePerInstr(int nBlocks, const BasicBlock *blocks,
  * - liveAfter  : per-instruction live sets (only populated by the machine
  *                front-end; NULL for the IR front-end which does not need it).
  * - varMap     : operand → compact-id mapping used to build the bit-sets.
- *                Owns heap-allocated hash table memory; must be explicitly
- *                destroyed with varmap_destroy() before the arena is freed.
+ *                When created privately (sharedVarMap == NULL), owns the
+ *                VarMap and must be destroyed with varmap_destroy() before
+ *                the arena is freed.
  */
 typedef struct {
     LivenessBlockSets blockSets;  /**< Per-block liveness sets.              */
     LiveSet          *liveAfter;  /**< Per-instruction live sets, or NULL.   */
-    VarMap            varMap;     /**< Operand-to-id mapping (heap memory).  */
+    VarMap           *varMap;     /**< Operand-to-id mapping (heap memory).  */
 } LivenessResult;
 
 /**
  * @param f             IR function to analyse.
  * @param reachable     Per-block reachability flags (NULL = all reachable).
- * @param sharedVarMap  Optional pre-existing VarMap to reuse (its id cache
- *        is synced in place via varmap_sync_cache — rebuilt only if @p f
- *        changed structurally since the last sync). Pass NULL to keep the
- *        original behaviour: a fresh private VarMap is created and owned
- *        by the returned LivenessResult (caller must varmap_destroy it).
+ * @param sharedVarMap  Optional pre-existing VarMap to reuse. Pass NULL to
+ *        keep the original behaviour: a fresh private VarMap is created and
+ *        owned by the returned LivenessResult (caller must varmap_destroy it).
  * @param arena         Arena for all output allocations except varMap.
  * @return              LivenessResult; varMap must be destroyed by the
  *                       caller only when @p sharedVarMap was NULL.
@@ -207,8 +206,8 @@ LivenessResult liveness_computeIr(IRFunction *f, const char *reachable,
  * @param blocks   CFG array produced by regalloc_build_cfg() in regalloc.c.
  * @param nBlocks  Number of entries in @p blocks.
  * @param arena    Arena for all output allocations except varMap.
- * @return         LivenessResult with liveAfter populated; varMap must be
- *                 destroyed by the caller.
+ * @return         LivenessResult with liveAfter populated; varMap is NULL
+ *                 (machine front-end does not use VarMap).
  */
 LivenessResult liveness_computeMach(const MachFunction *f,
                                       const BasicBlock *blocks,

@@ -103,7 +103,7 @@ int lat_is_conflict(LatVal v);
  */
 typedef struct {
     LatVal *vals;  /**< Array of lattice values, one per tracked operand id. */
-    int     size;  /**< Number of entries (equals VarMap::nextId at init time). */
+    int     size;  /**< Number of entries (equals varmap_count() at init time). */
 } ConstMap;
 
 /**
@@ -112,7 +112,7 @@ typedef struct {
  * Allocates @c vals from @p arena (lifetime is managed by the caller).
  *
  * @param m     ConstMap to initialise.
- * @param size  Number of entries (should equal VarMap::nextId).
+ * @param size  Number of entries (should equal varmap_count()).
  * @param arena Arena from which @c vals is allocated.
  */
 void const_map_init(ConstMap *m, int size, Arena *arena);

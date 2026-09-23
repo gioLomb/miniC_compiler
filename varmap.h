@@ -16,23 +16,7 @@
 #include <stdint.h>
 #include "hash_table.h"
 
-/** Direct-mapped cache size; must be a power of 2. */
-#define VARMAP_CACHE_SIZE 256
-
-typedef struct {
-    Hash_Table *table;
-    int         nextId;
-
-    /* --- internal, key-based id cache (never stale, see file doc) ---
-     * Slot = hash(key) & (VARMAP_CACHE_SIZE-1). Single-way, direct-mapped:
-     * a lookup either hits (occupied slot, matching key) or falls through
-     * to the hash table and unconditionally overwrites the slot — no
-     * eviction policy needed. Not to be read/written by any code outside
-     * varmap.c. */
-    uint64_t cacheKeys[VARMAP_CACHE_SIZE];
-    int      cacheIds[VARMAP_CACHE_SIZE];
-    char     cacheOccupied[VARMAP_CACHE_SIZE];
-} VarMap;
+typedef struct VarMap VarMap;
 
 /**
  * @brief Hash function for packed uint64_t keys, compatible with @c hash_func.
@@ -72,8 +56,8 @@ uint64_t varmap_makeKey(int kind, int level, int offset);
  * @brief Get or create the integer id for a (kind, a, b) triple.
  *
  * Performs a hash-table lookup.  If the entry already exists the stored id
- * is returned unchanged.  If not, a fresh id equal to @c m->nextId is
- * inserted and @c m->nextId is incremented.
+ * is returned unchanged.  If not, a fresh id equal to the current count is
+ * inserted and the count is incremented.
  *
  * The get-or-create semantics guarantee that the same triple always maps to
  * the same id within the lifetime of @p m, making the id a stable bitset
@@ -83,7 +67,7 @@ uint64_t varmap_makeKey(int kind, int level, int offset);
  * @param kind  Operand category (0 = VAR, 1 = TEMP).
  * @param a     Primary field (varLevel or tempId).
  * @param b     Secondary field (varOffset or 0).
- * @return      Non-negative id in [0, m->nextId).
+ * @return      Non-negative id in [0, varmap_count(m)).
  */
 int varmap_mapToIndex(VarMap *m, int kind, int level, int offset);
 
@@ -106,24 +90,32 @@ int varmap_mapToIndex(VarMap *m, int kind, int level, int offset);
 int varmap_operand_id(VarMap *m, Operand op);
 
 /**
- * @brief Initialise an empty VarMap.
+ * @brief Create an empty VarMap.
  *
  * Creates the backing hash table with an initial capacity of 32 buckets
  * — appropriate for the typical number of distinct variables/temporaries
- * per function — and resets @c nextId to 0.
+ * per function — and resets the id counter to 0.
  *
- * @pre  @p m points to an uninitialized VarMap struct.
- * @post @p m is ready to use; must be paired with a call to varmap_destroy().
- *
- * @param m  VarMap instance to initialise (must not be NULL).
+ * @return Pointer to the newly created VarMap; must be paired with a call
+ *         to varmap_destroy().
  */
-VarMap varmap_init();
+VarMap *varmap_create(void);
 
 /**
- * @brief Destroy a VarMap and free its backing hash table.
+ * @brief Return the number of distinct ids currently assigned.
  *
- * After this call @p m is in an uninitialised state and must not be used
- * without a subsequent varmap_init().
+ * Equivalent to the old nextId field; the returned value is the exclusive
+ * upper bound of all ids handed out so far (ids live in [0, count)).
+ *
+ * @param m  VarMap instance (must not be NULL).
+ * @return   Number of mapped variables/temporaries.
+ */
+int varmap_count(const VarMap *m);
+
+/**
+ * @brief Destroy a VarMap and free its backing hash table and the map itself.
+ *
+ * After this call @p m must not be used.
  *
  * @param m  VarMap instance to destroy (must not be NULL).
  */

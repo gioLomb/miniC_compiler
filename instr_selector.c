@@ -327,7 +327,7 @@ static void isel_select_prescan(const IRFunction *irf, VarMap *operandToVreg,
 
     // any fresh vreg allocated later (mfunc_new_vreg) must start counting
     // AFTER every id already handed out by VarMap above
-    f->nextVreg = operandToVreg->nextId;
+    f->nextVreg = varmap_count(operandToVreg);
 }
 
 /**
@@ -735,13 +735,14 @@ static MachFunction *isel_select_function(const IRFunction *irf,
     MachFunction *f = mfunc_create(irf->name);
     g_curLoopDepth = 0; /* per-function reset */
 
-    VarMap operandToVreg = varmap_init();
-    isel_select_prescan(irf, &operandToVreg, f);
+    VarMap *operandToVreg = varmap_create();
+    isel_select_prescan(irf, operandToVreg, f);
 
-    FloatVregMap fvm = fvmap_create(operandToVreg.nextId > 0 ? operandToVreg.nextId : 1);
+    int nIds = varmap_count(operandToVreg);
+    FloatVregMap fvm = fvmap_create(nIds > 0 ? nIds : 1);
 
     mfunc_emit(f, MACH_FUNC_BEGIN, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE }, (MachOperand){ .kind = MO_NONE });
-    isel_select_bind_params(irf, &operandToVreg, &fvm, f);
+    isel_select_bind_params(irf, operandToVreg, &fvm, f);
 
     PendingArgs args = { .count = 0 };
     PendingCmp  pcmp = { .active = 0 };
@@ -755,36 +756,36 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         if (pcmp.active) {
             int must_materialize = 1;
             if (in->op == IR_IF_FALSE)
-                must_materialize = (varmap_operand_id(&operandToVreg, in->src1) != pcmp.dstVreg);
+                must_materialize = (varmap_operand_id(operandToVreg, in->src1) != pcmp.dstVreg);
             if (must_materialize)
-                isel_flush_pending_cmp(&pcmp, &operandToVreg, &fvm, f);
+                isel_flush_pending_cmp(&pcmp, operandToVreg, &fvm, f);
         }
 
         switch (in->op) {
         case IR_LABEL:       isel_select_label(f, in); break;
         case IR_GOTO:        isel_select_goto(f, in); break;
-        case IR_IF_FALSE:    isel_select_if_false(&operandToVreg, &fvm, f, &pcmp, in); break;
-        case IR_ASSIGN:      isel_select_assign(&operandToVreg, &fvm, f, in); break;
-        case IR_GLOBAL_ADDR: isel_select_global_addr(&operandToVreg, f, in, globals, globalCount); break;
-        case IR_ADD: case IR_SUB: isel_select_add_sub(&operandToVreg, &fvm, f, in); break;
-        case IR_MUL:          isel_select_mul(&operandToVreg, &fvm, f, in); break;
-        case IR_DIV: case IR_MOD: isel_select_div_mod(&operandToVreg, &fvm, f, in); break;
-        case IR_NEG:          isel_select_neg(&operandToVreg, &fvm, f, in); break;
-        case IR_NOT:           isel_select_not(&operandToVreg, &fvm, f, in); break;
+        case IR_IF_FALSE:    isel_select_if_false(operandToVreg, &fvm, f, &pcmp, in); break;
+        case IR_ASSIGN:      isel_select_assign(operandToVreg, &fvm, f, in); break;
+        case IR_GLOBAL_ADDR: isel_select_global_addr(operandToVreg, f, in, globals, globalCount); break;
+        case IR_ADD: case IR_SUB: isel_select_add_sub(operandToVreg, &fvm, f, in); break;
+        case IR_MUL:          isel_select_mul(operandToVreg, &fvm, f, in); break;
+        case IR_DIV: case IR_MOD: isel_select_div_mod(operandToVreg, &fvm, f, in); break;
+        case IR_NEG:          isel_select_neg(operandToVreg, &fvm, f, in); break;
+        case IR_NOT:           isel_select_not(operandToVreg, &fvm, f, in); break;
         case IR_LT: case IR_LE: case IR_GT: case IR_GE:
-        case IR_EQ: case IR_NE: isel_select_defer_comparison(&operandToVreg, &pcmp, in); break;
-        case IR_LOAD_ARR:     isel_select_load_arr(&operandToVreg, &fvm, f, in); break;
-        case IR_STORE_ARR:    isel_select_store_arr(&operandToVreg, &fvm, f, in); break;
+        case IR_EQ: case IR_NE: isel_select_defer_comparison(operandToVreg, &pcmp, in); break;
+        case IR_LOAD_ARR:     isel_select_load_arr(operandToVreg, &fvm, f, in); break;
+        case IR_STORE_ARR:    isel_select_store_arr(operandToVreg, &fvm, f, in); break;
         case IR_PARAM:        isel_select_param(in, &args); break;
-        case IR_CALL:         isel_select_call(&operandToVreg, &fvm, f, in, &args, prog); break;
-        case IR_RETURN:       isel_select_return(&operandToVreg, &fvm, f, in); break;
+        case IR_CALL:         isel_select_call(operandToVreg, &fvm, f, in, &args, prog); break;
+        case IR_RETURN:       isel_select_return(operandToVreg, &fvm, f, in); break;
         }
     }
 
 
-    isel_flush_pending_cmp(&pcmp, &operandToVreg, &fvm, f);
+    isel_flush_pending_cmp(&pcmp, operandToVreg, &fvm, f);
     fvmap_free(&fvm);
-    varmap_destroy(&operandToVreg);
+    varmap_destroy(operandToVreg);
     return f;
 }
 

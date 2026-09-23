@@ -500,7 +500,7 @@ static int try_fold_generic_instr(IRInstr *in, ConstMap *live, int src1Id, int s
 static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
                              char *eliminate, VarMap *vm, Arena *arena) {
     ConstMap live;
-    const_map_init(&live, vm->nextId, arena);
+    const_map_init(&live, varmap_count(vm), arena);
     const_map_copy(&live, &inMap[b]);
 
     int modified = 0;
@@ -549,7 +549,7 @@ int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     // Registers any new operand and refreshes the per-instruction id cache
     // only if f changed structurally since the caller's last sync.
     cp_register_operands(vm, f);
-    int numVars = vm->nextId;
+    int numVars = varmap_count(vm);
     PredList preds = ir_build_pred_list(f, arenaScratch);
 
     ConstMap *in  = arena_alloc(arenaScratch, (size_t)nBlocks * sizeof(ConstMap));

@@ -607,14 +607,14 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     svn_optimize(f);
 
     // Single VarMap shared by every cp_optimize/dce_optimize call
-    VarMap sharedVarMap = varmap_init();
+    VarMap *sharedVarMap = varmap_create();
 
-    dce_optimize(f, &sharedVarMap, arena);
+    dce_optimize(f, sharedVarMap, arena);
 
     int changed;
     do {
-        changed  = cp_optimize(f, &sharedVarMap, arena);
-        changed |= dce_optimize(f, &sharedVarMap, arena);
+        changed  = cp_optimize(f, sharedVarMap, arena);
+        changed |= dce_optimize(f, sharedVarMap, arena);
     } while (changed);
 
     changed  = licm_optimize(f,arena);
@@ -622,12 +622,12 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     if (changed) {
         do {
-            changed  = cp_optimize(f, &sharedVarMap, arena);
-            changed |= dce_optimize(f, &sharedVarMap, arena);
+            changed  = cp_optimize(f, sharedVarMap, arena);
+            changed |= dce_optimize(f, sharedVarMap, arena);
         } while (changed);
     }
 
-    varmap_destroy(&sharedVarMap);
+    varmap_destroy(sharedVarMap);
 
     return f;
 }
