@@ -222,24 +222,6 @@ static ASTNode *fold_unary_literal(Arena *arena, const char *op, ASTNode *child)
 // 
 
 /**
- * @brief Checks if a subtree contains floating-point literals.
- *
- * @details Floating-point reordering is disabled to preserve strict IEEE 754 precision semantics.
- *
- * @param n Pointer to the AST node to check.
- * @return 1 if floating-point literals exist in the subtree; 0 otherwise.
- */
-static int contains_float_literal(ASTNode *n) {
-    if (!n) return 0;
-    if (n->kind == ND_NUM_FLOAT) return 1;
-
-    for (int i = 0; i < n->nchildren; i++) {
-        if (contains_float_literal(n->children[i])) return 1;
-    }
-    return 0;
-}
-
-/**
  * @brief Recursively flattens a chain of identical associative binary operations into a flat leaf array.
  *
  * @param node   Pointer to the current AST node in the associative chain.
@@ -313,7 +295,8 @@ static ASTNode *build_balanced_tree(Arena *arena, ASTNode **leaves, int count, c
 static ASTNode *balance_assoc_chain(Arena *arena, ASTNode *expr) {
     if (expr->text[0] != '+' && expr->text[0] != '*') return expr;
     if (expr->text[1] != '\0') return expr;
-    if (contains_float_literal(expr)) return expr; // Preserve IEEE 754 precision
+    // float '+'/'*' is not associative (IEEE 754); dataType is stamped by semantic analysis
+    if (expr->dataType == T_FLOAT) return expr;
 
     char opChar = expr->text[0];
     unsigned short opKey = OP_KEY(opChar, 0);
@@ -392,29 +375,53 @@ static ASTNode *rewrite_unary_expr(Arena *arena, ASTNode *expr) {
     return expr;
 }
 
+/** True if @p n is a '+' or '*' binary node (the ops handled by the balancer). */
+static inline int is_assoc_binop(const ASTNode *n) {
+    return n && n->kind == ND_BINOP && n->text[1] == '\0' &&
+           (n->text[0] == '+' || n->text[0] == '*');
+}
+
+static ASTNode *rewrite_binop_impl(Arena *arena, ASTNode *expr, int deferBalance);
+
+// Rewrites one operand; a same-op child is a link of the parent's chain,
+// so it skips balancing (the chain root will rebalance the whole chain once).
+static ASTNode *rewrite_binop_operand(Arena *arena, ASTNode *child, const ASTNode *parent) {
+    if (is_assoc_binop(parent) && child && child->kind == ND_BINOP &&
+        child->text[0] == parent->text[0] && child->text[1] == '\0')
+        return rewrite_binop_impl(arena, child, 1);
+    return rewrite_expr(arena, child);
+}
+
+static ASTNode *rewrite_binop_impl(Arena *arena, ASTNode *expr, int deferBalance) {
+    expr->children[0] = rewrite_binop_operand(arena, expr->children[0], expr);
+    expr->children[1] = rewrite_binop_operand(arena, expr->children[1], expr);
+    ASTNode *sx = expr->children[0];
+    ASTNode *dx = expr->children[1];
+
+    // Fold binary operations on constant literal pair
+    ASTNode *result = NULL;
+    if (is_numeric_literal(sx) && is_numeric_literal(dx))
+        result = fold_binop_literals(arena, expr->text, sx, dx);
+
+    // Algebraic identities
+    if (!result) {
+        unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
+        result = simplify_algebraic_identity(arena, key, sx, dx);
+    }
+    if (!result) result = expr;
+
+    // Chain links never balance: the root of the chain does it exactly once.
+    // An identity may return an inner link (e.g. (a+b+c)+0), hence the check on result.
+    if (deferBalance || !is_assoc_binop(result)) return result;
+    return balance_assoc_chain(arena, result);
+}
+
 /**
  * @brief Handles rewrite, constant folding, algebraic identity simplification,
  *        and tree rebalancing for binary operation nodes.
  */
 static ASTNode *rewrite_binop_expr(Arena *arena, ASTNode *expr) {
-    expr->children[0] = rewrite_expr(arena, expr->children[0]);
-    expr->children[1] = rewrite_expr(arena, expr->children[1]);
-    ASTNode *sx = expr->children[0];
-    ASTNode *dx = expr->children[1];
-
-    // Fold binary operations on constant literal pair
-    if (is_numeric_literal(sx) && is_numeric_literal(dx)) {
-        ASTNode *folded = fold_binop_literals(arena, expr->text, sx, dx);
-        if (folded) return folded;
-    }
-
-    // Algebraic Identities Simplifications
-    unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
-    ASTNode *simplified = simplify_algebraic_identity(arena, key, sx, dx);
-    if (simplified) return simplified;
-
-    // Balance associative operator tree chains
-    return balance_assoc_chain(arena, expr);
+    return rewrite_binop_impl(arena, expr, 0);
 }
 
 /**
