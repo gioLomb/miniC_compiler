@@ -158,7 +158,21 @@ static inline int sched_is_jcc(MachOpCode op) {
  * @return    1 for MACH_CMP and MACH_TEST; 0 otherwise.
  */
 static inline int sched_is_cmp_or_test(MachOpCode op) {
-    return op == MACH_CMP || op == MACH_TEST;
+    return op == MACH_CMP || op == MACH_TEST || op == MACH_UCOMISS;
+}
+
+/** @brief True for SETcc opcodes (read EFLAGS written by CMP/TEST/UCOMISS). */
+static inline int sched_is_setcc(MachOpCode op) {
+    switch (op) {
+    case MACH_SETE: case MACH_SETNE:
+    case MACH_SETL: case MACH_SETLE:
+    case MACH_SETG: case MACH_SETGE:
+    case MACH_SETB: case MACH_SETBE:
+    case MACH_SETA: case MACH_SETAE:
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 /**
@@ -268,10 +282,22 @@ static inline void sched_uses(const MachInstr *in, int nextVreg, int fNextVreg,
         SCHED_TRY(sched_reg    (&in->dst, nextVreg, fNextVreg));
         SCHED_TRY(sched_reg_idx(&in->dst));
         break;
+    case MACH_CMP:
+    case MACH_TEST:
+    case MACH_UCOMISS:
+        /* dst holds the LHS register compared against src1 */
+        SCHED_TRY(sched_reg(&in->dst, nextVreg, fNextVreg));
+        break;
     case MACH_PUSH:
     case MACH_IDIV:
     case MACH_CQO:
         SCHED_TRY(sched_reg(&in->dst, nextVreg, fNextVreg));
+        break;
+    case MACH_MOVSS:
+        if (in->dst.kind == MO_MEM) {
+            SCHED_TRY(sched_reg    (&in->dst, nextVreg, fNextVreg));
+            SCHED_TRY(sched_reg_idx(&in->dst));
+        }
         break;
     default:
         if (instr_is_rmw(in->op)) {

@@ -174,11 +174,21 @@ static inline IROp isel_flip_cmp(IROp op) {
 }
 
 // maps an IR comparison opcode to the x86 SETcc variant that materialises
-// its boolean result into %al
+// its boolean result into %al (signed integer comparisons)
 static inline MachOpCode isel_comparison_to_setcc(IROp cmpOp) {
     switch (cmpOp) {
     case IR_LT: return MACH_SETL;  case IR_LE: return MACH_SETLE;
     case IR_GT: return MACH_SETG;  case IR_GE: return MACH_SETGE;
+    case IR_EQ: return MACH_SETE;  case IR_NE: return MACH_SETNE;
+    default:    return MACH_SETE;
+    }
+}
+
+/* UCOMISS sets CF/ZF (not SF/OF); use unsigned SETcc for float compares. */
+static inline MachOpCode isel_comparison_to_setcc_unsigned(IROp cmpOp) {
+    switch (cmpOp) {
+    case IR_LT: return MACH_SETB;  case IR_LE: return MACH_SETBE;
+    case IR_GT: return MACH_SETA;  case IR_GE: return MACH_SETAE;
     case IR_EQ: return MACH_SETE;  case IR_NE: return MACH_SETNE;
     default:    return MACH_SETE;
     }
@@ -265,11 +275,13 @@ static void isel_flush_pending_cmp(PendingCmp *pcmp, VarMap *operandToVreg, Floa
 
     const IRInstr *ci = pcmp->instr;
 
-    if (ci->src1.isFloat) {
+    if (ci->src1.isFloat || ci->src2.isFloat ||
+        ci->src1.kind == OPND_CONST_FLOAT || ci->src2.kind == OPND_CONST_FLOAT) {
         MachOperand a = isel_float_operand(&ci->src1, operandToVreg, fvm, f);
         MachOperand b = isel_float_operand(&ci->src2, operandToVreg, fvm, f);
         mfunc_emit(f, MACH_UCOMISS, a, b, (MachOperand){.kind=MO_NONE});
-        mfunc_emit(f, isel_comparison_to_setcc(ci->op), (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL},
+        mfunc_emit(f, isel_comparison_to_setcc_unsigned(ci->op),
+                   (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL},
                    (MachOperand){.kind=MO_NONE}, (MachOperand){.kind=MO_NONE});
         mfunc_emit(f, MACH_MOVSX, (MachOperand){.kind=MO_VREG,.vregId=pcmp->dstVreg},
                    (MachOperand){.kind=MO_PHYS,.physReg=PHYS_AL}, (MachOperand){.kind=MO_NONE});
@@ -370,12 +382,37 @@ static void isel_select_goto(MachFunction *f, const IRInstr *in) {
  *        CMP + Jcc when possible (see PendingCmp doc), otherwise TEST+JE
  *        on an ordinary 0/1-valued vreg.
  */
+/**
+ * @brief True if @p tempId (comparison result) is used by any IR instruction
+ *        after index @p afterIdx other than the current IF_FALSE at @p ifIdx.
+ *        When true, CMP+Jcc fusion must not skip materialising the 0/1 value.
+ */
+static int isel_cmp_result_used_later(const IRFunction *irf, int tempId, int afterIdx, int ifIdx) {
+    if (tempId < 0 || !irf) return 1; /* conservative */
+    for (int i = afterIdx + 1; i < irf->count; i++) {
+        if (i == ifIdx) continue;
+        const IRInstr *ins = &irf->instrs[i];
+        if (ins->src1.kind == OPND_TEMP && ins->src1.data.tempId == tempId) return 1;
+        if (ins->src2.kind == OPND_TEMP && ins->src2.data.tempId == tempId) return 1;
+        if (ins->dst.kind  == OPND_TEMP && ins->dst.data.tempId  == tempId) return 1;
+    }
+    return 0;
+}
+
 static void isel_select_if_false(VarMap *operandToVreg, FloatVregMap *fvm, MachFunction *f, PendingCmp *pcmp,
-                             const IRInstr *in) {
+                             const IRInstr *in, const IRFunction *irf, int ifIdx) {
     int cond_vreg = varmap_operand_id(operandToVreg, in->src1);
     int lbl       = in->dst.data.labelId;
 
-    if (pcmp->active && cond_vreg == pcmp->dstVreg) {
+    /* Only fuse when the boolean is not needed after the branch. */
+    int canFuse = pcmp->active && cond_vreg == pcmp->dstVreg;
+    if (canFuse && pcmp->instr && pcmp->instr->dst.kind == OPND_TEMP) {
+        int cmpIdx = (int)(pcmp->instr - irf->instrs);
+        if (isel_cmp_result_used_later(irf, pcmp->instr->dst.data.tempId, cmpIdx, ifIdx))
+            canFuse = 0;
+    }
+
+    if (canFuse) {
         /* CMP + Jcc fusion: skip SETcc/MOVSX entirely. */
         const IRInstr *comparisonInstr = pcmp->instr;
 
@@ -752,11 +789,18 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         g_curLoopDepth = in->loopDepth;
 
         // flush a deferred comparison if the current instruction can't
-        // fuse with it
+        // fuse with it (wrong cond, or comparison result still needed later)
         if (pcmp.active) {
             int must_materialize = 1;
-            if (in->op == IR_IF_FALSE)
-                must_materialize = (varmap_operand_id(operandToVreg, in->src1) != pcmp.dstVreg);
+            if (in->op == IR_IF_FALSE &&
+                varmap_operand_id(operandToVreg, in->src1) == pcmp.dstVreg) {
+                must_materialize = 0;
+                if (pcmp.instr && pcmp.instr->dst.kind == OPND_TEMP) {
+                    int cmpIdx = (int)(pcmp.instr - irf->instrs);
+                    if (isel_cmp_result_used_later(irf, pcmp.instr->dst.data.tempId, cmpIdx, i))
+                        must_materialize = 1;
+                }
+            }
             if (must_materialize)
                 isel_flush_pending_cmp(&pcmp, operandToVreg, &fvm, f);
         }
@@ -764,7 +808,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         switch (in->op) {
         case IR_LABEL:       isel_select_label(f, in); break;
         case IR_GOTO:        isel_select_goto(f, in); break;
-        case IR_IF_FALSE:    isel_select_if_false(operandToVreg, &fvm, f, &pcmp, in); break;
+        case IR_IF_FALSE:    isel_select_if_false(operandToVreg, &fvm, f, &pcmp, in, irf, i); break;
         case IR_ASSIGN:      isel_select_assign(operandToVreg, &fvm, f, in); break;
         case IR_ITOF: {
             int srcVreg = isel_load_operand(&in->src1, operandToVreg, f);

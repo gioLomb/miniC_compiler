@@ -197,7 +197,8 @@ static void track_call_abi_global(RenameTracker *rt, DAGNode *nodes, Arena *aren
  */
 static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk, int j,
                                             RenameTracker *rt, DAGNode *nodes, Arena *arena,
-                                            int *lastSideEffect, int *lastMemoryOp) {
+                                            int *lastSideEffect, int *lastMemoryOp,
+                                            int *lastFlagsWriter) {
     const MachInstr *in = &f->instrs[blk.start + j];
     int regs[SCHED_MAX_REG_IDS], nregs;
 
@@ -218,6 +219,11 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
     if (in->op == MACH_CALL)
         track_call_abi_global(rt, nodes, arena, j, f->nextVreg, f->fNextVreg);
 
+    /* EFLAGS: SETcc / Jcc read flags produced by the last CMP/TEST/UCOMISS.
+     * Without this edge the list scheduler can emit SETcc before CMP. */
+    if ((sched_is_setcc(in->op) || sched_is_jcc(in->op)) && *lastFlagsWriter >= 0)
+        dag_add_edge(nodes, *lastFlagsWriter, j, arena);
+
     if (sched_has_side_effect(in->op)) {
         if (*lastSideEffect >= 0) dag_add_edge(nodes, *lastSideEffect, j, arena);
         *lastSideEffect = j;
@@ -236,16 +242,21 @@ static void dag_process_instr_dependencies(const MachFunction *f, BlockRange blk
      * CALL clobbers caller-saved. */
     instr_implicit_defs(in, f->nextVreg + f->fNextVreg, RC_INT, regs, &nregs);
     track_reg_list_writes(rt, nodes, arena, j, regs, nregs);
+
+    if (sched_is_cmp_or_test(in->op))
+        *lastFlagsWriter = j;
 }
 
 static void dag_build_dependencies(const MachFunction *f, BlockRange blk, RenameTracker *rt,
                                     DAGNode *nodes, Arena *arena, int n) {
     int lastSideEffect = -1;
     int lastMemoryOp   = -1;
+    int lastFlagsWriter = -1;
 
     for (int j = 0; j < n; j++) {
         dag_process_instr_dependencies(f, blk, j, rt, nodes, arena,
-                                        &lastSideEffect, &lastMemoryOp);
+                                        &lastSideEffect, &lastMemoryOp,
+                                        &lastFlagsWriter);
     }
 }
 
