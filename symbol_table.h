@@ -93,16 +93,9 @@ static inline DataType symtab_unpack_param_type(uint32_t paramTypes, int index) 
 }
 
 /**
- * @brief Structure representing a lexical scope node in the scope tree.
+ * @brief Opaque lexical scope node in the scope tree.
  */
-typedef struct Scope {
-    Hash_Table *table;       /**< Local hash table mapping names to Symbol entries */
-    struct Scope *parent;    /**< Pointer to enclosing outer scope (NULL for global root) */
-    struct Scope **children; /**< Dynamic array of pointers to nested sub-scopes */
-    int childCount;          /**< Number of active child scopes */
-    int childCap;            /**< Allocated capacity for child scope pointer array */
-    int level;               /**< Lexical nesting depth level (0 = global) */
-} Scope;
+typedef struct Scope Scope;
 
 /**
  * @brief Creates a new scope attached to a parent scope.
@@ -119,6 +112,18 @@ Scope *sym_scopeCreate(Scope *parent);
  * @return Pointer to parent Scope, or NULL if at root scope.
  */
 Scope *sym_scopeExit(Scope *scope);
+
+/**
+ * @brief Returns the lexical nesting depth of @p scope (0 = global).
+ */
+int sym_scope_level(const Scope *scope);
+
+/**
+ * @brief Returns the number of symbols currently bound in @p scope's table.
+ *
+ * Used as the next sequential offset when binding a new symbol in this scope.
+ */
+int sym_scope_count(const Scope *scope);
 
 /**
  * @brief Declares a new symbol inside the current scope ONLY.

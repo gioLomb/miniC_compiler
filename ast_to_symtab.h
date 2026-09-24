@@ -69,7 +69,7 @@ void st_elaborate_decl(Arena *arena, const char *text,
  * Calls st_elaborate_decl() to split the node's text, builds a Symbol
  * descriptor, and delegates to sym_bind().  On success the AST node is
  * annotated with the resolved coordinates:
- *   - node->scopeLevel = scope->level
+ *   - node->scopeLevel = sym_scope_level(scope)
  *   - node->offset     = the slot index assigned within @p scope
  *
  * These coordinates are consumed later by ir_generate() to identify each
@@ -91,7 +91,7 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node);
  *   - ND_FUNC_DECL nodes → SYM_FUNC symbols with packed parameter types.
  *   - ND_VAR_DECL nodes  → SYM_VAR symbols (scalars and arrays).
  *
- * Each symbol receives a unique sequential offset (ht_size(global->table)
+ * Each symbol receives a unique sequential offset (sym_scope_count(global)
  * before the sym_bind call) so that OPND_VAR operands emitted by
  * ir_generate() can identify globals by (varLevel=0, varOffset=offset).
  * The offset counter advances for both vars and funcs to stay in sync with

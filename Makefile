@@ -2,8 +2,8 @@
 # Makefile - miniC compiler project
 # ============================================================
 CC      := gcc
-CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3
-LDFLAGS :=
+CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3 -flto
+LDFLAGS := -flto
 
 ifeq ($(SANITIZE),1)
 CFLAGS  += -fsanitize=address,undefined

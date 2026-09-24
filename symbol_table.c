@@ -2,6 +2,15 @@
 #include <stdlib.h>
 #include "symbol_table.h"
 
+struct Scope {
+    Hash_Table *table;       /**< Local hash table mapping names to Symbol entries */
+    struct Scope *parent;    /**< Pointer to enclosing outer scope (NULL for global root) */
+    struct Scope **children; /**< Dynamic array of pointers to nested sub-scopes */
+    int childCount;          /**< Number of active child scopes */
+    int childCap;            /**< Allocated capacity for child scope pointer array */
+    int level;               /**< Lexical nesting depth level (0 = global) */
+};
+
 /**
  * @brief Deterministic FNV-1a hash algorithm for identifier lookup keys.
  */
@@ -59,6 +68,14 @@ Scope *sym_scopeCreate(Scope *parent) {
 Scope *sym_scopeExit(Scope *scope) {
     // Return parent pointer without deallocating scope node
     return scope ? scope->parent : NULL;
+}
+
+int sym_scope_level(const Scope *scope) {
+    return scope ? scope->level : 0;
+}
+
+int sym_scope_count(const Scope *scope) {
+    return scope ? ht_size(scope->table) : 0;
 }
 
 int sym_bind(Scope *scope, const char *name, const Symbol *sym) {

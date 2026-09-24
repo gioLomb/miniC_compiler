@@ -67,8 +67,8 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
         .dataType   = st_resolve_type(type_name),
         .isArray    = isArray,
         .arraySize  = arraySize,
-        .scopeLevel = scope->level,
-        .offset     = (int)ht_size(scope->table),  // sequential within this scope
+        .scopeLevel = sym_scope_level(scope),
+        .offset     = sym_scope_count(scope),  // sequential within this scope
     };
 
     if (!sym_bind(scope, name, &sym)) {
@@ -117,8 +117,8 @@ static inline void st_init_var_symbol(Symbol *sym, int isArray, int arraySize) {
 }
 
 static inline int st_bind_global_symbol(Scope *global, const char *name, Symbol *sym) {
-    sym->scopeLevel = global->level;             // always 0 for global scope
-    sym->offset     = (int)ht_size(global->table);  // next available slot
+    sym->scopeLevel = sym_scope_level(global);   // always 0 for global scope
+    sym->offset     = sym_scope_count(global);   // next available slot
 
     if (!sym_bind(global, name, sym)) {
         ec_report("Errore: '%s' e' gia' stato dichiarato in questo scope\n", name);
