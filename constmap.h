@@ -189,12 +189,13 @@ LatVal lat_get_value_by_id(const ConstMap *map, Operand op, int cachedId);
 Operand const_map_try_fold_by_id(Operand op, const ConstMap *m, int cachedId);
 
 /**
- * @brief Constant-fold a unary operation (NEG or NOT) on a LatVal.
+ * @brief Constant-fold a unary operation (NEG, NOT, or ITOF) on a LatVal.
  *
  * Returns CONFLICT if @p v is not CONST.  For NOT applied to a float,
  * the result is an integer (0 or 1), following C's semantics for logical not.
+ * IR_ITOF converts a constant int to a constant float.
  *
- * @param op  Unary IR opcode (IR_NEG or IR_NOT).
+ * @param op  Unary IR opcode (IR_NEG, IR_NOT, or IR_ITOF).
  * @param v   Lattice value of the single source operand.
  * @return    A CONST LatVal with the folded result, or CONFLICT on failure.
  */

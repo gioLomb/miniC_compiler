@@ -29,7 +29,8 @@ static int nextLabel;
 // hot-loop values without re-deriving loop structure
 static int currentLoopDepth;
 
-
+static void ir_emit_instr(IRFunction *f, IROp op, Operand dst, Operand src1, Operand src2);
+static int  ir_func_returns_float(const ASTNode *decl);
 
 static inline Operand ir_mk_var(const ASTNode *node) {
     // Array BASE addresses (from ND_ARRAY_ACCESS) are always integer even when
@@ -44,6 +45,28 @@ static inline Operand ir_mk_var(const ASTNode *node) {
                       .data.varLevel = node->scopeLevel,
                       .data.varOffset = node->offset,
                       .data.sourceName = node->text };
+}
+
+/* Set while building a function body; used by ND_RETURN to know if int→float
+ * widening is required on the returned value. */
+static int g_func_returns_float;
+
+/**
+ * @brief Ensure @p v is a float-typed operand, emitting IR_ITOF if needed.
+ *
+ * Integer constants are converted at IR-generation time (no instruction).
+ * Already-float operands are returned unchanged.
+ */
+static Operand ir_ensure_float(Operand v, IRFunction *out) {
+    if (v.isFloat || v.kind == OPND_CONST_FLOAT)
+        return v;
+    if (v.kind == OPND_CONST_INT) {
+        return (Operand){ .kind = OPND_CONST_FLOAT, .isFloat = 1,
+                          .data.floatVal = (float)v.data.intVal };
+    }
+    Operand t = { .kind = OPND_TEMP, .isFloat = 1, .data.tempId = nextTemp++ };
+    ir_emit_instr(out, IR_ITOF, t, v, (Operand){ .kind = OPND_NONE });
+    return t;
 }
 
 
@@ -64,7 +87,8 @@ int ir_is_pure(IROp op) {
         (1U << IR_DIV)  | (1U << IR_MOD) | (1U << IR_NEG) |
         (1U << IR_NOT)  | (1U << IR_LT)  | (1U << IR_LE)  |
         (1U << IR_GT)   | (1U << IR_GE)  | (1U << IR_EQ)  |
-        (1U << IR_NE)   | (1U << IR_ASSIGN) | (1U << IR_GLOBAL_ADDR);
+        (1U << IR_NE)   | (1U << IR_ASSIGN) | (1U << IR_GLOBAL_ADDR) |
+        (1U << IR_ITOF);
     return (op < 32) && ((mask >> op) & 1U);
 }
 
@@ -358,6 +382,9 @@ static Operand ir_emit_assign(ASTNode *expr, IRFunction *out) {
     Operand idx  = ir_emit_expr(lvalue->children[0], out);
     Operand base = ir_mk_var(lvalue);
     Operand rhs  = ir_emit_expr(expr->children[1], out);
+    // widen int → float when the array element type is float
+    if (lvalue->dataType == T_FLOAT)
+        rhs = ir_ensure_float(rhs, out);
     ir_emit_instr(out, IR_STORE_ARR, base, idx, rhs);
     return rhs; // assignment expression evaluates to the assigned value
 }
@@ -400,6 +427,8 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
         Operand v = ir_emit_expr(expr->children[0], out);
         int isF = (expr->dataType == T_FLOAT) || v.isFloat || v.kind == OPND_CONST_FLOAT;
         if (op_key(expr->text) == KEY_NOT) isF = 0; // ! always yields int
+        if (isF)
+            v = ir_ensure_float(v, out);
         Operand t = (Operand){ .kind = OPND_TEMP, .isFloat = isF,
                                .data.tempId = nextTemp++ };
         ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, t, v, (Operand){.kind = OPND_NONE});
@@ -419,6 +448,10 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
                   || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT;
         // Relational/logical ops always yield int even on float operands.
         if (strchr("=!&|<>", expr->text[0]) != NULL) isF = 0;
+        if (isF) {
+            lhs = ir_ensure_float(lhs, out);
+            rhs = ir_ensure_float(rhs, out);
+        }
         Operand t   = (Operand){ .kind = OPND_TEMP, .isFloat = isF,
                                  .data.tempId = nextTemp++ };
         ir_emit_instr(out, ir_binop_to_irop(expr->text), t, lhs, rhs);
@@ -441,15 +474,23 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
  */
 static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
     switch (expr->kind) {
-    case ND_NUM_INT:
-        ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) }, (Operand){.kind = OPND_NONE});
+    case ND_NUM_INT: {
+        Operand src = (Operand){ .kind = OPND_CONST_INT, .data.intVal = atoi(expr->text) };
+        if (dest.isFloat)
+            src = ir_ensure_float(src, out);
+        ir_emit_instr(out, IR_ASSIGN, dest, src, (Operand){.kind = OPND_NONE});
         return dest;
+    }
     case ND_NUM_FLOAT:
         ir_emit_instr(out, IR_ASSIGN, dest, (Operand){ .kind = OPND_CONST_FLOAT, .isFloat = 1, .data.floatVal = (float)atof(expr->text) }, (Operand){.kind = OPND_NONE});
         return dest;
-    case ND_ID:
-        ir_emit_instr(out, IR_ASSIGN, dest, ir_mk_var(expr), (Operand){.kind = OPND_NONE});
+    case ND_ID: {
+        Operand src = ir_mk_var(expr);
+        if (dest.isFloat)
+            src = ir_ensure_float(src, out);
+        ir_emit_instr(out, IR_ASSIGN, dest, src, (Operand){.kind = OPND_NONE});
         return dest;
+    }
 
     case ND_ARRAY_ACCESS: {
         Operand idx  = ir_emit_expr(expr->children[0], out);
@@ -460,6 +501,8 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
 
     case ND_UNARY: {
         Operand v = ir_emit_expr(expr->children[0], out);
+        if (dest.isFloat && op_key(expr->text) != KEY_NOT)
+            v = ir_ensure_float(v, out);
         ir_emit_instr(out, op_key(expr->text) == KEY_NOT ? IR_NOT : IR_NEG, dest, v, (Operand){.kind = OPND_NONE});
         return dest;
     }
@@ -475,6 +518,10 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
                 || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT)
                 && strchr("=!&|<>", expr->text[0]) == NULL)
             dest.isFloat = 1;
+        if (dest.isFloat) {
+            lhs = ir_ensure_float(lhs, out);
+            rhs = ir_ensure_float(rhs, out);
+        }
         ir_emit_instr(out, ir_binop_to_irop(expr->text), dest, lhs, rhs);
         return dest;
     }
@@ -496,6 +543,8 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
         // "x = (y = z)": inner assignment computes its own target, then the
         // resulting value is additionally copied into dest for this context
         Operand inner = ir_emit_assign(expr, out);
+        if (dest.isFloat)
+            inner = ir_ensure_float(inner, out);
         ir_emit_instr(out, IR_ASSIGN, dest, inner, (Operand){.kind = OPND_NONE});
         return dest;
     }
@@ -567,6 +616,8 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
 
     case ND_RETURN: {
         Operand v = ir_emit_expr(stmt->children[0], out);
+        if (g_func_returns_float)
+            v = ir_ensure_float(v, out);
         ir_emit_instr(out, IR_RETURN, (Operand){.kind = OPND_NONE}, v, (Operand){.kind = OPND_NONE});
         break;
     }
@@ -606,7 +657,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     f->labelBase     = nextLabel; // labels for this function start where the last one left off
     f->curBlockStart = 0;
     currentLoopDepth = 0;
-
+    g_func_returns_float = ir_func_returns_float(decl);
 
     int paramCount = decl->nchildren - 1;
     f->paramCount  = paramCount;
@@ -855,6 +906,10 @@ static void ir_print_instr(const IRInstr *in) {
         printf("    "); ir_print_operand(&in->dst);
         printf(" = !"); ir_print_operand(&in->src1);
         break;
+    case IR_ITOF:
+        printf("    "); ir_print_operand(&in->dst);
+        printf(" = (float)"); ir_print_operand(&in->src1);
+        break;
     case IR_ASSIGN:
         printf("    "); ir_print_operand(&in->dst);
         printf(" = ");  ir_print_operand(&in->src1);
@@ -962,7 +1017,8 @@ int ir_defines_dst(IROp op) {
         (1u << IR_NOT)         | (1u << IR_LT)   | (1u << IR_LE)   |
         (1u << IR_GT)          | (1u << IR_GE)   | (1u << IR_EQ)   |
         (1u << IR_NE)          | (1u << IR_ASSIGN)                  |
-        (1u << IR_GLOBAL_ADDR) | (1u << IR_LOAD_ARR) | (1u << IR_CALL);
+        (1u << IR_GLOBAL_ADDR) | (1u << IR_LOAD_ARR) | (1u << IR_CALL) |
+        (1u << IR_ITOF);
 
     return (op < 32) && ((DEFINES_DST_MASK >> op) & 1u);
 }

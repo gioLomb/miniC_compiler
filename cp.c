@@ -118,7 +118,7 @@ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
                              : lat_set_const_float(r);
             }
         }
-    } else if (in->op == IR_NEG || in->op == IR_NOT) {
+    } else if (in->op == IR_NEG || in->op == IR_NOT || in->op == IR_ITOF) {
         result = lat_fold_unary(in->op, lat_get_value_by_id(map, in->src1, src1Id));
     }
 

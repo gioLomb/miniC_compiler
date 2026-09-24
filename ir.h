@@ -55,6 +55,8 @@ typedef enum {
     IR_PARAM, IR_CALL, IR_RETURN,
     /* control flow */
     IR_GOTO, IR_IF_FALSE, IR_LABEL,
+    /* type conversion */
+    IR_ITOF,        /**< dst = (float)src1  — int→float widening (C semantics) */
 } IROp;
 
 /**

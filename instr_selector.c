@@ -766,6 +766,14 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         case IR_GOTO:        isel_select_goto(f, in); break;
         case IR_IF_FALSE:    isel_select_if_false(operandToVreg, &fvm, f, &pcmp, in); break;
         case IR_ASSIGN:      isel_select_assign(operandToVreg, &fvm, f, in); break;
+        case IR_ITOF: {
+            int srcVreg = isel_load_operand(&in->src1, operandToVreg, f);
+            MachOperand dst = fvmap_operand(&fvm, f, varmap_operand_id(operandToVreg, in->dst));
+            mfunc_emit(f, MACH_CVTSI2SS, dst,
+                       (MachOperand){ .kind = MO_VREG, .vregId = srcVreg },
+                       (MachOperand){ .kind = MO_NONE });
+            break;
+        }
         case IR_GLOBAL_ADDR: isel_select_global_addr(operandToVreg, f, in, globals, globalCount); break;
         case IR_ADD: case IR_SUB: isel_select_add_sub(operandToVreg, &fvm, f, in); break;
         case IR_MUL:          isel_select_mul(operandToVreg, &fvm, f, in); break;

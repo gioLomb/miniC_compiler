@@ -392,7 +392,7 @@ static void svn_process_instr(IRInstr *instruction, SVNScope *scope, int *vnCoun
         break;
 
     // Unary ops.
-    case IR_NEG: case IR_NOT:
+    case IR_NEG: case IR_NOT: case IR_ITOF:
         svn_process_unary(instruction, scope, vnCounter);
         break;
 

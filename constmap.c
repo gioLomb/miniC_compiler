@@ -188,8 +188,9 @@ LatVal lat_fold_unary(IROp op, LatVal v) {
     if (v.state != LAT_CONST) return lat_conflict(); // can only fold a known constant
     if (!v.isFloat) {
         int i = v.val.ival;
-        if (op == IR_NEG) return lat_set_const_int(-i);
-        if (op == IR_NOT) return lat_set_const_int(!i);  // logical not: 0→1, non-zero→0
+        if (op == IR_NEG)  return lat_set_const_int(-i);
+        if (op == IR_NOT)  return lat_set_const_int(!i);  // logical not: 0→1, non-zero→0
+        if (op == IR_ITOF) return lat_set_const_float((float)i);
     } else {
         float f = v.val.fval;
         if (op == IR_NEG) return lat_set_const_float(-f);
