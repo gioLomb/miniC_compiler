@@ -10,6 +10,7 @@
 #include "interference.h"
 #include "regalloc_utils.h"
 #include "arena.h"
+#include "parser/errorCollector.h"
 
 
 #include <limits.h>   // INT_MAX/INT_MIN per il calcolo del range label
@@ -438,8 +439,10 @@ static int regalloc_class(MachFunction *f, RegClass cls,
 static void regalloc_function(MachFunction *f) {
     int frameOff = 0;
 
-    regalloc_class(f, RC_INT,   &f->nextVreg,  &frameOff);
-    regalloc_class(f, RC_FLOAT, &f->fNextVreg, &frameOff);
+    if (!regalloc_class(f, RC_INT,   &f->nextVreg,  &frameOff))
+        ec_report("regalloc: impossibile colorare i registri interi in '%s'\n", f->name);
+    if (!regalloc_class(f, RC_FLOAT, &f->fNextVreg, &frameOff))
+        ec_report("regalloc: impossibile colorare i registri float in '%s'\n", f->name);
 
     regalloc_save_restore_callee(f); /* no XMM is callee-saved */
 

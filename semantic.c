@@ -528,10 +528,32 @@ static void check_function_body(ASTNode *decl, Scope *global,
     Scope *fnScope = sym_scopeCreate(global);
 
     // All children except the last are parameters (ND_PARAM nodes).
+    // SysV x86-64: at most 6 integer and 8 float args in registers; the
+    // backend has no stack-argument path, so reject earlier here.
     int paramCount = decl->nchildren - 1;
+    int nIntParams = 0, nFloatParams = 0;
     for (int p = 0; p < paramCount; p++) {
+        char *ptype_name, *pname;
+        int pIsArray, pArraySize;
+        st_elaborate_decl(arena, decl->children[p]->text,
+                          &ptype_name, &pname, &pIsArray, &pArraySize);
+        if (st_resolve_type(ptype_name) == T_FLOAT)
+            nFloatParams++;
+        else
+            nIntParams++;
+
         if (!st_bind_symbol(arena, fnScope, decl->children[p]))
             (*errors)++;
+    }
+    if (nIntParams > 6) {
+        report_error(errors,
+            "Errore: '%s' ha %d parametri interi, massimo supportato 6\n",
+            funcName, nIntParams);
+    }
+    if (nFloatParams > 8) {
+        report_error(errors,
+            "Errore: '%s' ha %d parametri float, massimo supportato 8\n",
+            funcName, nFloatParams);
     }
 
     // The last child is always the body block.

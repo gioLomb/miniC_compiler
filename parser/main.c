@@ -99,12 +99,28 @@ int main(int argc, char **argv) {
     }
 
     MachProgram *mp = isel_select(ir);
+    if (ec_error_count() > 0) {
+        fprintf(stderr, "Errori in instruction selection: assembly non generato.\n");
+        mach_free(mp);
+        if (out_path) fclose(out);
+        ir_free(ir); sym_finalize(global);
+        arena_destroy(astArena);
+        return 1;
+    }
     if (debug) { fprintf(out, "# === PRE-SCHEDULING ===\n"); isel_emit_asm(mp, ir, out); fprintf(out, "\n"); }
 
     sched_schedule(mp);
     if (debug) { fprintf(out, "# === POST-SCHEDULING / PRE-REGALLOC ===\n"); isel_emit_asm(mp, ir, out); fprintf(out, "\n"); }
 
     regalloc(mp);
+    if (ec_error_count() > 0) {
+        fprintf(stderr, "Errori in register allocation: assembly non generato.\n");
+        mach_free(mp);
+        if (out_path) fclose(out);
+        ir_free(ir); sym_finalize(global);
+        arena_destroy(astArena);
+        return 1;
+    }
     if (debug) fprintf(out, "# === POST-REGALLOC ===\n");
 
     /* Pass ir so isel_emit_asm can emit .bss/.data sections. */
