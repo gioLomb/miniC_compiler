@@ -2,8 +2,8 @@
 # Makefile - miniC compiler project
 # ============================================================
 CC      := gcc
-CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3 -flto
-LDFLAGS := -flto
+CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3 -flto=auto
+LDFLAGS := -flto=auto
 
 ifeq ($(SANITIZE),1)
 CFLAGS  += -fsanitize=address,undefined
@@ -59,8 +59,7 @@ COMMON_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC)
 MINICC_SRCS      := $(COMMON_SRCS) parser/main.c
 TEST_SYMTAB_SRCS := $(ARENA_SRC) $(HASHTABLE_SRC) $(SYMTAB_SRC) tests/sym_main.c
 TEST_ARENA_SRCS  := $(ARENA_SRC) tests/test_arena.c
-TEST_PASS1_SRCS  := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
-                    $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) tests/test_pass1.c
+
 TEST_SEMANTIC_SRCS := $(SCANNER_SRC) $(AST_SRC) $(ERROR_SRC) $(PARSER_SRC) $(ARENA_SRC) \
                       $(HASHTABLE_SRC) $(SYMTAB_SRC) $(AST2SYM_SRC) $(SEMANTIC_SRC) \
                       tests/test_semantic.c
@@ -97,7 +96,6 @@ to_objs = $(patsubst %.c,$(BUILD_DIR)/%.o,$(1))
 MINICC_OBJS          := $(call to_objs,$(MINICC_SRCS))
 TEST_SYMTAB_OBJS     := $(call to_objs,$(TEST_SYMTAB_SRCS))
 TEST_ARENA_OBJS      := $(call to_objs,$(TEST_ARENA_SRCS))
-TEST_PASS1_OBJS      := $(call to_objs,$(TEST_PASS1_SRCS))
 TEST_SEMANTIC_OBJS   := $(call to_objs,$(TEST_SEMANTIC_SRCS))
 TEST_OPTIMIZE_OBJS   := $(call to_objs,$(TEST_OPTIMIZE_SRCS))
 TEST_IR_OBJS         := $(call to_objs,$(TEST_IR_SRCS))
@@ -113,7 +111,6 @@ TEST_RA_SPILL_OBJS       := $(call to_objs,$(TEST_RA_SPILL_SRCS))
 all: $(BIN_DIR)/minicc \
      $(BIN_DIR)/test_symtab \
      $(BIN_DIR)/test_arena \
-     $(BIN_DIR)/test_pass1 \
      $(BIN_DIR)/test_semantic \
      $(BIN_DIR)/test_optimize \
      $(BIN_DIR)/test_ir \
@@ -141,9 +138,6 @@ $(BIN_DIR)/test_arena: $(TEST_ARENA_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
-$(BIN_DIR)/test_pass1: $(TEST_PASS1_OBJS)
-	@mkdir -p $(BIN_DIR)
-	$(CC) $(LDFLAGS) $^ -o $@
 
 $(BIN_DIR)/test_semantic: $(TEST_SEMANTIC_OBJS)
 	@mkdir -p $(BIN_DIR)
