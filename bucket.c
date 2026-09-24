@@ -5,8 +5,16 @@
 /* Module-level arena */
 static Arena *sArena = NULL;
 
+struct Buckets {
+    int     *head;      /**< head[degree]: first node in bucket degree, -1 if empty. */
+    int     *next;      /**< next[node]: next node in the same bucket as node.        */
+    int     *prev;      /**< prev[node]: previous node in the same bucket as node.    */
+    int     *inBucket;  /**< inBucket[node]: 1 if node is currently in any bucket.    */
+    int      nBuckets;         /**< Number of buckets (= PHYS_ALLOCATABLE).               */
+    uint32_t nonempty;  /**< Bitmask: bit degree is set iff head[degree] != -1.    */
+};
 
-Buckets buckets_create(int nextVreg, int nBuckets) {
+Buckets *buckets_create(int nextVreg, int nBuckets) {
     // Destroy any leftover arena from a previous (incorrectly unpaired) call.
     if (sArena) {
         arena_destroy(sArena);
@@ -14,25 +22,24 @@ Buckets buckets_create(int nextVreg, int nBuckets) {
     }
     sArena = arena_create(0);
 
-    Buckets b;
-    b.nBuckets     = nBuckets;
-    b.nonempty = 0;
+    Buckets *b = arena_alloc(sArena, sizeof(Buckets));
+    b->nBuckets = nBuckets;
+    b->nonempty = 0;
 
     int nodesNum = (nextVreg > 0) ? nextVreg : 1;   // guard against zero-size allocation
 
-    b.head = arena_alloc(sArena, (size_t)nBuckets * sizeof(int));
-    memset(b.head, -1, (size_t)nBuckets * sizeof(int));   // -1 = empty sentinel for each bucket
+    b->head = arena_alloc(sArena, (size_t)nBuckets * sizeof(int));
+    memset(b->head, -1, (size_t)nBuckets * sizeof(int));   // -1 = empty sentinel for each bucket
 
-    b.next     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
-    b.prev     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
-    b.inBucket = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
-    memset(b.inBucket, 0, (size_t)nodesNum * sizeof(int));
+    b->next     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    b->prev     = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    b->inBucket = arena_alloc(sArena, (size_t)nodesNum * sizeof(int));
+    memset(b->inBucket, 0, (size_t)nodesNum * sizeof(int));
 
     return b;
 }
 
 void buckets_free() {
-    //(void)b;   // arrays are owned by sArena; the parameter exists for API symmetry
     if (sArena) {
         arena_destroy(sArena);
         sArena = NULL;
@@ -73,4 +80,8 @@ int bucket_pop_any_low(Buckets *b, int *outDegree) {
     // non-empty bucket without scanning all nBucketsentries.
     *outDegree = __builtin_ctz(b->nonempty);
     return b->head[*outDegree];
+}
+
+int bucket_contains(const Buckets *b, int node) {
+    return b->inBucket[node];
 }

@@ -1,5 +1,4 @@
 
-
 #ifndef BUCKET_H
 #define BUCKET_H
 
@@ -16,19 +15,9 @@
 #include <stdint.h>
 
 /**
- * @brief Degree-indexed bucket list for register-allocator Simplify.
- *
- * All pointer-like arrays are indexed by virtual register id (0..nextVreg-1).
- * The head[] array is indexed by degree (0..k-1).
+ * @brief Opaque degree-indexed bucket list for register-allocator Simplify.
  */
-typedef struct {
-    int     *head;      /**< head[degree]: first node in bucket degree, -1 if empty. */
-    int     *next;      /**< next[node]: next node in the same bucket as node.        */
-    int     *prev;      /**< prev[node]: previous node in the same bucket as node.    */
-    int     *inBucket;  /**< inBucket[node]: 1 if node is currently in any bucket.    */
-    int      nBuckets;         /**< Number of buckets (= PHYS_ALLOCATABLE).               */
-    uint32_t nonempty;  /**< Bitmask: bit degree is set iff head[degree] != -1.    */
-} Buckets;
+typedef struct Buckets Buckets;
 
 /**
  * @brief Allocate and initialise a Buckets structure.
@@ -39,14 +28,15 @@ typedef struct {
  *
  * @param nextVreg Number of virtual registers (maximum node id + 1).
  * @param nBuckets       Number of buckets (should equal PHYS_ALLOCATABLE).
- * @return         Initialised Buckets value; all buckets are empty.
+ * @return         Pointer to initialised Buckets; all buckets are empty.
+ *                 NULL on allocation failure.
  */
-Buckets buckets_create(int nextVreg, int nBuckets);
+Buckets *buckets_create(int nextVreg, int nBuckets);
 
 /**
  * @brief Destroy the Buckets structure and release the internal arena.
  */
-void buckets_free();
+void buckets_free(void);
 
 /**
  * @brief Insert node @p node into bucket @p degree.
@@ -56,7 +46,7 @@ void buckets_free();
  *
  * @param b      Buckets structure to update.
  * @param node   Node (virtual register id) to insert.
- * @param degree Target bucket index (0 <= degree < b->k).
+ * @param degree Target bucket index (0 <= degree < nBuckets).
  */
 void bucket_insert(Buckets *b, int node, int degree);
 
@@ -85,5 +75,10 @@ void bucket_remove(Buckets *b, int node, int degree);
  * @return         The extracted node id, or -1 if all buckets are empty.
  */
 int bucket_pop_any_low(Buckets *b, int *outDegree);
+
+/**
+ * @brief Return non-zero if @p node is currently in any bucket.
+ */
+int bucket_contains(const Buckets *b, int node);
 
 #endif /* BUCKET_H */

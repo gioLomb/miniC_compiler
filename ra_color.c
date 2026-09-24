@@ -15,7 +15,7 @@ static int ra_select_spill_candidate(const IGraph *g, int nextVreg, const Bucket
     int bestReal = -1, bestReload = -1;
 
     for (int v = 0; v < nextVreg; v++) {
-        if (!g->active[v] || buckets->inBucket[v]) continue;
+        if (!g->active[v] || bucket_contains(buckets, v)) continue;
 
         double ratio = (g->degree[v] > 0)
                        ? (double)g->spillCost[v] / g->degree[v]
@@ -68,34 +68,34 @@ int ra_simplify(IGraph *g, int classVregCount, int k, int **outStack)
     *outStack = malloc((size_t)stackCap * sizeof(int));
 
     int stackLen   = 0;
-    Buckets buckets = buckets_create(classVregCount, k);
+    Buckets *buckets = buckets_create(classVregCount, k);
     int remaining  = classVregCount;
 
     for (int v = 0; v < classVregCount; v++) {
         if (g->degree[v] < k) {
-            bucket_insert(&buckets, v, g->degree[v]);
+            bucket_insert(buckets, v, g->degree[v]);
         }
     }
 
     while (remaining > 0) {
         int degree;
-        int chosen = bucket_pop_any_low(&buckets, &degree);
+        int chosen = bucket_pop_any_low(buckets, &degree);
         int fromBucket = (chosen >= 0);
 
         if (!fromBucket) {
-            chosen = ra_select_spill_candidate(g, classVregCount, &buckets);
+            chosen = ra_select_spill_candidate(g, classVregCount, buckets);
             if (chosen < 0) break;
 
             degree = (g->degree[chosen] < k) ? g->degree[chosen] : (k - 1);
         } else {
-            bucket_remove(&buckets, chosen, degree);
+            bucket_remove(buckets, chosen, degree);
         }
 
         g->active[chosen] = 0;
         remaining--;
         (*outStack)[stackLen++] = chosen;
 
-        ra_update_neighbor_degrees(g, chosen, classVregCount, k, &buckets);
+        ra_update_neighbor_degrees(g, chosen, classVregCount, k, buckets);
     }
 
     buckets_free();
