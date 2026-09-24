@@ -166,7 +166,8 @@ static void cp_run_forward_dataflow(IRFunction *f, ConstMap *in, ConstMap *out,
                 if (i == 0) const_map_copy(&in[b], &out[p]); // first predecessor: copy
                 else        const_map_meet(&in[b], &out[p]); // subsequent: meet (join)
             }
-            // block with no predecessors keeps in[b] = all UNKNOWN (initial value)
+            // block with no predecessors: in[b] was seeded at entry (CONFLICT);
+            // do not overwrite it here
 
             // compute new out[b] = transfer(in[b]) into tmp
             const_map_copy(tmp, &in[b]);
@@ -559,6 +560,21 @@ int cp_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch) {
     for (int b = 0; b < nBlocks; b++) {
         const_map_init(&in[b],  numVars, arenaScratch);
         const_map_init(&out[b], numVars, arenaScratch);
+    }
+
+    /* Entry blocks (no CFG predecessors) are initialised to all UNKNOWN.
+     * That is wrong for values that already exist at function entry:
+     *   - formals (defined by the caller)
+     *   - any storage that may be read before a local def
+     * UNKNOWN ⊓ CONST = CONST, so a constant written on one path would
+     * incorrectly replace the runtime parameter on another path
+     * (e.g. if (n==0) n=5; return n;  with call f(3) returning 5).
+     * Seed every entry in[] slot as CONFLICT (⊥).  Locals defined later
+     * are overwritten by transfer; formals stay CONFLICT until assigned. */
+    for (int b = 0; b < nBlocks; b++) {
+        if (preds.predCount[b] != 0) continue;
+        for (int id = 0; id < numVars; id++)
+            in[b].vals[id] = lat_conflict();
     }
 
     cp_run_forward_dataflow(f, in, out, &tmp, vm, &preds);
