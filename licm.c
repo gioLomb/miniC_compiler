@@ -286,9 +286,34 @@ static int *build_instr_to_block(IRFunction *f, Arena *arena) {
 }
 
 
+/**
+ * @brief True if every in-loop source of instruction @p j is either
+ *        loop-invariant outside, or itself selected for hoisting (@p doMove).
+ *
+ * Prevents hoisting t1=x+1 when x=5 was marked invariant but not hoisted
+ * (e.g. because x is LiveIn at the header): otherwise the preheader would
+ * read a stale x.
+ */
+static int licm_sources_ok_to_hoist(IRFunction *f, int j, const int *defCount,
+                                   const int *defInstrIdx, VarMap *vm,
+                                   const char *doMove) {
+    const IRInstr *in = &f->instrs[j];
+    Operand srcs[2] = { in->src1, in->src2 };
+    for (int s = 0; s < 2; s++) {
+        if (!ir_operand_is_storage(srcs[s].kind)) continue;
+        int id = varmap_operand_id(vm, srcs[s]);
+        if (id < 0 || defCount[id] == 0) continue; /* outside loop or none */
+        if (defCount[id] != 1) return 0;
+        int defJ = defInstrIdx[id];
+        if (defJ < 0 || !doMove[defJ]) return 0;
+    }
+    return 1;
+}
+
 static int licm_mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
-                           VarMap *vm, LivenessResult *liv, int header,
+                           const int *defInstrIdx, VarMap *vm,
+                           LivenessResult *liv, int header,
                            const char *inBody, const int *instrToBlock, char *doMove) {
     int moved = 0;
 
@@ -310,6 +335,21 @@ static int licm_mark_hoistable(IRFunction *f, Loop *L, LiveSet *Dom,
 
         doMove[j] = 1;
         moved++;
+    }
+
+    /* Drop hoists whose in-loop sources are not themselves hoisted.  Iterate
+     * to a fixed point so chains collapse correctly. */
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int j = 0; j < f->count; j++) {
+            if (!doMove[j]) continue;
+            if (licm_sources_ok_to_hoist(f, j, defCount, defInstrIdx, vm, doMove))
+                continue;
+            doMove[j] = 0;
+            moved--;
+            changed = 1;
+        }
     }
 
     return moved;
@@ -439,7 +479,8 @@ static void licm_remap_block_ranges(IRFunction *f, const int *oldToNew, const ch
  */
 static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
-                           VarMap *vm, LivenessResult *liv) {
+                           const int *defInstrIdx, VarMap *vm,
+                           LivenessResult *liv) {
     int nInstrs = f->count, nBlocks = f->blockCount;
     int header  = L->header, phIdx = L->preHeader;
 
@@ -455,8 +496,8 @@ static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
     // precomputed once per loop instead of per-instruction linear scan
     int *instrToBlock = build_instr_to_block(f, localArena);
 
-    int moved = licm_mark_hoistable(f, L, Dom, invariant, defCount, vm, liv,
-                                header, inBody, instrToBlock, doMove);
+    int moved = licm_mark_hoistable(f, L, Dom, invariant, defCount, defInstrIdx,
+                                vm, liv, header, inBody, instrToBlock, doMove);
     if (!moved) { arena_destroy(localArena); return 0; }
 
     // hoisted instructions are placed in the pre-header just before it
@@ -517,7 +558,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
         find_invariants(f, L, vm, numVars, defCount, defInstrIdx, invariant, arenaScratch);
 
         // phase 3: move safe invariants to the pre-header
-        int moved = licm_move_invariants(f, L, Dom, invariant, defCount, vm, &liv);
+        int moved = licm_move_invariants(f, L, Dom, invariant, defCount, defInstrIdx, vm, &liv);
         totalMoved += moved;
 
         if (moved) {
