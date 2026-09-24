@@ -25,6 +25,7 @@
 #include <string.h>
 #include "../../tokens.h"
 #include "../../arena.h"
+#include "../../parser/errorCollector.h"
 
 
 static const unsigned char *cur;
@@ -147,8 +148,8 @@ yy2:
 yy3:
 #line 128 "scanner.re"
 	{
-                          fprintf(stderr, "ERRORE LESSICALE (linea %d): carattere non valido '%c'\n",
-                                  lineNumber, tok[0]);
+                          ec_report("ERRORE LESSICALE (linea %d): carattere non valido '%c'\n",
+                                    lineNumber, tok[0]);
                           continue;
                       }
 #line 169 "scanner_generated.c"

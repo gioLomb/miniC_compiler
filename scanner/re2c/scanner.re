@@ -23,6 +23,7 @@
 #include <string.h>
 #include "../../tokens.h"
 #include "../../arena.h"
+#include "../../parser/errorCollector.h"
 
 
 /* --- "yytext" equivalente: cur punta al carattere corrente, tok
@@ -126,8 +127,8 @@ static int yylex(void) {
             end       { return 0; }              /* fine input */
 
             *         {
-                          fprintf(stderr, "ERRORE LESSICALE (linea %d): carattere non valido '%c'\n",
-                                  lineNumber, tok[0]);
+                          ec_report("ERRORE LESSICALE (linea %d): carattere non valido '%c'\n",
+                                    lineNumber, tok[0]);
                           continue;
                       }
         */
