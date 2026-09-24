@@ -779,6 +779,11 @@ static IRGlobalVar *ir_globals_append_slot(IRProgram *prog) {
  *        array of longs (int value, or float re-interpreted as raw bits,
  *        so a single 'long' array can hold both int and float initializers).
  *
+ * When the global is float and the initializer is an int literal (widening
+ * allowed by the language), the int is converted to float and the IEEE bit
+ * pattern is stored — not the integer value.  Non-literal initializers are
+ * rejected by the semantic pass; here they still default to 0 defensively.
+ *
  * @param decl  ND_VAR_DECL node whose children (if any) are the initializers.
  * @param gv    Global var to populate (initVals/initCount left untouched
  *              if decl has no children).
@@ -791,15 +796,23 @@ static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
     gv->initCount = cnt;
     for (int j = 0; j < cnt; j++) {
         ASTNode *ch = decl->children[j];
-        if (ch->kind == ND_NUM_INT) {
+        if (gv->dataType == T_FLOAT) {
+            /* Always store IEEE-754 bit pattern for float globals. */
+            float fv = 0.0f;
+            if (ch->kind == ND_NUM_FLOAT)
+                fv = (float)atof(ch->text);
+            else if (ch->kind == ND_NUM_INT)
+                fv = (float)atol(ch->text); /* int → float widening */
+            long lv = 0;
+            memcpy(&lv, &fv, sizeof fv);
+            gv->initVals[j] = lv;
+        } else if (ch->kind == ND_NUM_INT) {
             gv->initVals[j] = atol(ch->text);
         } else if (ch->kind == ND_NUM_FLOAT) {
-            float fv = (float)atof(ch->text);
-            long lv = 0; /* zero-init: only the float bit pattern is stored */
-            memcpy(&lv, &fv, sizeof fv); /* bit reinterpret, not numeric conversion */
-            gv->initVals[j] = lv;
+            /* float literal into int global: truncate (semantic should reject) */
+            gv->initVals[j] = (long)(float)atof(ch->text);
         } else {
-            gv->initVals[j] = 0; // non-literal initializer: not supported, default 0
+            gv->initVals[j] = 0; // non-literal: semantic error; defensive default
         }
     }
 }

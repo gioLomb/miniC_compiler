@@ -562,6 +562,48 @@ static void check_function_body(ASTNode *decl, Scope *global,
 }
 
 
+/**
+ * @brief Type-check a top-level (global) variable declaration's initializer.
+ *
+ * Globals may only be initialized with integer or float literals.  Any other
+ * expression (call, identifier, binop, …) is rejected.  Type compatibility
+ * follows the same widening rule as locals (int → float allowed).
+ */
+static void check_global_var_init(ASTNode *decl, Arena *arena, int *errors) {
+    if (!decl || decl->kind != ND_VAR_DECL || decl->nchildren == 0)
+        return;
+
+    char *type_nameBuf, *varName;
+    int isArray, arraySize;
+    st_elaborate_decl(arena, decl->text, &type_nameBuf, &varName,
+                      &isArray, &arraySize);
+    DataType declType = st_resolve_type(type_nameBuf);
+    decl->dataType = declType;
+
+    if (isArray && decl->nchildren > arraySize) {
+        report_error(errors,
+            "Errore: troppi inizializzatori per '%s' (%d forniti, dimensione %d)\n",
+            varName, decl->nchildren, arraySize);
+    }
+
+    for (int i = 0; i < decl->nchildren; i++) {
+        ASTNode *ch = decl->children[i];
+        if (ch->kind != ND_NUM_INT && ch->kind != ND_NUM_FLOAT) {
+            report_error(errors,
+                "Errore: inizializzatore globale di '%s' deve essere una costante letterale\n",
+                varName);
+            continue;
+        }
+        DataType t = (ch->kind == ND_NUM_FLOAT) ? T_FLOAT : T_INT;
+        ch->dataType = t;
+        if (!is_type_compatible(declType, t)) {
+            report_error(errors,
+                "Errore: non si puo' inizializzare '%s' (%s) con un valore %s\n",
+                varName, type_name(declType), type_name(t));
+        }
+    }
+}
+
 int semantic_check(ASTNode *program, Scope *global) {
     int errors = 0;
 
@@ -574,11 +616,12 @@ int semantic_check(ASTNode *program, Scope *global) {
 
     for (int i = 0; i < nchildren; i++) {
         ASTNode *decl = children[i];
-        
-        // Global variable declarations were fully handled by Pass 1
-        // (st_resolve_global_namespace); only function bodies need walking here.
+
         if (decl->kind == ND_FUNC_DECL) {
             check_function_body(decl, global, arena, &errors);
+        } else if (decl->kind == ND_VAR_DECL) {
+            // Pass 1 already bound the symbol; check initializer here.
+            check_global_var_init(decl, arena, &errors);
         }
     }
 
