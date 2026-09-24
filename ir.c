@@ -446,9 +446,17 @@ static Operand ir_emit_expr(ASTNode *expr, IRFunction *out) {
         // the AST optimiser may rebuild binop nodes without copying dataType.
         int isF = (expr->dataType == T_FLOAT) || lhs.isFloat || rhs.isFloat
                   || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT;
-        // Relational/logical ops always yield int even on float operands.
-        if (strchr("=!&|<>", expr->text[0]) != NULL) isF = 0;
-        if (isF) {
+        int isRel = (strchr("=!&|<>", expr->text[0]) != NULL);
+        /* Relational/logical ops always yield int, but still widen mixed
+         * int/float operands so both sides are float before the compare. */
+        if (isRel) {
+            if (lhs.isFloat || rhs.isFloat ||
+                lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT) {
+                lhs = ir_ensure_float(lhs, out);
+                rhs = ir_ensure_float(rhs, out);
+            }
+            isF = 0;
+        } else if (isF) {
             lhs = ir_ensure_float(lhs, out);
             rhs = ir_ensure_float(rhs, out);
         }
@@ -495,7 +503,15 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
     case ND_ARRAY_ACCESS: {
         Operand idx  = ir_emit_expr(expr->children[0], out);
         Operand base = ir_mk_var(expr);
-        ir_emit_instr(out, IR_LOAD_ARR, dest, base, idx);
+        if (dest.isFloat && expr->dataType != T_FLOAT) {
+            /* Load as int then widen (array element is int, dest is float). */
+            Operand tmp = (Operand){ .kind = OPND_TEMP, .isFloat = 0, .data.tempId = nextTemp++ };
+            ir_emit_instr(out, IR_LOAD_ARR, tmp, base, idx);
+            Operand widened = ir_ensure_float(tmp, out);
+            ir_emit_instr(out, IR_ASSIGN, dest, widened, (Operand){.kind = OPND_NONE});
+        } else {
+            ir_emit_instr(out, IR_LOAD_ARR, dest, base, idx);
+        }
         return dest;
     }
 
@@ -513,12 +529,13 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
             return ir_emit_short_circuit_into(expr, out, dest);
         Operand lhs = ir_emit_expr(expr->children[0], out);
         Operand rhs = ir_emit_expr(expr->children[1], out);
+        int isRel = (strchr("=!&|<>", expr->text[0]) != NULL);
         // Ensure dest inherits float-ness when the optimiser dropped dataType
-        if (!dest.isFloat && (lhs.isFloat || rhs.isFloat
-                || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT)
-                && strchr("=!&|<>", expr->text[0]) == NULL)
+        if (!dest.isFloat && !isRel && (lhs.isFloat || rhs.isFloat
+                || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT))
             dest.isFloat = 1;
-        if (dest.isFloat) {
+        if (dest.isFloat || (isRel && (lhs.isFloat || rhs.isFloat
+                || lhs.kind == OPND_CONST_FLOAT || rhs.kind == OPND_CONST_FLOAT))) {
             lhs = ir_ensure_float(lhs, out);
             rhs = ir_ensure_float(rhs, out);
         }
@@ -535,7 +552,14 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
             ir_emit_instr(out, IR_PARAM, (Operand){.kind = OPND_NONE}, args[i], (Operand){.kind = OPND_NONE});
         free(args);
         // unlike ir_emit_call, the CALL result is written straight into dest
-        ir_emit_instr(out, IR_CALL, dest, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
+        if (dest.isFloat && expr->dataType != T_FLOAT) {
+            Operand tmp = (Operand){ .kind = OPND_TEMP, .isFloat = 0, .data.tempId = nextTemp++ };
+            ir_emit_instr(out, IR_CALL, tmp, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
+            Operand widened = ir_ensure_float(tmp, out);
+            ir_emit_instr(out, IR_ASSIGN, dest, widened, (Operand){.kind = OPND_NONE});
+        } else {
+            ir_emit_instr(out, IR_CALL, dest, (Operand){ .kind = OPND_FUNC, .data.funcName = expr->text }, (Operand){ .kind = OPND_CONST_INT, .data.intVal = expr->nchildren });
+        }
         return dest;
     }
 
