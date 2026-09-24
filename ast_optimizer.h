@@ -9,6 +9,8 @@
  * Runs after semantic analysis and before IR generation.
  */
 
+#include <limits.h>
+#include <float.h>
 #include "parser/ast.h"
 #include "arena.h"
 

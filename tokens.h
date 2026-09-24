@@ -47,4 +47,47 @@ enum {
     TOK_KW_FOR
 };
 
+/**
+ * @brief Human-readable name for a token code (for parser error messages).
+ */
+static inline const char *tok_name(int tok) {
+    switch (tok) {
+    case TOK_EOF:          return "fine input";
+    case TOK_ID:           return "identificatore";
+    case TOK_NUM_INT:      return "numero intero";
+    case TOK_NUM_FLOAT:    return "numero float";
+    case TOK_KW_INT:       return "'int'";
+    case TOK_KW_FLOAT:     return "'float'";
+    case TOK_KW_IF:        return "'if'";
+    case TOK_KW_ELSE:      return "'else'";
+    case TOK_KW_WHILE:     return "'while'";
+    case TOK_KW_RETURN:    return "'return'";
+    case TOK_KW_FOR:       return "'for'";
+    case TOK_OP_ASSIGN:    return "'='";
+    case TOK_OP_PLUS:      return "'+'";
+    case TOK_OP_MINUS:     return "'-'";
+    case TOK_OP_MUL:       return "'*'";
+    case TOK_OP_DIV:       return "'/'";
+    case TOK_OP_MOD:       return "'%'";
+    case TOK_OP_LT:        return "'<'";
+    case TOK_OP_GT:        return "'>'";
+    case TOK_OP_LE:        return "'<='";
+    case TOK_OP_GE:        return "'>='";
+    case TOK_OP_EQ:        return "'=='";
+    case TOK_OP_NE:        return "'!='";
+    case TOK_OP_AND:       return "'&&'";
+    case TOK_OP_OR:        return "'||'";
+    case TOK_OP_NOT:       return "'!'";
+    case TOK_DEL_SEMICOLON:return "';'";
+    case TOK_DEL_LPAREN:   return "'('";
+    case TOK_DEL_RPAREN:   return "')'";
+    case TOK_DEL_LBRACK:   return "'['";
+    case TOK_DEL_RBRACK:   return "']'";
+    case TOK_DEL_LBRACE:   return "'{'";
+    case TOK_DEL_RBRACE:   return "'}'";
+    case TOK_DEL_COMMA:    return "','";
+    default:               return "token sconosciuto";
+    }
+}
+
 #endif

@@ -2,7 +2,7 @@
 # Makefile - miniC compiler project
 # ============================================================
 CC      := gcc
-CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3 -flto=auto
+CFLAGS  := -Wall -Wextra -std=gnu11 -g -O3 -flto=auto -MMD -MP
 LDFLAGS := -flto=auto
 
 ifeq ($(SANITIZE),1)
@@ -124,6 +124,10 @@ all: $(BIN_DIR)/minicc \
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+# Auto-generated header dependency files (from -MMD -MP)
+DEPS := $(MINICC_OBJS:.o=.d)
+-include $(DEPS)
 
 # ---- Existing binaries ----
 $(BIN_DIR)/minicc: $(MINICC_OBJS)

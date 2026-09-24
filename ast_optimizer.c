@@ -5,9 +5,6 @@
 #include <float.h>
 #include "ast_optimizer.h"
 
-// Calculate maximum buffer size required to safely convert numeric values into string representation
-#define INT_BUF_SIZE   (CHAR_BIT * sizeof(long) / 3 + 3)
-#define FLOAT_BUF_SIZE (DECIMAL_DIG + 8)
 #define NUM_BUF_SIZE   (FLOAT_BUF_SIZE > INT_BUF_SIZE ? FLOAT_BUF_SIZE : INT_BUF_SIZE)
 
 static ASTNode *rewrite_expr(Arena *arena, ASTNode *expr);

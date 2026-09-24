@@ -1,3 +1,6 @@
+#ifndef DCE_H
+#define DCE_H
+
 /**
  * @file dce.h
  * @brief Dead Code Elimination (DCE) pass interface for the linear IR.
@@ -16,3 +19,5 @@
  * @return 1 if at least one instruction was eliminated, 0 if IR is unchanged.
  */
 int dce_optimize(IRFunction *f, VarMap *vm, Arena *arenaScratch);
+
+#endif /* DCE_H */

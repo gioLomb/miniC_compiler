@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
     // across phases), same role totalErrorCount() used to play locally.
     if (ec_error_count() > 0) {
         printf("\nParsing completato con %d errori.\n", ec_error_count());
-        //freeAST(root);
+        
          arena_destroy(astArena); return 1;
     }
     if (!emit_asm) printf("\nParsing completato con successo.\n");
@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
     if (pass1Errors + semErrors > 0) {
         if (emit_asm) fprintf(stderr, "Errori semantici: assembly non generato.\n");
         sym_finalize(global); 
-        //freeAST(root);
+        
          arena_destroy(astArena); return 1;
     }
 
@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
         printf("\n=== IR LINEARE (three-address code) ===\n");
         ir_print(ir);
         ir_free(ir); sym_finalize(global);
-        //freeAST(root); 
+         
         arena_destroy(astArena);
         return 0;
     }
@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
         if (!out) {
             perror(out_path);
             ir_free(ir); sym_finalize(global);
-            //freeAST(root);
+            
              arena_destroy(astArena); return 1;
         }
     }
@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
 
     ir_free(ir);
     sym_finalize(global);
-    //freeAST(root);
+    
     arena_destroy(astArena);
     return 0;
 }

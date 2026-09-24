@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../lexer.h"
 #include "ast.h"
 
 #define INITIAL_CAPACITY 4
@@ -13,6 +14,7 @@ ASTNode *newNode(Arena *arena, NodeKind kind, const char *text) {
     *node = (ASTNode){
         .kind       = kind,
         .text       = text ? arena_strdup(arena, text) : NULL,
+        .line       = lexer_current_line(),
         .scopeLevel = -1,
         .offset     = -1,
     };

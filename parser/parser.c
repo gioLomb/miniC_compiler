@@ -77,8 +77,8 @@ static void match(Parser *p, int expected) {
         // Report error with line info and current token details; suppressed
         // if a cascading error was already flagged for this statement.
         ec_report_cascading(lexer_current_line(),
-                    "atteso token %d, trovato '%s' (token %d)",
-                    expected, p->current_lexeme, p->current_token);
+                    "atteso %s, trovato '%s' (%s)",
+                    tok_name(expected), p->current_lexeme, tok_name(p->current_token));
     }
 }
 

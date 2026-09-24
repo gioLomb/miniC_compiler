@@ -1066,6 +1066,8 @@ void isel_emit_asm(const MachProgram *mp, const IRProgram *ir, FILE *out) {
         isel_emit_function_body(f, out);
         fprintf(out, "\n");
     }
+    /* Mark stack non-executable (silences linker warnings on modern toolchains). */
+    fprintf(out, "\t.section .note.GNU-stack,\"\",@progbits\n");
 }
 void mach_free(MachProgram *mp) {
     if (!mp) return;

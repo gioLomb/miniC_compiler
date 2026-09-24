@@ -60,6 +60,9 @@ typedef struct ASTNode {
     int nchildren;              /**< Current number of child nodes attached */
     int capacity;               /**< Allocated capacity for the children array */
 
+    /* Source location (set at parse time from lexer_current_line()) */
+    int line;                   /**< 1-based source line where this node was created */
+
     /* Resolution coordinates (populated during semantic analysis pass) */
     int scopeLevel;             /**< Nesting scope level where symbol resolves */
     int offset;                 /**< Memory offset inside frame or storage area */
