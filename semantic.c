@@ -434,15 +434,22 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
             break; // no initializer check if the declaration itself failed
         }
 
-        if (stmt->nchildren == 0) break; // no initializer → nothing more to do
-
         // Parse the declaration text to retrieve the declared type for
-        // initializer compatibility checking.
+        // initializer compatibility checking (and local-array rejection).
         char *type_nameBuf, *varName;
         int isArray, arraySize;
         st_elaborate_decl(arena, stmt->text, &type_nameBuf, &varName,
                                 &isArray, &arraySize);
         DataType declType = st_resolve_type(type_nameBuf);
+
+        // Local arrays are not supported (no stack allocation in the backend).
+        if (isArray && sym_scope_level(scope) > 0) {
+            report_error(errors,
+                "Errore: array locali non supportati ('%s')\n", varName);
+            break;
+        }
+
+        if (stmt->nchildren == 0) break; // no initializer → nothing more to do
 
         check_variable_init(stmt, scope, declType, varName, isArray, arraySize, errors);
         break;
@@ -485,8 +492,12 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
         check_expr_type(stmt->children[0], scope, errors);
         break;
 
+    case ND_FUNC_DECL:
+        // Nested function definitions are not part of the language.
+        report_error(errors, "Errore: definizione di funzione annidata non consentita\n");
+        break;
+
     default:
-        // ND_FUNC_DECL nested inside a body is not part of the language;
         // ND_ERROR nodes from parser recovery are silently ignored here.
         break;
     }
@@ -622,6 +633,10 @@ int semantic_check(ASTNode *program, Scope *global) {
         } else if (decl->kind == ND_VAR_DECL) {
             // Pass 1 already bound the symbol; check initializer here.
             check_global_var_init(decl, arena, &errors);
+        } else if (decl->kind != ND_ERROR) {
+            // Top-level statements (return, if, expr, …) are not allowed.
+            report_error(&errors,
+                "Errore: solo dichiarazioni di variabili e funzioni ammesse a livello globale\n");
         }
     }
 
