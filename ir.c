@@ -579,6 +579,23 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
  * Function compilation
  * ========================================================================= */
 
+/* decl->text is "returnType funcName"; true when the return type is float. */
+static int ir_func_returns_float(const ASTNode *decl) {
+    if (!decl || !decl->text) return 0;
+    return strncmp(decl->text, "float", 5) == 0 &&
+           (decl->text[5] == ' ' || decl->text[5] == '\0');
+}
+
+/* Fall-through guard: emit return 0 / 0.0 so control cannot run into the next
+ * function in .text. DCE drops it when every path already has a terminator. */
+static void ir_emit_implicit_return(IRFunction *f, const ASTNode *decl) {
+    Operand zero = ir_func_returns_float(decl)
+        ? (Operand){ .kind = OPND_CONST_FLOAT, .isFloat = 1, .data.floatVal = 0.0f }
+        : (Operand){ .kind = OPND_CONST_INT,   .data.intVal = 0 };
+    ir_emit_instr(f, IR_RETURN, (Operand){ .kind = OPND_NONE }, zero,
+                  (Operand){ .kind = OPND_NONE });
+}
+
 static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     // decl->text is "returnType funcName"; the name is everything after the last space
     const char *space = strrchr(decl->text, ' ');
@@ -599,6 +616,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     ASTNode *body = decl->children[decl->nchildren - 1];
     ir_emit_stmt(body, f);
+    ir_emit_implicit_return(f, decl);
 
     ir_resolve_cfg(f);
 
