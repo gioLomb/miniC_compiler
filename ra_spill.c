@@ -163,9 +163,14 @@ static void reload_sources(SpillCtx *ctx, MachInstr *in) {
         reload_address_operands(ctx, memHolder);
     }
 
-    /* CMP / TEST / UCOMISS also read dst. */
-    if (in->op == MACH_CMP || in->op == MACH_TEST || in->op == MACH_UCOMISS)
+    /* CMP / TEST / UCOMISS also read dst; IDIV's dst is the divisor (use). */
+    if (in->op == MACH_CMP || in->op == MACH_TEST || in->op == MACH_UCOMISS ||
+        in->op == MACH_IDIV)
         reload_operand_if_spilled(ctx, &in->dst);
+
+    /* MOVSS to memory: reload base/index of the address. */
+    if (ctx->cls == RC_INT && in->op == MACH_MOVSS && in->dst.kind == MO_MEM)
+        reload_address_operands(ctx, &in->dst);
 }
 
 /* ---- destination rewrite ------------------------------------------------ */

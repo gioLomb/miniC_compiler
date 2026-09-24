@@ -45,10 +45,14 @@ int instr_def(const MachInstr *in, int classVregCount, RegClass cls) {
     case MACH_JB:  case MACH_JBE: case MACH_JA: case MACH_JAE:
     case MACH_CALL: case MACH_RET:
     case MACH_PUSH: case MACH_STORE:
+    case MACH_IDIV:   /* dst is the divisor (use), not a definition */
     case MACH_CQO:
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
         return -1;
     default:
+        /* Memory destinations (e.g. MOVSS mem, xmm) define memory, not the base reg. */
+        if (in->dst.kind == MO_MEM)
+            return -1;
         return mach_operand_reg_c(&in->dst, classVregCount, cls);
     }
 }
@@ -65,6 +69,11 @@ void instr_uses(const MachInstr *in, int classVregCount, RegClass cls, int out[]
     case MACH_UCOMISS:
         // dst read-only here: STORE address, or CMP/TEST/UCOMISS lhs operand
         push_operand_regs_c(out, n, &in->dst, classVregCount, cls);
+        break;
+    case MACH_MOVSS:
+        /* MOVSS mem, xmm stores: base/index of dst are uses (like STORE). */
+        if (in->dst.kind == MO_MEM)
+            push_operand_regs_c(out, n, &in->dst, classVregCount, cls);
         break;
     case MACH_PUSH:
     case MACH_IDIV:
