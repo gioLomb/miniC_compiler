@@ -332,5 +332,33 @@ int loop_build_pre_header(IRFunction *f, Loop *L) {
     // header gains the pre-header as its new (only) non-back-edge predecessor
     f->blocks[header].predCount++;
     L->preHeader = phIdx;
+
+    /* If the loop header was block 0, there is no CFG predecessor to
+     * re-route: function entry is implicit.  The preheader then has
+     * predCount==0 and DCE would delete hoisted code.  Swap so the
+     * preheader becomes the new entry (block 0). */
+    if (header == 0 && f->blocks[phIdx].predCount == 0) {
+        IRBlock tmp = f->blocks[0];
+        f->blocks[0] = f->blocks[phIdx];
+        f->blocks[phIdx] = tmp;
+        for (int b = 0; b < f->blockCount; b++) {
+            for (int k = 0; k < 2; k++) {
+                if (f->blocks[b].bb.succ[k] == 0) f->blocks[b].bb.succ[k] = phIdx;
+                else if (f->blocks[b].bb.succ[k] == phIdx) f->blocks[b].bb.succ[k] = 0;
+            }
+        }
+        f->blocks[0].bb.succ[0] = phIdx;
+        f->blocks[0].bb.succ[1] = -1;
+        f->blocks[0].predCount = 0;
+        f->blocks[phIdx].predCount = 1;
+        L->header = phIdx;
+        L->preHeader = 0;
+        for (int i = 0; i < L->bodyCount; i++) {
+            if (L->body[i] == 0) L->body[i] = phIdx;
+            else if (L->body[i] == phIdx) L->body[i] = 0;
+        }
+        return 0;
+    }
+
     return phIdx;
 }
