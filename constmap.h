@@ -164,12 +164,11 @@ LatVal const_map_get(const ConstMap *m, Operand op, VarMap *vm);
 
 /**
  * @brief Like lat_get_value_from_operand(), but takes an already-resolved
- *        VarMap id instead of doing the hash lookup itself.
+ *        VarMap id instead of calling varmap_operand_id() again.
  *
- * For OPND_VAR/OPND_TEMP the caller must have obtained @p cachedId from
- * the operand's CURRENT kind (e.g. via VarMap's per-instruction id cache,
- * guarded by ir_operand_is_storage on the live operand) — this function
- * does not re-derive it. Literal operands ignore @p cachedId entirely.
+ * For OPND_VAR/OPND_TEMP the caller must pass the id for the operand's
+ * current kind (via varmap_operand_id / ir_operand_is_storage). Literals
+ * ignore @p cachedId.
  *
  * @param map        Current ConstMap.
  * @param op         Operand to lift (its kind decides the strategy).
