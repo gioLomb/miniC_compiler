@@ -133,19 +133,6 @@ typedef struct {
 
     Operand *params;
     int      paramCount;
-
-    /**
-     * @brief Structural-mutation counter for @c instrs[]/@c count.
-     *
-     * Bumped only when the instruction array is reindexed or rebuilt
-     * (ir_sweep() removing entries, LICM hoisting, SR's loop rewrite,
-     * global-variable lowering) — never for in-place operand edits (e.g.
-     * CP folding a variable use to a constant). VarMap's per-instruction
-     * id cache (see varmap_sync_cache()) uses this to know when cached
-     * ids, keyed by instruction index, are no longer aligned with the
-     * current array and must be recomputed.
-     */
-    int ver;
 } IRFunction;
 
 /**

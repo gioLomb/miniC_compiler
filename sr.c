@@ -400,7 +400,6 @@ static int sr_apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
     irFunction->instrs   = newInstrs;
     irFunction->count    = newInstrCount;
     irFunction->capacity = newInstrCount;
-    irFunction->ver++;   // reindexed: invalidate cached ids
 
     sr_remap_block_ranges(irFunction, preheaderblockIdx, preheaderInitStart, preheaderInitEnd, 
                        oldToNewIdxMap, totalOriginalInstrs, newInstrCount);

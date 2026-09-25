@@ -108,7 +108,6 @@ int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     int changed = (write != nInstrs);
     f->count         = write;
     f->curBlockStart = 0;
-    if (changed) f->ver++;
 
     free(newPos);
     return changed;

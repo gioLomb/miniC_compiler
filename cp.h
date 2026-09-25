@@ -44,10 +44,8 @@
  * temporary arena that is destroyed before returning.
  *
  * @param f    IR function to optimise (modified in place).
- * @param vm   Shared operand-id VarMap, owned by the caller. Its
- *             per-instruction id cache (varmap_sync_cache) is refreshed
- *             here only if @p f changed structurally since the caller's
- *             last pass, replacing the previous per-call full rebuild.
+ * @param vm   Shared operand→id VarMap owned by the caller (key-based cache
+ *             in varmap.c; no dependency on structural IR versions).
  * @param arenaScratch  Scratch arena for all dataflow storage.
  * @return     1 if @p f was modified, 0 if the IR was already at fixed point.
  */

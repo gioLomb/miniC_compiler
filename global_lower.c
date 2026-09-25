@@ -270,7 +270,6 @@ void gl_lower_globals(IRFunction *f, Arena *arena) {
     f->instrs   = e.buf;
     f->count    = e.count;
     f->capacity = e.cap;
-    f->ver++;  
 
     gl_remap_block_ranges(f, newStart, newEnd, e.count);
 }

@@ -515,8 +515,6 @@ static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
     licm_remap_block_ranges(f, oldToNew, doMove, phIdx, layout.preHeaderMovedStart, layout.preHeaderMovedEnd);
 
     f->curBlockStart = 0;
-    // instructions reindexed: invalidate any VarMap id cache keyed by old indices
-    f->ver++;
     arena_destroy(localArena);
     return moved;
 }
