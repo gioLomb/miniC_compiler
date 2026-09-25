@@ -403,14 +403,16 @@ static int try_eliminate_redundant_jump(IRFunction *f, int b, int i, char *elimi
  *        pruning the corresponding CFG edge; otherwise substitute the
  *        condition operand if it simplified without becoming constant.
  *
- * @param f    Function being rewritten (succ[]/predCount updated in place).
- * @param b    Index of the block containing the instruction.
- * @param i    Instruction index (must be IR_IF_FALSE).
- * @param live Current local constant-propagation state (read-only here).
- * @param vm   VarMap for operand resolution.
- * @return     1 if the instruction was modified, 0 otherwise.
+ * @param f         Function being rewritten (succ[]/predCount updated in place).
+ * @param b         Index of the block containing the instruction.
+ * @param i         Instruction index (must be IR_IF_FALSE).
+ * @param live      Current local constant-propagation state (read-only here).
+ * @param src1Id    VarMap id of the condition operand.
+ * @param eliminate Per-instr eliminate flags; set when the IF becomes a no-op.
+ * @return          1 if the instruction was modified, 0 otherwise.
  */
-static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, int src1Id) {
+static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live,
+                             int src1Id, char *eliminate) {
     IRInstr *in  = &f->instrs[i];
     Operand  cond = const_map_try_fold_by_id(in->src1, live, src1Id);
 
@@ -435,9 +437,12 @@ static int try_fold_if_false(IRFunction *f, int b, int i, ConstMap *live, int sr
         f->blocks[b].bb.succ[1] = -1;
         if (s0 >= 0) f->blocks[s0].predCount--;
     } else {
-        // condition always true -> branch never taken: caller marks eliminate[i]
+        /* condition always true -> branch never taken: drop the IF_FALSE so
+         * it cannot keep a labelId pointing at a label that DCE later deletes
+         * when the dead successor is swept. */
         f->blocks[b].bb.succ[1] = -1;
         if (s1 >= 0) f->blocks[s1].predCount--;
+        eliminate[i] = 1;
     }
     return 1;
 }
@@ -511,7 +516,8 @@ static int cp_rewrite_block(IRFunction *f, int b, ConstMap *inMap,
         if ((in->op == IR_GOTO || in->op == IR_IF_FALSE) && cp_is_redundant_jump(f, i)) {
             modified |= try_eliminate_redundant_jump(f, b, i, eliminate);
         } else if (in->op == IR_IF_FALSE) {
-            modified |= try_fold_if_false(f, b, i, &live, varmap_operand_id(vm, in->src1));
+            modified |= try_fold_if_false(f, b, i, &live,
+                            varmap_operand_id(vm, in->src1), eliminate);
         } else {
             modified |= try_fold_generic_instr(in, &live,
                             varmap_operand_id(vm, in->src1),
