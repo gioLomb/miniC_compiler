@@ -209,6 +209,14 @@ typedef struct {
 IRProgram *ir_generate(ASTNode *program);
 
 /**
+ * @brief Register every ND_VAR_DECL global from @p program into @p prog.
+ *
+ * Uses pass1-stamped decl->offset as symOffset (single source of truth).
+ * Implemented in ir_global.c.
+ */
+void ir_register_globals(IRProgram *prog, ASTNode *program);
+
+/**
  * @brief Return non-zero if @p op is pure (no side effects, safe to reorder/eliminate).
  *
  * @param op IR opcode to test.
