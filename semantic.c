@@ -11,33 +11,20 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors);
 static void     check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                            Arena *arena, int *errors);
 
-/** Per-statement cascade suppression (mirrors parser pendingFlag). */
-static int sem_pending = 0;
-
 /**
  * @brief Local counting wrapper around the shared error collector.
  *
- * Delegates print + global running total to ec_reportv() (error_collector.h),
- * removing the print/vfprintf duplication this function used to own.
- * Keeps only the per-call *errors accumulation, since semantic_check()'s
- * return value (and every caller checking pass1Errors/semErrors) depends
- * on a locally-scoped count, not just the global total.
- *
- * After the first message in a statement, further reports are suppressed
- * (same idea as ec_report_cascading) until check_stmt clears sem_pending.
- *
- * @param errors Pointer to the error accumulator counter (may be NULL).
- * @param fmt    Format string (printf-style).
- * @param ...    Variadic arguments matching the format string.
+ * Increments the phase-local @p errors counter always; printing and the
+ * global total go through ec_report_cascadingv(-1, ...) so cascade
+ * suppression shares pendingFlag with the parser (one mechanism only).
+ * Call sites clear the window with ec_clear_pending() at statement bounds.
  */
 static void report_error(int *errors, const char *fmt, ...) {
     if (errors) (*errors)++;
-    if (sem_pending) return;
     va_list args;
     va_start(args, fmt);
-    ec_reportv(fmt, args);
+    ec_report_cascadingv(-1, fmt, args);
     va_end(args);
-    sem_pending = 1;
 }
 
 /**
@@ -431,8 +418,8 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                        Arena *arena, int *errors) {
     if (!stmt) return;
 
-    /* New statement → allow one printed diagnostic again (cascade suppress). */
-    sem_pending = 0;
+    /* New statement → open a fresh cascade window. */
+    ec_clear_pending();
 
     switch (stmt->kind) {
 
@@ -637,7 +624,7 @@ int semantic_check(ASTNode *program, Scope *global) {
 
     for (int i = 0; i < nchildren; i++) {
         ASTNode *decl = children[i];
-        sem_pending = 0; /* one cascade window per top-level declaration */
+        ec_clear_pending(); /* one cascade window per top-level declaration */
 
         if (decl->kind == ND_FUNC_DECL) {
             check_function_body(decl, global, arena, &errors);
