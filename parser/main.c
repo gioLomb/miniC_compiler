@@ -17,20 +17,22 @@
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Uso: %s <file.c> [-S] [-d] [-o <output>]\n"
-            "  -S   emette assembly x86-64 AT&T\n"
-            "  -d   debug: stampa asm pre e post scheduling\n"
-            "  -o   scrive output su file (default: stdout)\n",
+            "Uso: %s <file.c> [-S] [-d] [--no-sched] [-o <output>]\n"
+            "  -S          emette assembly x86-64 AT&T\n"
+            "  -d          debug: stampa asm pre e post scheduling\n"
+            "  --no-sched  salta l'instruction scheduling (default: attivo)\n"
+            "  -o          scrive output su file (default: stdout)\n",
             prog);
 }
 
 int main(int argc, char **argv) {
     const char *src_path = NULL, *out_path = NULL;
-    int emit_asm = 0, debug = 0;
+    int emit_asm = 0, debug = 0, no_sched = 0;
 
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "-S") == 0) { emit_asm = 1; }
         else if (strcmp(argv[i], "-d") == 0) { emit_asm = 1; debug = 1; }
+        else if (strcmp(argv[i], "--no-sched") == 0) { no_sched = 1; }
         else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) { fprintf(stderr, "Errore: -o richiede argomento\n"); return 1; }
             out_path = argv[++i];
@@ -47,8 +49,6 @@ int main(int argc, char **argv) {
 
     if (!emit_asm) { printf("=== PARSE TREE ===\n"); printAST(root, 0); }
 
-    // ec_error_count() is the shared collector's grand total (never reset
-    // across phases), same role totalErrorCount() used to play locally.
     if (ec_error_count() > 0) {
         printf("\nParsing completato con %d errori.\n", ec_error_count());
         
@@ -109,8 +109,15 @@ int main(int argc, char **argv) {
     }
     if (debug) { fprintf(out, "# === PRE-SCHEDULING ===\n"); isel_emit_asm(mp, ir, out); fprintf(out, "\n"); }
 
-    sched_schedule(mp);
-    if (debug) { fprintf(out, "# === POST-SCHEDULING / PRE-REGALLOC ===\n"); isel_emit_asm(mp, ir, out); fprintf(out, "\n"); }
+    if (!no_sched)
+        sched_schedule(mp);
+    if (debug) {
+        fprintf(out, no_sched
+                ? "# === SCHEDULING SKIPPED (--no-sched) / PRE-REGALLOC ===\n"
+                : "# === POST-SCHEDULING / PRE-REGALLOC ===\n");
+        isel_emit_asm(mp, ir, out);
+        fprintf(out, "\n");
+    }
 
     regalloc(mp);
     if (ec_error_count() > 0) {
