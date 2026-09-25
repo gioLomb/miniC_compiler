@@ -322,7 +322,14 @@ static void loop_reroute_non_body_predecessors(IRFunction *f, int header, int ph
 }
 
 
-int loop_build_pre_header(IRFunction *f, Loop *L) {
+/** Remap a single block index after a 0 ↔ phIdx swap. */
+static int remap_after_entry_swap(int idx, int phIdx) {
+    if (idx == 0) return phIdx;
+    if (idx == phIdx) return 0;
+    return idx;
+}
+
+int loop_build_pre_header(IRFunction *f, Loop *L, Loop *allLoops, int nLoops) {
     int header = L->header;
 
     int phIdx = loop_create_pre_header_block(f, header);
@@ -356,6 +363,22 @@ int loop_build_pre_header(IRFunction *f, Loop *L) {
         for (int i = 0; i < L->bodyCount; i++) {
             if (L->body[i] == 0) L->body[i] = phIdx;
             else if (L->body[i] == phIdx) L->body[i] = 0;
+        }
+        for (int i = 0; i < L->exitCount; i++)
+            L->exits[i] = remap_after_entry_swap(L->exits[i], phIdx);
+
+        /* Other loops in the same function still hold pre-swap indices. */
+        if (allLoops) {
+            for (int li = 0; li < nLoops; li++) {
+                Loop *O = &allLoops[li];
+                if (O == L) continue;
+                O->header    = remap_after_entry_swap(O->header, phIdx);
+                O->preHeader = remap_after_entry_swap(O->preHeader, phIdx);
+                for (int i = 0; i < O->bodyCount; i++)
+                    O->body[i] = remap_after_entry_swap(O->body[i], phIdx);
+                for (int i = 0; i < O->exitCount; i++)
+                    O->exits[i] = remap_after_entry_swap(O->exits[i], phIdx);
+            }
         }
         return 0;
     }

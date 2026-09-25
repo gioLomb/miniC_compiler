@@ -93,10 +93,15 @@ int loop_find(IRFunction *f, BitSet *Dom, Loop *loops, Arena *arena);
  * After this call L->preHeader holds the new block's index and the pre-header
  * is ready to receive hoisted or initialisation instructions.
  *
- * @param f  IR function (modified: new block appended, successor edges updated).
- * @param L  Loop whose pre-header is being created (L->preHeader updated).
- * @return   Index of the newly created pre-header block.
+ * @param f        IR function (modified: new block appended, successor edges updated).
+ * @param L        Loop whose pre-header is being created (L->preHeader updated).
+ * @param allLoops Full loops[] array from loop_find (may be NULL if nLoops==0).
+ * @param nLoops   Number of entries in allLoops.
+ * @return         Index of the newly created pre-header block.
+ *
+ * When header==0 triggers a physical 0↔phIdx swap, every other Loop in
+ * allLoops is remapped so stored header/body/exits/preHeader indices stay valid.
  */
-int loop_build_pre_header(IRFunction *f, Loop *L);
+int loop_build_pre_header(IRFunction *f, Loop *L, Loop *allLoops, int nLoops);
 
 #endif /* LOOP_H */

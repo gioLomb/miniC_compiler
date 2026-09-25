@@ -545,7 +545,7 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
         Loop *L = &loops[l];
 
         // insert the synthetic pre-header block before processing this loop
-        loop_build_pre_header(f, L);
+        loop_build_pre_header(f, L, loops, nLoops);
 
         VarMap *vm  = liv.varMap;
         int numVars = liv.blockSets.numVars;

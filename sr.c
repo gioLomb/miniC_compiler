@@ -434,7 +434,8 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
     for (int loopIdx = 0; loopIdx < totalLoops; loopIdx++) {
         Loop *targetLoop = &detectedLoops[loopIdx];
         // Pre-header is required as the landing spot for "t_sr = i * mult" inits.
-        if (targetLoop->preHeader < 0) loop_build_pre_header(irFunction, targetLoop);
+        if (targetLoop->preHeader < 0)
+            loop_build_pre_header(irFunction, targetLoop, detectedLoops, totalLoops);
 
         InductionBase   baseVars[MAX_IVARS];
         InductionDerived derivedVars[MAX_DERIVED];
