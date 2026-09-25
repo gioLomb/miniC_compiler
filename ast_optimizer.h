@@ -1,51 +1,37 @@
-#ifndef OPTIMIZE_H
-#define OPTIMIZE_H
-
+#ifndef AST_OPTIMIZER_H
+#define AST_OPTIMIZER_H
 
 /**
  * @file ast_optimizer.h
- * @brief AST-level optimizer interface: constant folding, dead-branch pruning
- * for if/while, and height-balancing of associative operator chains.
- * Runs after semantic analysis and before IR generation.
+ * @brief AST-level algebraic identities and associative-chain balancing.
+ *
+ * Literal-literal folding (3+2, 1<2, ...) is intentionally not done here:
+ * IR constant propagation (cp.c) is the single engine for that.
+ * This pass still rewrites x+0 / x*1 / 0&&y and rebalances int + and * chains.
  */
 
-#include <limits.h>
-#include <float.h>
 #include "parser/ast.h"
 #include "arena.h"
 
-/**
- * Buffer size safety limit for string representation of long integers.
- */
-#define INT_BUF_SIZE   (CHAR_BIT * sizeof(long) / 3 + 3)
+/** snprintf buffer for an integer literal (sign + digits + NUL). */
+#define INT_BUF_SIZE   32
+/** snprintf buffer for a floating-point literal. */
+#define FLOAT_BUF_SIZE 64
 
 /**
- * Buffer size safety limit for string representation of double precision floats.
+ * Pack two operator characters into a 16-bit key for O(1) switch dispatch.
+ * Single-character operators use 0 as the second character (e.g. OP_KEY('+', 0)).
  */
-#define FLOAT_BUF_SIZE (DECIMAL_DIG + 8)
+#define OP_KEY(c0, c1) ((unsigned short)(((unsigned char)(c0) << 8) | (unsigned char)(c1)))
 
 /**
- * Macro helper to encode one or two operator characters into a unique 16-bit key.
- */
-#define OP_KEY(c1, c2) ((unsigned short)(((unsigned char)(c1) << 8) | (unsigned char)(c2)))
-
-/**
- * @brief Performs high-level AST optimizations including constant folding, dead code elimination,
- *        and tree height balancing.
+ * @brief Rewrite @p root in place: algebraic identities plus int additive/multiplicative rebalancing.
  *
- * @details Traverses the Abstract Syntax Tree (AST) to evaluate constant expressions at compile time,
- *          remove unreachable code blocks (such as dead branches in conditional statements or 
- *          unreachable while loops), and rebalance associative operator chains to reduce tree depth.
- *          
- *          Prerequisites:
- *          Must be called AFTER semantic analysis (`semantic_check()`) and BEFORE intermediate 
- *          representation generation (`ir_generate()`).
+ * Does not fold two numeric literals; those remain for CP on the IR.
  *
- * @param program  Pointer to the root AST node representing the entire program.
- * @param astArena Pointer to the memory arena used for AST node allocations. Newly created
- *                 literal nodes allocate their string representations within this arena 
- *                 to guarantee lifecycle consistency with the rest of the tree.
+ * @param root  ND_PROGRAM (or any subtree) produced by the parser + semantic pass.
+ * @param arena Arena used for any newly allocated replacement nodes.
  */
-void optimize_ast(ASTNode *program, Arena *astArena);
+void optimize_ast(ASTNode *root, Arena *arena);
 
-#endif
+#endif /* AST_OPTIMIZER_H */

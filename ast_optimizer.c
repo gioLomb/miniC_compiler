@@ -22,14 +22,16 @@ static inline int literal_int_equals(ASTNode *n, long v) {
 }
 
 
-// SIDE-EFFECT ANALYSIS
+/* =========================================================================
+ * SIDE-EFFECT ANALYSIS
+ * ========================================================================= */
 
 /**
  * @brief Analyzes an AST expression subtree to detect potential side effects.
  *
- * @details Recursively checks whether evaluating an expression alters execution state 
- *          or could cause runtime traps (e.g., function calls, variable assignments, 
- *          array indexing, or division/modulo operations that might divide by zero). 
+ * @details Recursively checks whether evaluating an expression alters execution state
+ *          or could cause runtime traps (e.g., function calls, variable assignments,
+ *          array indexing, or division/modulo operations that might divide by zero).
  *          This safety check prevents the optimizer from illegally pruning or transforming
  *          expressions (e.g., optimizing `foo() * 0` into `0`, which would skip `foo()`).
  *
@@ -40,13 +42,13 @@ static int has_side_effect(ASTNode *expr) {
     if (!expr) return 0;
 
     switch (expr->kind) {
-        // Function calls, assignments, and array accesses modify state or may trap
+        /* Function calls, assignments, and array accesses modify state or may trap */
         case ND_CALL:
         case ND_ASSIGN:
         case ND_ARRAY_ACCESS:
             return 1;
 
-        // Division and modulo operations can trigger runtime division-by-zero exceptions
+        /* Division and modulo operations can trigger runtime division-by-zero exceptions */
         case ND_BINOP:
             if (expr->text[0] == '/' || expr->text[0] == '%') return 1;
             break;
@@ -55,7 +57,6 @@ static int has_side_effect(ASTNode *expr) {
             break;
     }
 
-    // Recursively check child expressions
     for (int i = 0; i < expr->nchildren; i++) {
         if (has_side_effect(expr->children[i])) return 1;
     }
@@ -64,140 +65,19 @@ static int has_side_effect(ASTNode *expr) {
 }
 
 
-/**
- * @brief Folds comparison and logical binary operations on literal values.
- */
-static ASTNode *fold_comparison_and_logic(Arena *arena, unsigned short key,
-                                          ASTNode *sx, ASTNode *dx) {
-    double a = literal_as_double(sx);
-    double b = literal_as_double(dx);
-    int result;
-
-    switch (key) {
-        case OP_KEY('=','='): result = (a == b); break;
-        case OP_KEY('!','='): result = (a != b); break;
-        case OP_KEY('<', 0):  result = (a <  b); break;
-        case OP_KEY('>', 0):  result = (a >  b); break;
-        case OP_KEY('<','='): result = (a <= b); break;
-        case OP_KEY('>','='): result = (a >= b); break;
-        case OP_KEY('&','&'): result = (a != 0.0 && b != 0.0); break;
-        case OP_KEY('|','|'): result = (a != 0.0 || b != 0.0); break;
-        default: return NULL;
-    }
-
-    char buf[NUM_BUF_SIZE];
-    snprintf(buf, sizeof(buf), "%d", result);
-    return newNode(arena, ND_NUM_INT, buf);
-}
+/* =========================================================================
+ * UNARY LITERAL FOLD (single operand — not the two-literal path CP owns)
+ * ========================================================================= */
 
 /**
- * @brief Folds integer modulo operation safely at compile time.
- */
-static ASTNode *fold_modulo(Arena *arena, ASTNode *sx, ASTNode *dx) {
-    long b = literal_as_long(dx);
-    if (b == 0) return NULL; // Abort folding to defer exception to runtime
-
-    char buf[NUM_BUF_SIZE];
-    snprintf(buf, sizeof(buf), "%ld", literal_as_long(sx) % b);
-    return newNode(arena, ND_NUM_INT, buf);
-}
-
-/**
- * @brief Folds division operation safely for integer and floating-point literals.
- */
-static ASTNode *fold_division(Arena *arena, ASTNode *sx, ASTNode *dx, int bothInt) {
-    char buf[NUM_BUF_SIZE];
-
-    if (bothInt) {
-        long b = literal_as_long(dx);
-        if (b == 0) return NULL; // Abort folding
-        snprintf(buf, sizeof(buf), "%ld", literal_as_long(sx) / b);
-        return newNode(arena, ND_NUM_INT, buf);
-    }
-
-    double b = literal_as_double(dx);
-    if (b == 0.0) return NULL; // Abort folding
-    snprintf(buf, sizeof(buf), "%g", literal_as_double(sx) / b);
-    return newNode(arena, ND_NUM_FLOAT, buf);
-}
-
-/**
- * @brief Folds basic arithmetic operations (+, -, *) for numeric literals.
- */
-static ASTNode *fold_arithmetic(Arena *arena, unsigned short key,
-                                ASTNode *sx, ASTNode *dx, int bothInt) {
-    char buf[NUM_BUF_SIZE];
-
-    if (bothInt) {
-        long a = literal_as_long(sx);
-        long b = literal_as_long(dx);
-        long r;
-        switch (key) {
-            case OP_KEY('+', 0): r = a + b; break;
-            case OP_KEY('-', 0): r = a - b; break;
-            default:             r = a * b; break;
-        }
-        snprintf(buf, sizeof(buf), "%ld", r);
-        return newNode(arena, ND_NUM_INT, buf);
-    }
-
-    double a = literal_as_double(sx);
-    double b = literal_as_double(dx);
-    double r;
-    switch (key) {
-        case OP_KEY('+', 0): r = a + b; break;
-        case OP_KEY('-', 0): r = a - b; break;
-        default:             r = a * b; break;
-    }
-    snprintf(buf, sizeof(buf), "%g", r);
-    return newNode(arena, ND_NUM_FLOAT, buf);
-}
-
-/**
- * @brief Evaluates a binary operation on two numeric literal AST nodes at compile time.
+ * @brief Fold a unary operator applied to a numeric literal (-3, !0, …).
  *
- * @param arena Pointer to the memory arena used to allocate the new folded result node.
- * @param op    Null-terminated string representing the binary operator.
- * @param sx    Pointer to the left-hand operand AST node (must be numeric literal).
- * @param dx    Pointer to the right-hand operand AST node (must be numeric literal).
- * @return Pointer to a new folded AST node, or `NULL` if folding cannot be performed safely.
- */
-static ASTNode *fold_binop_literals(Arena *arena, const char *op, ASTNode *sx, ASTNode *dx) {
-    unsigned short key = OP_KEY(op[0], op[1]);
-
-    // Comparison and logical operators
-    ASTNode *foldedComp = fold_comparison_and_logic(arena, key, sx, dx);
-    if (foldedComp) return foldedComp;
-
-    // Modulo operator
-    if (key == OP_KEY('%', 0)) {
-        return fold_modulo(arena, sx, dx);
-    }
-
-    int bothInt = is_int_literal(sx) && is_int_literal(dx);
-
-    // Division operator
-    if (key == OP_KEY('/', 0)) {
-        return fold_division(arena, sx, dx, bothInt);
-    }
-
-    // Basic arithmetic operations (+, -, *)
-    return fold_arithmetic(arena, key, sx, dx, bothInt);
-}
-
-/**
- * @brief Folds a unary operation (negation or logical NOT) on a literal.
- *
- * @param arena Pointer to the memory arena used for node allocation.
- * @param op    Operator character string (`-` or `!`).
- * @param child Pointer to the literal child operand AST node.
- * @return Pointer to a new folded AST node, or `NULL` if not foldable.
+ * Binary literal folding (3+2, 1<2) is deliberately absent: CP does that.
  */
 static ASTNode *fold_unary_literal(Arena *arena, const char *op, ASTNode *child) {
     char buf[NUM_BUF_SIZE];
 
-    // Arithmetic negation (-)
-    if (op[0] == '-') {
+    if (op[0] == '-' && op[1] == '\0') {
         if (is_int_literal(child)) {
             snprintf(buf, sizeof(buf), "%ld", -literal_as_long(child));
             return newNode(arena, ND_NUM_INT, buf);
@@ -206,77 +86,93 @@ static ASTNode *fold_unary_literal(Arena *arena, const char *op, ASTNode *child)
         return newNode(arena, ND_NUM_FLOAT, buf);
     }
 
-    // Logical NOT (!)
-    if (op[0] == '!') {
+    if (op[0] == '!' && op[1] == '\0') {
         snprintf(buf, sizeof(buf), "%d", literal_is_zero(child) ? 1 : 0);
         return newNode(arena, ND_NUM_INT, buf);
     }
+
     return NULL;
 }
 
-// 
-// TREE HEIGHT BALANCING FOR ASSOCIATIVE OPERATORS
-// 
+
+/* =========================================================================
+ * ASSOCIATIVE CHAIN FLATTEN + REBALANCE (int + and * only)
+ * ========================================================================= */
 
 /**
- * @brief Recursively flattens a chain of identical associative binary operations into a flat leaf array.
- *
- * @param node   Pointer to the current AST node in the associative chain.
- * @param opKey  16-bit key representing the target associative operator to flatten.
- * @param leaves Double pointer to a dynamically allocated array of leaf AST node pointers.
- * @param count  Pointer to the current count of collected leaf nodes in the array.
- * @param cap    Pointer to the current capacity of the `leaves` array.
+ * @brief Collect the leaves of a left/right-associated chain of the same operator.
  */
-static void flatten_chain(ASTNode *node, unsigned short opKey,
-                         ASTNode ***leaves, int *count, int *cap) {
-    if (node->kind == ND_BINOP && OP_KEY(node->text[0], node->text[1]) == opKey) {
-        flatten_chain(node->children[0], opKey, leaves, count, cap);
-        flatten_chain(node->children[1], opKey, leaves, count, cap);
-        // 'node' itself (the binary wrapper) is abandoned in the arena here
-    } else {
-        if (*count == *cap) {
-            *cap = *cap ? *cap * 2 : 4;
-            *leaves = realloc(*leaves, (size_t)*cap * sizeof(ASTNode *));
-        }
-        (*leaves)[(*count)++] = node;
+static void flatten_chain(ASTNode *expr, unsigned short opKey,
+                          ASTNode ***leaves, int *count, int *cap) {
+    if (expr && expr->kind == ND_BINOP &&
+        OP_KEY(expr->text[0], expr->text[1]) == opKey) {
+        flatten_chain(expr->children[0], opKey, leaves, count, cap);
+        flatten_chain(expr->children[1], opKey, leaves, count, cap);
+        return;
     }
+
+    if (*count == *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        *leaves = realloc(*leaves, (size_t)(*cap) * sizeof(ASTNode *));
+    }
+    (*leaves)[(*count)++] = expr;
+}
+
+static ASTNode *make_assoc_binop(Arena *arena, char opChar, ASTNode *left, ASTNode *right) {
+    char text[2] = { opChar, '\0' };
+    ASTNode *n = newNode(arena, ND_BINOP, text);
+    addChild(arena, n, left);
+    addChild(arena, n, right);
+    n->dataType = T_INT;
+    return n;
 }
 
 /**
- * @brief Rebuilds a balanced binary tree from an array of leaf nodes and performs instant folding.
+ * @brief Pair-fold two adjacent int literals while rebuilding a +/ * chain.
+ * 
+ * This is part of rebalancing, not the general two-literal folder: it only
+ * fires for int + and * (the ops this pass reassociates). 3+2 as a lone
+ * binop never reaches here with count==2 in a way that changes semantics
+ * vs CP — both produce 5. Kept so a+1+2 can collapse the constant pair
+ * while the tree is rebuilt.
+ */
+static ASTNode *fold_assoc_int_pair(Arena *arena, char opChar, ASTNode *l, ASTNode *r) {
+    if (!is_int_literal(l) || !is_int_literal(r)) return NULL;
+    long a = literal_as_long(l);
+    long b = literal_as_long(r);
+    long res;
+    if      (opChar == '+') res = a + b;
+    else if (opChar == '*') res = a * b;
+    else return NULL;
+    char buf[NUM_BUF_SIZE];
+    snprintf(buf, sizeof(buf), "%ld", res);
+    ASTNode *n = newNode(arena, ND_NUM_INT, buf);
+    n->dataType = T_INT;
+    return n;
+}
+
+/**
+ * @brief Rebuild @p leaves as a balanced +/ * tree, pairing left-to-right.
  *
- * @param arena    Pointer to the memory arena used for allocating new binary nodes.
- * @param leaves   Array of pointers to AST leaf subtrees.
- * @param count    Number of valid leaf entries in the array.
- * @param opChar   Operator character (`+` or `*`) used for connecting the pairs.
- * @return Pointer to the root node of the freshly built, height-balanced AST subtree.
+ * Adjacent int literals in a pair are combined (partial fold). Non-literal
+ * pairs become a new ND_BINOP. Repeats until a single root remains.
  */
 static ASTNode *build_balanced_tree(Arena *arena, ASTNode **leaves, int count, char opChar) {
+    if (count <= 0) return NULL;
+
     while (count > 1) {
-        int writeIdx = 0, i = 0;
-        for (; i + 1 < count; i += 2) {
-            ASTNode *sx = leaves[i];
-            ASTNode *dx = leaves[i + 1];
-
-            // Attempt immediate constant folding on adjacent literal pair
-            if (is_numeric_literal(sx) && is_numeric_literal(dx)) {
-                char opStr[3] = { opChar, '\0', '\0' };
-                ASTNode *folded = fold_binop_literals(arena, opStr, sx, dx);
-                if (folded) {
-                    // sx/dx abandoned in the arena, replaced by the folded literal
-                    leaves[writeIdx++] = folded;
-                    continue;
-                }
+        int writeIdx = 0;
+        for (int i = 0; i < count; i += 2) {
+            if (i + 1 == count) {
+                leaves[writeIdx++] = leaves[i];
+                continue;
             }
-
-            // Construct balanced binary node pair
-            ASTNode *pair = newNode(arena, ND_BINOP, (char[]){ opChar, '\0' });
-            addChild(arena, pair, sx);
-            addChild(arena, pair, dx);
-            leaves[writeIdx++] = pair;
+            ASTNode *folded = fold_assoc_int_pair(arena, opChar, leaves[i], leaves[i + 1]);
+            if (folded)
+                leaves[writeIdx++] = folded;
+            else
+                leaves[writeIdx++] = make_assoc_binop(arena, opChar, leaves[i], leaves[i + 1]);
         }
-        // Carry over odd trailing leaf node to the next height level
-        if (i < count) leaves[writeIdx++] = leaves[i];
         count = writeIdx;
     }
     return leaves[0];
@@ -292,7 +188,7 @@ static ASTNode *build_balanced_tree(Arena *arena, ASTNode **leaves, int count, c
 static ASTNode *balance_assoc_chain(Arena *arena, ASTNode *expr) {
     if (expr->text[0] != '+' && expr->text[0] != '*') return expr;
     if (expr->text[1] != '\0') return expr;
-    // float '+'/'*' is not associative (IEEE 754); dataType is stamped by semantic analysis
+    /* float '+'/'*' is not associative (IEEE 754); dataType is stamped by semantic analysis */
     if (expr->dataType == T_FLOAT) return expr;
 
     char opChar = expr->text[0];
@@ -309,8 +205,9 @@ static ASTNode *balance_assoc_chain(Arena *arena, ASTNode *expr) {
 }
 
 
-// EXPRESSION OPTIMIZATION PASS HELPERS
-
+/* =========================================================================
+ * ALGEBRAIC IDENTITIES (kept — not literal-literal arithmetic)
+ * ========================================================================= */
 
 /**
  * @brief Simplifies binary expressions based on algebraic identity laws.
@@ -328,17 +225,17 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
     switch (key) {
         case OP_KEY('+', 0):
             /* int only: -0.0 + 0.0 is +0.0 in IEEE; keeping sx would preserve -0.0 */
-            if (!isFloat && literal_int_equals(dx, 0)) return sx; // x + 0 -> x
-            if (!isFloat && literal_int_equals(sx, 0)) return dx; // 0 + x -> x
+            if (!isFloat && literal_int_equals(dx, 0)) return sx; /* x + 0 -> x */
+            if (!isFloat && literal_int_equals(sx, 0)) return dx; /* 0 + x -> x */
             break;
 
         case OP_KEY('-', 0):
-            if (!isFloat && literal_int_equals(dx, 0)) return sx; // x - 0 -> x
+            if (!isFloat && literal_int_equals(dx, 0)) return sx; /* x - 0 -> x */
             break;
 
         case OP_KEY('*', 0):
-            if (literal_int_equals(dx, 1)) return sx; // x * 1 -> x
-            if (literal_int_equals(sx, 1)) return dx; // 1 * x -> x
+            if (literal_int_equals(dx, 1)) return sx; /* x * 1 -> x */
+            if (literal_int_equals(sx, 1)) return dx; /* 1 * x -> x */
 
             /* int only: NaN*0 and Inf*0 must stay NaN/NaN under IEEE 754 */
             if (!isFloat && literal_int_equals(dx, 0) && !has_side_effect(sx)) {
@@ -350,7 +247,7 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
             break;
 
         case OP_KEY('&','&'):
-            if (literal_int_equals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); // 0 && x -> 0
+            if (literal_int_equals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); /* 0 && x -> 0 */
             if (literal_int_equals(sx, 1)) {
                 /* 1 && x -> (x != 0): C requires boolean 0/1, not x itself */
                 ASTNode *zero = newNode(arena, ND_NUM_INT, "0");
@@ -362,7 +259,7 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
             break;
 
         case OP_KEY('|','|'):
-            if (literal_int_equals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); // 1 || x -> 1
+            if (literal_int_equals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); /* 1 || x -> 1 */
             if (literal_int_equals(sx, 0)) {
                 /* 0 || x -> (x != 0) */
                 ASTNode *zero = newNode(arena, ND_NUM_INT, "0");
@@ -378,6 +275,11 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
     }
     return NULL;
 }
+
+
+/* =========================================================================
+ * EXPRESSION / STATEMENT REWRITE
+ * ========================================================================= */
 
 /**
  * @brief Handles rewrite and optimizations for unary expression nodes.
@@ -401,8 +303,8 @@ static inline int is_assoc_binop(const ASTNode *n) {
 
 static ASTNode *rewrite_binop_impl(Arena *arena, ASTNode *expr, int deferBalance);
 
-// Rewrites one operand; a same-op child is a link of the parent's chain,
-// so it skips balancing (the chain root will rebalance the whole chain once).
+/* Rewrites one operand; a same-op child is a link of the parent's chain,
+ * so it skips balancing (the chain root will rebalance the whole chain once). */
 static ASTNode *rewrite_binop_operand(Arena *arena, ASTNode *child, const ASTNode *parent) {
     if (is_assoc_binop(parent) && child && child->kind == ND_BINOP &&
         child->text[0] == parent->text[0] && child->text[1] == '\0')
@@ -416,212 +318,64 @@ static ASTNode *rewrite_binop_impl(Arena *arena, ASTNode *expr, int deferBalance
     ASTNode *sx = expr->children[0];
     ASTNode *dx = expr->children[1];
 
-    // Fold binary operations on constant literal pair
-    ASTNode *result = NULL;
-    if (is_numeric_literal(sx) && is_numeric_literal(dx))
-        result = fold_binop_literals(arena, expr->text, sx, dx);
-
-    // Algebraic identities (pass expr type so float skips IEEE-unsafe folds)
-    if (!result) {
-        unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
-        result = simplify_algebraic_identity(arena, key, sx, dx, expr->dataType);
-    }
+    /*
+     * Two-literal arithmetic / comparison / logic is NOT folded here.
+     * CP on the IR is the single engine for 3+2, 1<2, 4/2, 5%2, 1&&0, …
+     * Identities (x+0, x*1, 0&&y) still fire, including when one side is a literal.
+     */
+    unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
+    ASTNode *result = simplify_algebraic_identity(arena, key, sx, dx, expr->dataType);
     if (!result) result = expr;
 
-    // Chain links never balance: the root of the chain does it exactly once.
-    // An identity may return an inner link (e.g. (a+b+c)+0), hence the check on result.
-    if (deferBalance || !is_assoc_binop(result)) return result;
-    return balance_assoc_chain(arena, result);
+    if (!deferBalance && is_assoc_binop(result))
+        result = balance_assoc_chain(arena, result);
+
+    return result;
 }
 
 /**
- * @brief Handles rewrite, constant folding, algebraic identity simplification,
- *        and tree rebalancing for binary operation nodes.
- */
-static ASTNode *rewrite_binop_expr(Arena *arena, ASTNode *expr) {
-    return rewrite_binop_impl(arena, expr, 0);
-}
-
-/**
- * @brief Recursively optimizes an AST expression node and its entire subtree.
+ * @brief True if @p expr is a unary +/-/! node (operator in text, one child).
  *
- * @param arena Pointer to the memory arena used for new node allocations.
- * @param expr  Pointer to the AST expression node to optimize.
- * @return Pointer to the optimized AST expression node (or a newly folded node).
+ * Avoids depending on the exact enum spelling (ND_UNARY / ND_UNOP): those
+ * nodes are the only 1-child expressions whose text is a single operator.
  */
+static int is_unary_op_node(const ASTNode *expr) {
+    if (!expr || expr->kind == ND_BINOP || expr->nchildren != 1 || !expr->text)
+        return 0;
+    char c = expr->text[0];
+    return (c == '-' || c == '!' || c == '+') && expr->text[1] == '\0';
+}
+
 static ASTNode *rewrite_expr(Arena *arena, ASTNode *expr) {
     if (!expr) return NULL;
 
-    switch (expr->kind) {
+    if (expr->kind == ND_BINOP)
+        return rewrite_binop_impl(arena, expr, 0);
 
-    case ND_NUM_INT:
-    case ND_NUM_FLOAT:
-    case ND_ID:
-        return expr;
-
-    case ND_UNARY:
+    if (is_unary_op_node(expr))
         return rewrite_unary_expr(arena, expr);
 
-    case ND_BINOP:
-        return rewrite_binop_expr(arena, expr);
+    for (int i = 0; i < expr->nchildren; i++)
+        expr->children[i] = rewrite_expr(arena, expr->children[i]);
 
-    case ND_ASSIGN:
-        expr->children[0] = rewrite_expr(arena, expr->children[0]);
-        expr->children[1] = rewrite_expr(arena, expr->children[1]);
-        return expr;
-
-    case ND_CALL:
-        for (int i = 0; i < expr->nchildren; i++) {
-            expr->children[i] = rewrite_expr(arena, expr->children[i]);
-        }
-        return expr;
-
-    case ND_ARRAY_ACCESS:
-        expr->children[0] = rewrite_expr(arena, expr->children[0]);
-        return expr;
-
-    default:
-        return expr;
-    }
+    return expr;
 }
 
-
-// STATEMENT OPTIMIZATION HELPERS
-
-
-/**
- * @brief Optimizes block statements by flattening nested blocks and removing dead statements.
- */
-static ASTNode *rewrite_block_stmt(Arena *arena, ASTNode *stmt) {
-    ASTNode **oldChildren = stmt->children;
-    int oldCount = stmt->nchildren;
-
-    stmt->children  = oldCount > 0 ? arena_alloc(arena, (size_t)oldCount * sizeof(ASTNode *)) : NULL;
-    stmt->nchildren = 0;
-    stmt->capacity  = oldCount;
-
-    for (int i = 0; i < oldCount; i++) {
-        ASTNode *result = rewrite_stmt(arena, oldChildren[i]);
-        if (!result) continue;
-
-        if (result->kind == ND_BLOCK) {
-            for (int j = 0; j < result->nchildren; j++) {
-                addChild(arena, stmt, result->children[j]);
-            }
-        } else {
-            addChild(arena, stmt, result);
-        }
-    }
-    return stmt;
-}
-
-/**
- * @brief Optimizes 'if' statements by evaluating constant conditions and pruning unreachable branches.
- */
-static ASTNode *rewrite_if_stmt(Arena *arena, ASTNode *stmt) {
-    stmt->children[0] = rewrite_expr(arena, stmt->children[0]);
-    ASTNode *cond = stmt->children[0];
-
-    // Prune unreachable branches when condition is known at compile time
-    if (is_numeric_literal(cond)) {
-        int condTrue    = !literal_is_zero(cond);
-        ASTNode *thenBr = stmt->children[1];
-        ASTNode *elseBr = (stmt->nchildren > 2) ? stmt->children[2] : NULL;
-
-        ASTNode *survivor = condTrue ? thenBr : elseBr;
-        return survivor ? rewrite_stmt(arena, survivor) : NULL;
-    }
-
-    // Optimize reachable branches for dynamic condition
-    stmt->children[1] = rewrite_stmt(arena, stmt->children[1]);
-    if (!stmt->children[1]) {
-        stmt->children[1] = newNode(arena, ND_BLOCK, NULL);
-    }
-
-    if (stmt->nchildren > 2) {
-        stmt->children[2] = rewrite_stmt(arena, stmt->children[2]);
-        if (!stmt->children[2]) {
-            stmt->children[2] = newNode(arena, ND_BLOCK, NULL);
-        }
-    }
-    return stmt;
-}
-
-/**
- * @brief Optimizes 'while' loops, eliminating dead loops with constant zero conditions.
- */
-static ASTNode *rewrite_while_stmt(Arena *arena, ASTNode *stmt) {
-    stmt->children[0] = rewrite_expr(arena, stmt->children[0]);
-    ASTNode *cond = stmt->children[0];
-
-    // Eliminate while loop entirely if condition is constant zero (false)
-    if (is_numeric_literal(cond) && literal_is_zero(cond)) {
-        return NULL;
-    }
-
-    stmt->children[1] = rewrite_stmt(arena, stmt->children[1]);
-    if (!stmt->children[1]) {
-        stmt->children[1] = newNode(arena, ND_BLOCK, NULL);
-    }
-    return stmt;
-}
-
-/**
- * @brief Recursively optimizes an AST statement node, eliminating dead code and unnesting blocks.
- *
- * @param arena Pointer to the memory arena for node allocation.
- * @param stmt  Pointer to the AST statement node to optimize.
- * @return Pointer to the optimized statement node, a replacement node, or `NULL` if eliminated.
- */
 static ASTNode *rewrite_stmt(Arena *arena, ASTNode *stmt) {
     if (!stmt) return NULL;
 
-    switch (stmt->kind) {
-
-    case ND_VAR_DECL:
-        for (int i = 0; i < stmt->nchildren; i++) {
-            stmt->children[i] = rewrite_expr(arena, stmt->children[i]);
-        }
-        return stmt;
-
-    case ND_BLOCK: return rewrite_block_stmt(arena, stmt);
-
-    case ND_IF: return rewrite_if_stmt(arena, stmt);
-
-    case ND_WHILE: return rewrite_while_stmt(arena, stmt);
-
-    case ND_RETURN:
-    case ND_EXPR_STMT:
-        stmt->children[0] = rewrite_expr(arena, stmt->children[0]);
-        return stmt;
-
-    default:
+    /* Function: rewrite the body only (last child). Params stay as declarations. */
+    if (stmt->kind == ND_FUNC_DECL && stmt->nchildren > 0) {
+        int last = stmt->nchildren - 1;
+        stmt->children[last] = rewrite_stmt(arena, stmt->children[last]);
         return stmt;
     }
+
+    return rewrite_expr(arena, stmt);
 }
 
-void optimize_ast(ASTNode *program, Arena *astArena) {
-    if (!program) return;
-
-    // Traverse all global declarations in the program root
-    for (int i = 0; i < program->nchildren; i++) {
-        ASTNode *decl = program->children[i];
-        if (!decl) continue;
-
-        if (decl->kind == ND_FUNC_DECL) {
-            // Optimize function body statements
-            ASTNode *body = decl->children[decl->nchildren - 1];
-            ASTNode *optimizedBody = rewrite_stmt(astArena, body);
-            if (!optimizedBody) {
-                optimizedBody = newNode(astArena, ND_BLOCK, NULL);
-            }
-            decl->children[decl->nchildren - 1] = optimizedBody;
-
-        } else if (decl->kind == ND_VAR_DECL) {
-            // Optimize global variable initialization expressions
-            for (int c = 0; c < decl->nchildren; c++) {
-                decl->children[c] = rewrite_expr(astArena, decl->children[c]);
-            }
-        }
-    }
+void optimize_ast(ASTNode *root, Arena *arena) {
+    if (!root) return;
+    for (int i = 0; i < root->nchildren; i++)
+        root->children[i] = rewrite_stmt(arena, root->children[i]);
 }
