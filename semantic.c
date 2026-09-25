@@ -11,6 +11,8 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors);
 static void     check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                            Arena *arena, int *errors);
 
+/** Per-statement cascade suppression (mirrors parser pendingFlag). */
+static int sem_pending = 0;
 
 /**
  * @brief Local counting wrapper around the shared error collector.
@@ -21,16 +23,21 @@ static void     check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
  * return value (and every caller checking pass1Errors/semErrors) depends
  * on a locally-scoped count, not just the global total.
  *
+ * After the first message in a statement, further reports are suppressed
+ * (same idea as ec_report_cascading) until check_stmt clears sem_pending.
+ *
  * @param errors Pointer to the error accumulator counter (may be NULL).
  * @param fmt    Format string (printf-style).
  * @param ...    Variadic arguments matching the format string.
  */
 static void report_error(int *errors, const char *fmt, ...) {
     if (errors) (*errors)++;
+    if (sem_pending) return;
     va_list args;
     va_start(args, fmt);
     ec_reportv(fmt, args);
     va_end(args);
+    sem_pending = 1;
 }
 
 /**
@@ -424,6 +431,9 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                        Arena *arena, int *errors) {
     if (!stmt) return;
 
+    /* New statement → allow one printed diagnostic again (cascade suppress). */
+    sem_pending = 0;
+
     switch (stmt->kind) {
 
     case ND_VAR_DECL: {
@@ -627,6 +637,7 @@ int semantic_check(ASTNode *program, Scope *global) {
 
     for (int i = 0; i < nchildren; i++) {
         ASTNode *decl = children[i];
+        sem_pending = 0; /* one cascade window per top-level declaration */
 
         if (decl->kind == ND_FUNC_DECL) {
             check_function_body(decl, global, arena, &errors);

@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 #include "ast_to_symtab.h"
 #include "parser/errorCollector.h"
 
@@ -46,7 +48,17 @@ void st_elaborate_decl(Arena *arena, const char *text,
         *bracket   = '\0';   // terminate name substring
         *outName   = rest;
         *isArray   = 1;
-        *arraySize = atoi(bracket + 1);
+        /* strtol + range: atoi was unbounded / implementation-defined on overflow */
+        char *end = NULL;
+        errno = 0;
+        long v = strtol(bracket + 1, &end, 10);
+        if (end == bracket + 1 || (*end != ']' && *end != '\0') ||
+            errno == ERANGE || v <= 0 || v > INT_MAX / 8) {
+            /* invalid or pathological size → 0; bind/semantic can reject */
+            *arraySize = 0;
+        } else {
+            *arraySize = (int)v;
+        }
     } else {
         // scalar declaration: name runs to end of string
         *outName = rest;
@@ -60,6 +72,11 @@ int st_bind_symbol(Arena *arena, Scope *scope, ASTNode *node) {
 
     // parse the compact declaration string stored in the AST node
     st_elaborate_decl(arena, node->text, &type_name, &name, &isArray, &arraySize);
+
+    if (isArray && arraySize <= 0) {
+        ec_report("Errore: dimensione array non valida per '%s'\n", name ? name : "?");
+        return 0;
+    }
 
     // build the Symbol descriptor; offset = next free slot in this scope
     Symbol sym = {
@@ -151,6 +168,12 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
 
             case ND_VAR_DECL:
                 // ---- global variable declaration ----
+                if (isArray && arraySize <= 0) {
+                    ec_report("Errore: dimensione array non valida per '%s'\n",
+                              name ? name : "?");
+                    errors++;
+                    continue;
+                }
                 st_init_var_symbol(&sym,isArray, arraySize);
                 break;
 
