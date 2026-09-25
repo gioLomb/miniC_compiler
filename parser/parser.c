@@ -456,12 +456,27 @@ static ASTNode *parse_assign(Parser *p) {
     return left;
 }
 
-static ASTNode *parse_logic_or(Parser *p) {
-    ASTNode *left = parse_logic_and(p);
-    while (p->current_token == TOK_OP_OR) {
+/**
+ * Left-associative binary level: parse @p next, then while current token is
+ * in @p ops, fold (left OP right) with the same precedence.
+ * Assign/unary stay separate (right-assoc / prefix).
+ */
+typedef ASTNode *(*ParseLevelFn)(Parser *p);
+
+static ASTNode *parse_left_assoc(Parser *p, ParseLevelFn next,
+                                 const int *ops, int nOps) {
+    ASTNode *left = next(p);
+    for (;;) {
+        int tok = p->current_token;
+        int hit = 0;
+        for (int i = 0; i < nOps; i++) {
+            if (tok == ops[i]) { hit = 1; break; }
+        }
+        if (!hit) break;
+
         char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
-        match(p, p->current_token);
-        ASTNode *right = parse_logic_and(p);
+        match(p, tok);
+        ASTNode *right = next(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
         node->line = left->line;
         addChild(p->ast_arena, node, left);
@@ -469,83 +484,36 @@ static ASTNode *parse_logic_or(Parser *p) {
         left = node;
     }
     return left;
+}
+
+static ASTNode *parse_logic_or(Parser *p) {
+    static const int ops[] = { TOK_OP_OR };
+    return parse_left_assoc(p, parse_logic_and, ops, 1);
 }
 
 static ASTNode *parse_logic_and(Parser *p) {
-    ASTNode *left = parse_equality(p);
-    while (p->current_token == TOK_OP_AND) {
-        char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
-        match(p, p->current_token);
-        ASTNode *right = parse_equality(p);
-        ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
-        node->line = left->line;
-        addChild(p->ast_arena, node, left);
-        addChild(p->ast_arena, node, right);
-        left = node;
-    }
-    return left;
+    static const int ops[] = { TOK_OP_AND };
+    return parse_left_assoc(p, parse_equality, ops, 1);
 }
 
 static ASTNode *parse_equality(Parser *p) {
-    ASTNode *left = parse_relational(p);
-    while (p->current_token == TOK_OP_EQ || p->current_token == TOK_OP_NE) {
-        char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
-        match(p, p->current_token);
-        ASTNode *right = parse_relational(p);
-        ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
-        node->line = left->line;
-        addChild(p->ast_arena, node, left);
-        addChild(p->ast_arena, node, right);
-        left = node;
-    }
-    return left;
+    static const int ops[] = { TOK_OP_EQ, TOK_OP_NE };
+    return parse_left_assoc(p, parse_relational, ops, 2);
 }
 
 static ASTNode *parse_relational(Parser *p) {
-    ASTNode *left = parse_additive(p);
-    while (p->current_token == TOK_OP_LT || p->current_token == TOK_OP_GT ||
-           p->current_token == TOK_OP_LE || p->current_token == TOK_OP_GE) {
-        char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
-        match(p, p->current_token);
-        ASTNode *right = parse_additive(p);
-        ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
-        node->line = left->line;
-        addChild(p->ast_arena, node, left);
-        addChild(p->ast_arena, node, right);
-        left = node;
-    }
-    return left;
+    static const int ops[] = { TOK_OP_LT, TOK_OP_GT, TOK_OP_LE, TOK_OP_GE };
+    return parse_left_assoc(p, parse_additive, ops, 4);
 }
 
 static ASTNode *parse_additive(Parser *p) {
-    ASTNode *left = parse_term(p);
-    while (p->current_token == TOK_OP_PLUS || p->current_token == TOK_OP_MINUS) {
-        char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
-        match(p, p->current_token);
-        ASTNode *right = parse_term(p);
-        ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
-        node->line = left->line;
-        addChild(p->ast_arena, node, left);
-        addChild(p->ast_arena, node, right);
-        left = node;
-    }
-    return left;
+    static const int ops[] = { TOK_OP_PLUS, TOK_OP_MINUS };
+    return parse_left_assoc(p, parse_term, ops, 2);
 }
 
 static ASTNode *parse_term(Parser *p) {
-    ASTNode *left = parse_unary(p);
-    while (p->current_token == TOK_OP_MUL || p->current_token == TOK_OP_DIV ||
-           p->current_token == TOK_OP_MOD) {
-        char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
-        match(p, p->current_token);
-        ASTNode *right = parse_unary(p);
-        ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
-        node->line = left->line;
-        addChild(p->ast_arena, node, left);
-        addChild(p->ast_arena, node, right);
-        left = node;
-    }
-    return left;
+    static const int ops[] = { TOK_OP_MUL, TOK_OP_DIV, TOK_OP_MOD };
+    return parse_left_assoc(p, parse_unary, ops, 3);
 }
 
 static ASTNode *parse_unary(Parser *p) {
