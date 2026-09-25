@@ -63,7 +63,7 @@ void printAST(const ASTNode *node, int depth) {
         printf("%s\n", kindName(node->kind));
 
     for (int i = 0; i < node->nchildren; i++){
-        printf("[line=%d] ", node->line);
+        printf("[line=%d] ", node->line);//todo
         printAST(node->children[i], depth + 1);
         // temporary debug line, remove after verification
 }

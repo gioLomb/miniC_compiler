@@ -876,14 +876,15 @@ IRProgram *ir_generate(ASTNode *program) {
     IRProgram *prog = calloc(1, sizeof(IRProgram));
     Arena *arena = arena_create(0);
 
-    // register every global variable with a sequential symOffset.
-    int symOffset = 0;
+    /* Global symOffset is assigned once in st_resolve_global_namespace and
+     * stamped on each ND_VAR_DECL / ND_FUNC_DECL.  Reusing decl->offset here
+     * keeps a single source of truth (a second counter would diverge if pass1
+     * ever continued after a failed bind).  main aborts before ir_generate
+     * when pass1Errors > 0, so every VAR_DECL we see has a valid stamp. */
     for (int i = 0; i < program->nchildren; i++) {
         ASTNode *decl = program->children[i];
         if (decl->kind == ND_VAR_DECL)
-            ir_add_global(prog, decl, symOffset);
-        if (decl->kind == ND_VAR_DECL || decl->kind == ND_FUNC_DECL)
-            symOffset++;
+            ir_add_global(prog, decl, decl->offset);
     }
 
     // compile every function body

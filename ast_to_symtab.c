@@ -160,11 +160,10 @@ int st_resolve_global_namespace(ASTNode *program, Scope *global) {
         }
 
         if (st_bind_global_symbol(global, name, &sym) == 0) {
-            // stamp global ND_VAR_DECL nodes with their resolved coordinates
-            if (sym.kind == SYM_VAR) {
-                decl->scopeLevel = sym.scopeLevel;
-                decl->offset     = sym.offset;
-            }
+            /* Stamp both VAR and FUNC: ir_generate reads decl->offset for
+             * globals so it must not recompute a parallel counter. */
+            decl->scopeLevel = sym.scopeLevel;
+            decl->offset     = sym.offset;
         } else {
             errors++;
         }
