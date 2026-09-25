@@ -65,7 +65,8 @@ static int yylex(void) {
             letter    = [a-zA-Z_];
             id        = letter (letter|digit)*;
             int_lit   = digit+;
-            float_lit = digit+ "." digit+;
+            /* Align with Flex scanner.l: accept 5.  .5  5.5 */
+            float_lit = (digit+ "." digit*) | ("." digit+);
             ws        = [ \t\r]+;
             newline   = "\n";
             comment   = "//" [^\n\x00]*;
@@ -165,11 +166,16 @@ void lexer_open(const char *path) {
 
     lexerArena = arena_create(0);                     // crea l'arena
 
-    unsigned char *buf = arena_alloc(lexerArena, len + 1); // alloca direttamente nell'arena
-    fread(buf, 1, len, f);
+    unsigned char *buf = arena_alloc(lexerArena, (size_t)len + 1);
+    if (len > 0 && fread(buf, 1, (size_t)len, f) != (size_t)len) {
+        fprintf(stderr, "Errore di lettura del file %s\n", path);
+        fclose(f);
+        exit(1);
+    }
     buf[len] = '\0';
     fclose(f);
 
+    sourceBuffer = buf;                                /* kept for lexer_close comments / debug */
     cur = buf;                                         // punta all'inizio del sorgente
     lineNumber = 1;
 }

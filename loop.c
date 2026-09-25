@@ -357,7 +357,9 @@ int loop_build_pre_header(IRFunction *f, Loop *L, Loop *allLoops, int nLoops) {
         f->blocks[0].bb.succ[0] = phIdx;
         f->blocks[0].bb.succ[1] = -1;
         f->blocks[0].predCount = 0;
-        f->blocks[phIdx].predCount = 1;
+        /* Keep predCount computed pre-swap (back-edges + edge from preheader).
+         * Hardcoding 1 under-counts every natural loop (≥1 back-edge).
+         * After the swap, f->blocks[phIdx] already holds the correct value. */
         L->header = phIdx;
         L->preHeader = 0;
         for (int i = 0; i < L->bodyCount; i++) {
