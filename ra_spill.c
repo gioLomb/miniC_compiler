@@ -190,16 +190,23 @@ static int dst_is_spilled(const SpillCtx *ctx, const MachInstr *in) {
  */
 static void emit_spilled_destination(SpillCtx *ctx, MachInstr in) {
     int orig = in.dst.vregId;
-    int tmp  = spill_fresh_temp(ctx);
+    int tmp;
 
-    if (instr_is_rmw(in.op)) {
-        MachInstr ld = {0};
-        ld.op            = mov_op_of(ctx->cls);
-        ld.dst.kind      = ctx->vk;
-        ld.dst.vregId    = tmp;
-        ld.src1.kind     = MO_STACK;
-        ld.src1.stackOff = ctx->slot[orig];
-        spill_emit(ctx, ld);
+    if (instr_is_rmw(in.op) && ctx->cache[orig] >= 0) {
+        /* reload_sources already brought this vreg into a temp; reuse it so
+         * dst and the matching source share one register (RMW aliasing). */
+        tmp = ctx->cache[orig];
+    } else {
+        tmp = spill_fresh_temp(ctx);
+        if (instr_is_rmw(in.op)) {
+            MachInstr ld = {0};
+            ld.op            = mov_op_of(ctx->cls);
+            ld.dst.kind      = ctx->vk;
+            ld.dst.vregId    = tmp;
+            ld.src1.kind     = MO_STACK;
+            ld.src1.stackOff = ctx->slot[orig];
+            spill_emit(ctx, ld);
+        }
     }
 
     in.dst.kind   = ctx->vk;
