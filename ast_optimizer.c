@@ -315,29 +315,36 @@ static ASTNode *balance_assoc_chain(Arena *arena, ASTNode *expr) {
 /**
  * @brief Simplifies binary expressions based on algebraic identity laws.
  *
+ * @param resultType  Type of the binary expression (from semantic stamp).
+ *                    Float results skip identities that break IEEE 754
+ *                    (x*0 must stay NaN/Inf; x+0 must preserve -0.0).
  * @return Pointer to simplified node, or `NULL` if no identity applies.
  */
 static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
-                                            ASTNode *sx, ASTNode *dx) {
+                                            ASTNode *sx, ASTNode *dx,
+                                            DataType resultType) {
+    int isFloat = (resultType == T_FLOAT);
+
     switch (key) {
         case OP_KEY('+', 0):
-            if (literal_int_equals(dx, 0)) return sx; // x + 0 -> x
-            if (literal_int_equals(sx, 0)) return dx; // 0 + x -> x
+            /* int only: -0.0 + 0.0 is +0.0 in IEEE; keeping sx would preserve -0.0 */
+            if (!isFloat && literal_int_equals(dx, 0)) return sx; // x + 0 -> x
+            if (!isFloat && literal_int_equals(sx, 0)) return dx; // 0 + x -> x
             break;
 
         case OP_KEY('-', 0):
-            if (literal_int_equals(dx, 0)) return sx; // x - 0 -> x
+            if (!isFloat && literal_int_equals(dx, 0)) return sx; // x - 0 -> x
             break;
 
         case OP_KEY('*', 0):
             if (literal_int_equals(dx, 1)) return sx; // x * 1 -> x
             if (literal_int_equals(sx, 1)) return dx; // 1 * x -> x
 
-            // x * 0 -> 0 (Valid only if operand has no side effects)
-            if (literal_int_equals(dx, 0) && !has_side_effect(sx)) {
+            /* int only: NaN*0 and Inf*0 must stay NaN/NaN under IEEE 754 */
+            if (!isFloat && literal_int_equals(dx, 0) && !has_side_effect(sx)) {
                 return newNode(arena, ND_NUM_INT, "0");
             }
-            if (literal_int_equals(sx, 0) && !has_side_effect(dx)) {
+            if (!isFloat && literal_int_equals(sx, 0) && !has_side_effect(dx)) {
                 return newNode(arena, ND_NUM_INT, "0");
             }
             break;
@@ -414,10 +421,10 @@ static ASTNode *rewrite_binop_impl(Arena *arena, ASTNode *expr, int deferBalance
     if (is_numeric_literal(sx) && is_numeric_literal(dx))
         result = fold_binop_literals(arena, expr->text, sx, dx);
 
-    // Algebraic identities
+    // Algebraic identities (pass expr type so float skips IEEE-unsafe folds)
     if (!result) {
         unsigned short key = OP_KEY(expr->text[0], expr->text[1]);
-        result = simplify_algebraic_identity(arena, key, sx, dx);
+        result = simplify_algebraic_identity(arena, key, sx, dx, expr->dataType);
     }
     if (!result) result = expr;
 
