@@ -6,22 +6,7 @@
 #include "constmap.h"
 
 
-static inline int is_binary_op(IROp op) {
-    switch (op) {
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
-    case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
-        return 1;
-    default: return 0;
-    }
-}
-
-static int cp_is_comparison_op(IROp op) {
-    switch (op) {
-    case IR_LT: case IR_LE: case IR_GT: case IR_GE: case IR_EQ: case IR_NE:
-        return 1;
-    default: return 0;
-    }
-}
+/* Binary / comparison classification: ir_is_binary_op / ir_is_comparison (ir_op_info.c). */
 
 
 
@@ -101,7 +86,7 @@ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
 
     if (in->op == IR_ASSIGN) {
         result = lat_get_value_by_id(map, in->src1, src1Id);
-    } else if (is_binary_op(in->op)) {
+    } else if (ir_is_binary_op(in->op)) {
         int src2Id = varmap_operand_id(vm, in->src2);
         LatVal lhs = lat_get_value_by_id(map, in->src1, src1Id);
         LatVal rhs = lat_get_value_by_id(map, in->src2, src2Id);
@@ -113,7 +98,7 @@ static void cp_transfer(const IRInstr *in, ConstMap *map, VarMap *vm) {
             } else if (lhs.isFloat && rhs.isFloat) {
                 float r;
                 if (fold_binary_float(in->op, lhs.val.fval, rhs.val.fval, &r))
-                    result = cp_is_comparison_op(in->op)
+                    result = ir_is_comparison(in->op)
                              ? lat_set_const_int((int)r)
                              : lat_set_const_float(r);
             }
@@ -218,7 +203,7 @@ static int cp_fold_binary(IRInstr *in, const Operand *ns1, const Operand *ns2) {
         in->op   = IR_ASSIGN;
         in->src2 = (Operand){.kind = OPND_NONE};
         // comparisons produce int 0/1 even when operands are float
-        if (cp_is_comparison_op(origOp)) {
+        if (ir_is_comparison(origOp)) {
             in->src1 = (Operand){ .kind = OPND_CONST_INT, .isFloat = 0,
                                   .data.intVal = (int)result };
         } else {

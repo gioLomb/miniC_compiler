@@ -5,6 +5,7 @@
  * @file instr_query.h
  * @brief Pure queries on MachInstr: operand extraction and opcode predicates.
  *
+ * Mach-side counterpart of ir_op_info.c (IR predicates in ir.h).
  * Class-aware counterpart of regalloc_utils.h: every extraction function
  * takes a @c RegClass and only reports operands of that class. Ids are
  * class-local: vregs in [0, classVregCount), physicals in

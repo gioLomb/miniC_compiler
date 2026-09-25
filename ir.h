@@ -216,6 +216,8 @@ IRProgram *ir_generate(ASTNode *program);
  */
 void ir_register_globals(IRProgram *prog, ASTNode *program);
 
+/* ---- Opcode / operand predicates (implemented in ir_op_info.c) ----------- */
+
 /**
  * @brief Return non-zero if @p op is pure (no side effects, safe to reorder/eliminate).
  *
@@ -223,6 +225,15 @@ void ir_register_globals(IRProgram *prog, ASTNode *program);
  * @return   1 if @p op only computes a value from its operands, 0 otherwise.
  */
 int ir_is_pure(IROp op);
+
+/** @brief 1 if @p op ends a basic block (GOTO / IF_FALSE / RETURN). */
+int ir_is_terminator(IROp op);
+
+/** @brief 1 if @p op is a relational compare (LT..NE). */
+int ir_is_comparison(IROp op);
+
+/** @brief 1 if @p op is a binary arith or relational op (CP transfer set). */
+int ir_is_binary_op(IROp op);
 
 /**
  * @brief Tests two operands for structural identity (same kind and same storage location).
