@@ -49,8 +49,8 @@ static ASTNode *parse_additive(Parser *p);
 static ASTNode *parse_term(Parser *p);
 static ASTNode *parse_unary(Parser *p);
 static ASTNode *parse_factor(Parser *p);
-static ASTNode *parse_call(Parser *p, const char *name);
-static ASTNode *parse_array_access(Parser *p, const char *name);
+static ASTNode *parse_call(Parser *p, const char *name, int startLine);
+static ASTNode *parse_array_access(Parser *p, const char *name, int startLine);
 static ASTNode *parse_parenthesized(Parser *p);
 
 
@@ -187,8 +187,10 @@ static ASTNode *parse_statement(Parser *p) {
  * @return ND_BLOCK node.
  */
 static ASTNode *parse_block(Parser *p) {
+    int startLine = lexer_current_line(); /* line of '{' */
     match(p, TOK_DEL_LBRACE);
     ASTNode *block_node = NEW_NODE(p, ND_BLOCK, NULL);
+    block_node->line = startLine;
 
     // Parse statements until we hit the closing brace or EOF.
     while (p->current_token != TOK_DEL_RBRACE && p->current_token != TOK_EOF) {
@@ -216,23 +218,28 @@ static ASTNode *parse_block(Parser *p) {
  * @return ND_VAR_DECL, ND_FUNC_DECL, or ND_VAR_DECL (for array).
  */
 static ASTNode *parse_declaration(Parser *p) {
+    int startLine = lexer_current_line(); /* line of type keyword */
+
     // Read type and identifier name.
     char *type = arena_strdup(p->scratch_arena, p->current_lexeme);
     match(p, p->current_token);
     char *name = arena_strdup(p->scratch_arena, p->current_lexeme);
     match(p, TOK_ID);
 
+    ASTNode *decl;
     // Dispatch based on what follows the name.
     if (p->current_token == TOK_DEL_LPAREN) {
         // Function declaration: foo( ...
-        return parse_function_declaration(p, type, name);
+        decl = parse_function_declaration(p, type, name);
     } else if (p->current_token == TOK_DEL_LBRACK) {
         // Array declaration: foo[ ...
-        return parse_array_declaration(p, type, name);
+        decl = parse_array_declaration(p, type, name);
     } else {
         // Simple variable declaration.
-        return parse_variable_declaration(p, type, name);
+        decl = parse_variable_declaration(p, type, name);
     }
+    if (decl) decl->line = startLine;
+    return decl;
 }
 
 /**
@@ -350,6 +357,7 @@ static void parse_parameter_list(Parser *p, ASTNode *func_node) {
  * @return ND_IF node.
  */
 static ASTNode *parse_if_statement(Parser *p) {
+    int startLine = lexer_current_line(); /* line of 'if' */
     match(p, TOK_KW_IF);
     match(p, TOK_DEL_LPAREN);
     ASTNode *cond = parse_expr(p);
@@ -357,6 +365,7 @@ static ASTNode *parse_if_statement(Parser *p) {
     ASTNode *then_branch = parse_statement(p);
 
     ASTNode *if_node = NEW_NODE(p, ND_IF, NULL);
+    if_node->line = startLine;
     addChild(p->ast_arena, if_node, cond);
     addChild(p->ast_arena, if_node, then_branch);
 
@@ -375,6 +384,7 @@ static ASTNode *parse_if_statement(Parser *p) {
  * @return ND_WHILE node.
  */
 static ASTNode *parse_while_statement(Parser *p) {
+    int startLine = lexer_current_line(); /* line of 'while' */
     match(p, TOK_KW_WHILE);
     match(p, TOK_DEL_LPAREN);
     ASTNode *cond = parse_expr(p);
@@ -382,6 +392,7 @@ static ASTNode *parse_while_statement(Parser *p) {
     ASTNode *body = parse_statement(p);
 
     ASTNode *while_node = NEW_NODE(p, ND_WHILE, NULL);
+    while_node->line = startLine;
     addChild(p->ast_arena, while_node, cond);
     addChild(p->ast_arena, while_node, body);
     return while_node;
@@ -394,11 +405,13 @@ static ASTNode *parse_while_statement(Parser *p) {
  * @return ND_RETURN node.
  */
 static ASTNode *parse_return_statement(Parser *p) {
+    int startLine = lexer_current_line(); /* line of 'return' */
     match(p, TOK_KW_RETURN);
     ASTNode *expr = parse_expr(p);
     match(p, TOK_DEL_SEMICOLON);
 
     ASTNode *ret_node = NEW_NODE(p, ND_RETURN, NULL);
+    ret_node->line = startLine;
     addChild(p->ast_arena, ret_node, expr);
     return ret_node;
 }
@@ -410,10 +423,12 @@ static ASTNode *parse_return_statement(Parser *p) {
  * @return ND_EXPR_STMT node.
  */
 static ASTNode *parse_expression_statement(Parser *p) {
+    int startLine = lexer_current_line();
     ASTNode *expr = parse_expr(p);
     match(p, TOK_DEL_SEMICOLON);
 
     ASTNode *expr_stmt_node = NEW_NODE(p, ND_EXPR_STMT, NULL);
+    expr_stmt_node->line = startLine;
     addChild(p->ast_arena, expr_stmt_node, expr);
     return expr_stmt_node;
 }
@@ -433,6 +448,7 @@ static ASTNode *parse_assign(Parser *p) {
         match(p, TOK_OP_ASSIGN);
         ASTNode *right = parse_assign(p);
         ASTNode *node = NEW_NODE(p, ND_ASSIGN, "=");
+        node->line = left->line; /* start of LHS */
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         return node;
@@ -447,6 +463,7 @@ static ASTNode *parse_logic_or(Parser *p) {
         match(p, p->current_token);
         ASTNode *right = parse_logic_and(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
+        node->line = left->line;
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         left = node;
@@ -461,6 +478,7 @@ static ASTNode *parse_logic_and(Parser *p) {
         match(p, p->current_token);
         ASTNode *right = parse_equality(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
+        node->line = left->line;
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         left = node;
@@ -475,6 +493,7 @@ static ASTNode *parse_equality(Parser *p) {
         match(p, p->current_token);
         ASTNode *right = parse_relational(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
+        node->line = left->line;
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         left = node;
@@ -490,6 +509,7 @@ static ASTNode *parse_relational(Parser *p) {
         match(p, p->current_token);
         ASTNode *right = parse_additive(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
+        node->line = left->line;
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         left = node;
@@ -504,6 +524,7 @@ static ASTNode *parse_additive(Parser *p) {
         match(p, p->current_token);
         ASTNode *right = parse_term(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
+        node->line = left->line;
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         left = node;
@@ -519,6 +540,7 @@ static ASTNode *parse_term(Parser *p) {
         match(p, p->current_token);
         ASTNode *right = parse_unary(p);
         ASTNode *node = newNode(p->ast_arena, ND_BINOP, op);
+        node->line = left->line;
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         left = node;
@@ -529,10 +551,12 @@ static ASTNode *parse_term(Parser *p) {
 static ASTNode *parse_unary(Parser *p) {
     if (p->current_token == TOK_OP_NOT || p->current_token == TOK_OP_MINUS) {
         // Unary operator with right-associative binding (allows chaining: !!x or --x).
+        int startLine = lexer_current_line();
         char *op = arena_strdup(p->scratch_arena, p->current_lexeme);
         match(p, p->current_token);
         ASTNode *operand = parse_unary(p);
         ASTNode *node = newNode(p->ast_arena, ND_UNARY, op);
+        node->line = startLine;
         addChild(p->ast_arena, node, operand);
         return node;
     }
@@ -552,26 +576,34 @@ static ASTNode *parse_unary(Parser *p) {
 static ASTNode *parse_factor(Parser *p) {
     switch (p->current_token) {
         case TOK_ID: {
+            int startLine = lexer_current_line();
             char *name = arena_strdup(p->scratch_arena, p->current_lexeme);
             match(p, TOK_ID);
 
             // Check what follows the identifier: function call, array access, or plain variable.
             if (p->current_token == TOK_DEL_LPAREN)
-                return parse_call(p, name);
+                return parse_call(p, name, startLine);
             else if (p->current_token == TOK_DEL_LBRACK)
-                return parse_array_access(p, name);
-            else
-                return newNode(p->ast_arena, ND_ID, name);
+                return parse_array_access(p, name, startLine);
+            else {
+                ASTNode *id = newNode(p->ast_arena, ND_ID, name);
+                id->line = startLine;
+                return id;
+            }
         }
 
         case TOK_NUM_INT: {
+            int startLine = lexer_current_line();
             ASTNode *node = newNode(p->ast_arena, ND_NUM_INT, p->current_lexeme);
+            node->line = startLine;
             match(p, TOK_NUM_INT);
             return node;
         }
 
         case TOK_NUM_FLOAT: {
+            int startLine = lexer_current_line();
             ASTNode *node = newNode(p->ast_arena, ND_NUM_FLOAT, p->current_lexeme);
+            node->line = startLine;
             match(p, TOK_NUM_FLOAT);
             return node;
         }
@@ -593,9 +625,10 @@ static ASTNode *parse_factor(Parser *p) {
  * @param name Function name.
  * @return ND_CALL node.
  */
-static ASTNode *parse_call(Parser *p, const char *name) {
+static ASTNode *parse_call(Parser *p, const char *name, int startLine) {
     match(p, TOK_DEL_LPAREN);
     ASTNode *call_node = newNode(p->ast_arena, ND_CALL, name);
+    call_node->line = startLine;
 
     // Parse zero or more arguments separated by commas.
     if (p->current_token != TOK_DEL_RPAREN) {
@@ -616,12 +649,13 @@ static ASTNode *parse_call(Parser *p, const char *name) {
  * @param name Array name.
  * @return ND_ARRAY_ACCESS node.
  */
-static ASTNode *parse_array_access(Parser *p, const char *name) {
+static ASTNode *parse_array_access(Parser *p, const char *name, int startLine) {
     match(p, TOK_DEL_LBRACK);
     ASTNode *index = parse_expr(p);
     match(p, TOK_DEL_RBRACK);
 
     ASTNode *access_node = newNode(p->ast_arena, ND_ARRAY_ACCESS, name);
+    access_node->line = startLine;
     addChild(p->ast_arena, access_node, index);
     return access_node;
 }
