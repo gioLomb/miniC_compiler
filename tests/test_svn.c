@@ -80,14 +80,17 @@ int main(void) {
     printf("PASS 1 ok: 'a+b' in while condition optimized (2 IR_ADD, 1 temp copy).\n");
     CLEANUP(prog, root, arena);
 
-    /* Expressions in different if/else branches stay distinct */
+    /* Expressions in different if/else branches stay distinct.
+     * Both x and y must stay live (return x+y), otherwise DCE drops the
+     * unused branch and only one IR_ADD remains. */
     prog = pipeline(
         "int main() { int a; int b; int x; int y; "
-        "if (a > 0) { x = a+b; } else { y = a+b; } return x; }",
+        "if (a > 0) { x = a+b; } else { y = a+b; } return x+y; }",
         &root, &arena);
     f = lastFunc(prog);
-    if (countOp(f, IR_ADD) != 2) {
-        fprintf(stderr, "PASS 2 FAILED: the two 'a+b' must not be unified (found %d)\n",
+    /* two a+b plus the final x+y → at least 3 ADD; the two a+b must not CSE */
+    if (countOp(f, IR_ADD) < 3) {
+        fprintf(stderr, "PASS 2 FAILED: the two 'a+b' must not be unified (found %d ADD)\n",
                 countOp(f, IR_ADD));
         CLEANUP(prog, root, arena);
         return 1;
@@ -109,9 +112,11 @@ int main(void) {
     printf("PASS 3 ok: primary leader invalidated, alias 'x' reused.\n");
     CLEANUP(prog, root, arena);
 
-    /* Array loads are not unified across a store (no alias analysis) */
+    /* Array loads are not unified across a store (no alias analysis).
+     * Local arrays are rejected by semantic; use globals. */
     prog = pipeline(
-        "int main() { int arr[10]; int other[10]; int i; int t1; int t2; "
+        "int arr[10]; int other[10];\n"
+        "int main() { int i; int t1; int t2; "
         "t1 = arr[i]; other[0] = 5; t2 = arr[i]; return t1+t2; }",
         &root, &arena);
     f = lastFunc(prog);

@@ -104,33 +104,12 @@ int main(void) {
     printf("PASS 2 ok: 'x = y + 0;' simplified to 'x = y;'.\n");
     CLEANUP(root, arena);
 
-    /* Dead if(0) branch pruning */
-    root = parseAndOptimize(
-        "int main() { int a; if (0) { a = 1; } else { a = 2; } return a; }", &arena);
-    body = lastFuncBody(root);
-    if (countOfKind(body, ND_IF) != 0) {
-        fprintf(stderr, "PASS 3 FAILED: ND_IF was not removed\n");
-        return 1;
-    }
-    node = findFirstOfKind(body, ND_ASSIGN);
-    if (!node || node->children[1]->kind != ND_NUM_INT ||
-        strcmp(node->children[1]->text, "2") != 0) {
-        fprintf(stderr, "PASS 3 FAILED: 'a = 2;' not remaining\n");
-        return 1;
-    }
-    printf("PASS 3 ok: 'if(0){a=1;}else{a=2;}' reduces to the else branch only.\n");
-    CLEANUP(root, arena);
-
-    /* while(0) removed entirely */
-    root = parseAndOptimize(
-        "int main() { int a; a = 1; while (0) { a = a + 1; } return a; }", &arena);
-    body = lastFuncBody(root);
-    if (countOfKind(body, ND_WHILE) != 0) {
-        fprintf(stderr, "PASS 4 FAILED: while(0) was not removed\n");
-        return 1;
-    }
-    printf("PASS 4 ok: 'while(0){...}' is removed entirely.\n");
-    CLEANUP(root, arena);
+    /*
+     * Control-flow DCE (if(0)/while(0)) is intentionally left to CP on the IR
+     * (try_fold_if_false).  AST optimizer only does algebraic identities +
+     * int chain rebalancing, so the old PASS 3/4 that required ND_IF/ND_WHILE
+     * removal are gone.
+     */
 
     /* Call with side effect is not eliminated by *0 */
     root = parseAndOptimize(
@@ -138,10 +117,10 @@ int main(void) {
         "int main() { int x; x = f(5) * 0; return x; }", &arena);
     body = lastFuncBody(root);
     if (countOfKind(body, ND_CALL) != 1) {
-        fprintf(stderr, "PASS 5 FAILED: 'f(5)' was eliminated together with '*0'\n");
+        fprintf(stderr, "PASS 3 FAILED: 'f(5)' was eliminated together with '*0'\n");
         return 1;
     }
-    printf("PASS 5 ok: 'f(5) * 0' does not eliminate the call (side effect).\n");
+    printf("PASS 3 ok: 'f(5) * 0' does not eliminate the call (side effect).\n");
     CLEANUP(root, arena);
 
     /* Pure *0 folds to 0 */
@@ -153,10 +132,10 @@ int main(void) {
     collectOfKind(body, ND_ASSIGN, assigns, 8, &nAssigns);
     if (nAssigns < 2 || assigns[1]->children[1]->kind != ND_NUM_INT ||
         strcmp(assigns[1]->children[1]->text, "0") != 0) {
-        fprintf(stderr, "PASS 6 FAILED\n");
+        fprintf(stderr, "PASS 4 FAILED\n");
         return 1;
     }
-    printf("PASS 6 ok: 'y * 0' (no side effects) folded to '0'.\n");
+    printf("PASS 4 ok: 'y * 0' (no side effects) folded to '0'.\n");
     CLEANUP(root, arena);
 
     /* Double negation folds */
@@ -165,10 +144,10 @@ int main(void) {
     node = findFirstOfKind(body, ND_ASSIGN);
     if (!node || node->children[1]->kind != ND_NUM_INT ||
         strcmp(node->children[1]->text, "5") != 0) {
-        fprintf(stderr, "PASS 7 FAILED\n");
+        fprintf(stderr, "PASS 5 FAILED\n");
         return 1;
     }
-    printf("PASS 7 ok: '-(-5)' folded recursively to '5'.\n");
+    printf("PASS 5 ok: '-(-5)' folded recursively to '5'.\n");
     CLEANUP(root, arena);
 
     /* Division by zero is not folded */
@@ -176,10 +155,10 @@ int main(void) {
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN);
     if (!node || node->children[1]->kind != ND_BINOP) {
-        fprintf(stderr, "PASS 8 FAILED: '5 / 0' should not have been folded\n");
+        fprintf(stderr, "PASS 6 FAILED: '5 / 0' should not have been folded\n");
         return 1;
     }
-    printf("PASS 8 ok: '5 / 0' remains an ND_BINOP (not folded).\n");
+    printf("PASS 6 ok: '5 / 0' remains an ND_BINOP (not folded).\n");
     CLEANUP(root, arena);
 
     /* Associative chain balancing (int) */
@@ -188,14 +167,14 @@ int main(void) {
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN)->children[1];
     if (binopHeight(node) != 2) {
-        fprintf(stderr, "PASS 9 FAILED: expected height 2, found %d\n", binopHeight(node));
+        fprintf(stderr, "PASS 7 FAILED: expected height 2, found %d\n", binopHeight(node));
         return 1;
     }
     if (countOfKind(node, ND_ID) != 4 || countOfKind(node, ND_BINOP) != 3) {
-        fprintf(stderr, "PASS 9 FAILED: leaves/operators inconsistent\n");
+        fprintf(stderr, "PASS 7 FAILED: leaves/operators inconsistent\n");
         return 1;
     }
-    printf("PASS 9 ok: 'a+b+c+d' rebalanced from height 3 to 2.\n");
+    printf("PASS 7 ok: 'a+b+c+d' rebalanced from height 3 to 2.\n");
     CLEANUP(root, arena);
 
     /* Float chains are not balanced */
@@ -204,10 +183,10 @@ int main(void) {
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN)->children[1];
     if (binopHeight(node) != 3) {
-        fprintf(stderr, "PASS 10 FAILED: height %d, expected 3\n", binopHeight(node));
+        fprintf(stderr, "PASS 8 FAILED: height %d, expected 3\n", binopHeight(node));
         return 1;
     }
-    printf("PASS 10 ok: float chain NOT balanced (height 3).\n");
+    printf("PASS 8 ok: float chain NOT balanced (height 3).\n");
     CLEANUP(root, arena);
 
     /* Longer int chain is balanced */
@@ -216,14 +195,14 @@ int main(void) {
     body = lastFuncBody(root);
     node = findFirstOfKind(body, ND_ASSIGN)->children[1];
     if (countOfKind(node, ND_ID) != 5 || countOfKind(node, ND_BINOP) != 4) {
-        fprintf(stderr, "PASS 11 FAILED: leaves/operators inconsistent\n");
+        fprintf(stderr, "PASS 9 FAILED: leaves/operators inconsistent\n");
         return 1;
     }
     if (binopHeight(node) >= 4) {
-        fprintf(stderr, "PASS 11 FAILED: height not reduced (found %d)\n", binopHeight(node));
+        fprintf(stderr, "PASS 9 FAILED: height not reduced (found %d)\n", binopHeight(node));
         return 1;
     }
-    printf("PASS 11 ok: 5 addends, height reduced to %d (naive: 4).\n", binopHeight(node));
+    printf("PASS 9 ok: 5 addends, height reduced to %d (naive: 4).\n", binopHeight(node));
     CLEANUP(root, arena);
 
     printf("\nAll tests passed. Cleanup completed without errors.\n");

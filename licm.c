@@ -542,8 +542,30 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
     for (int l = 0; l < nLoops; l++) {
         Loop *L = &loops[l];
 
-        // insert the synthetic pre-header block before processing this loop
-        loop_build_pre_header(f, L, loops, nLoops);
+        // insert the synthetic pre-header; returns 0 iff entry↔preheader swap
+        int phRet = loop_build_pre_header(f, L, loops, nLoops);
+
+        /*
+         * Only the entry-header swap invalidates Dom/liv:
+         *   - block indices are remapped (0 ↔ phIdx)
+         *   - Dom is too short and would OOB on the new header index
+         *   - LiveIn[] is indexed by the post-swap header
+         *
+         * Without swap the preheader is only appended: body/exit indices and
+         * Dom[0..oldN) stay valid (hoist queries never touch the new block),
+         * and LiveIn[header] still refers to the same block index.  Matching
+         * the pre-fix behaviour for that common case avoids O(L) full rebuilds.
+         */
+        if (phRet == 0) {
+            nBlocks = f->blockCount;
+            words   = (nBlocks + 63) / 64;
+            Dom     = loop_compute_dominators(f, words, arenaScratch);
+
+            varmap_destroy(liv.varMap);
+            arena_destroy(livArena);
+            livArena = arena_create(0);
+            liv      = liveness_computeIr(f, NULL, NULL, livArena);
+        }
 
         VarMap *vm  = liv.varMap;
         int numVars = liv.blockSets.numVars;
