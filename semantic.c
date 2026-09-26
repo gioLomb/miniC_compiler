@@ -431,13 +431,10 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
             break; // no initializer check if the declaration itself failed
         }
 
-        // Parse the declaration text to retrieve the declared type for
-        // initializer compatibility checking (and local-array rejection).
-        char *type_nameBuf, *varName;
-        int isArray, arraySize;
-        st_elaborate_decl(arena, stmt->text, &type_nameBuf, &varName,
-                                &isArray, &arraySize);
-        DataType declType = st_resolve_type(type_nameBuf);
+        DataType declType = stmt->dataType;
+        const char *varName = stmt->ident ? stmt->ident : "?";
+        int isArray = stmt->isArray;
+        int arraySize = stmt->arraySize;
 
         // Local arrays are not supported (no stack allocation in the backend).
         if (isArray && sym_scope_level(scope) > 0) {
@@ -522,14 +519,8 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
  */
 static void check_function_body(ASTNode *decl, Scope *global,
                                Arena *arena, int *errors) {
-    // Extract return type and function name from the declaration text
-    // (format: "retType funcName", e.g. "int main" or "float compute").
-    char *type_nameBuf, *funcName;
-    int isArray, arraySize;
-    st_elaborate_decl(arena, decl->text, &type_nameBuf, &funcName,
-                            &isArray, &arraySize);
-
-    DataType returnType = st_resolve_type(type_nameBuf);
+    const char *funcName = decl->ident ? decl->ident : "?";
+    DataType returnType = decl->dataType;
 
     // Parameter scope is a direct child of global so forward references to
     // other top-level functions are visible from inside the body.
@@ -541,16 +532,13 @@ static void check_function_body(ASTNode *decl, Scope *global,
     int paramCount = decl->nchildren - 1;
     int nIntParams = 0, nFloatParams = 0;
     for (int p = 0; p < paramCount; p++) {
-        char *ptype_name, *pname;
-        int pIsArray, pArraySize;
-        st_elaborate_decl(arena, decl->children[p]->text,
-                          &ptype_name, &pname, &pIsArray, &pArraySize);
-        if (st_resolve_type(ptype_name) == T_FLOAT)
+        ASTNode *param = decl->children[p];
+        if (param->dataType == T_FLOAT)
             nFloatParams++;
         else
             nIntParams++;
 
-        if (!st_bind_symbol(arena, fnScope, decl->children[p]))
+        if (!st_bind_symbol(arena, fnScope, param))
             (*errors)++;
     }
     if (nIntParams > 6) {
@@ -578,15 +566,14 @@ static void check_function_body(ASTNode *decl, Scope *global,
  * follows the same widening rule as locals (int → float allowed).
  */
 static void check_global_var_init(ASTNode *decl, Arena *arena, int *errors) {
+    (void)arena;
     if (!decl || decl->kind != ND_VAR_DECL || decl->nchildren == 0)
         return;
 
-    char *type_nameBuf, *varName;
-    int isArray, arraySize;
-    st_elaborate_decl(arena, decl->text, &type_nameBuf, &varName,
-                      &isArray, &arraySize);
-    DataType declType = st_resolve_type(type_nameBuf);
-    decl->dataType = declType;
+    const char *varName = decl->ident ? decl->ident : "?";
+    DataType declType = decl->dataType;
+    int isArray = decl->isArray;
+    int arraySize = decl->arraySize;
 
     if (isArray && decl->nchildren > arraySize) {
         report_error(errors,
