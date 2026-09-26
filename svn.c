@@ -1,20 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "svn.h"
-#include "hash_table.h"
-#include "arena.h"
-
-
-
-/**
- * @brief Represents a single scope in the sheaf-of-tables hierarchy.
- */
-typedef struct SVNScope {
-    Hash_Table        *operandToVnTable; /**< Operand identity -> Value Number */
-    Hash_Table        *exprToVnTable;    /**< Expression shape  -> Value Number */
-    Hash_Table        *leaders;          /**< Value Number      -> NameList */
-    struct SVNScope   *parent;           /**< Enclosing parent scope */
-} SVNScope;
 
 /**
  * @brief Compact key representing an IR operand.
@@ -46,29 +32,156 @@ typedef struct {
     Operand names[SVN_MAX_NAMES];
 } NameList;
 
+/** Fixed inline capacity before an entry table spills to heap overflow. */
+#define SVN_SCOPE_INLINE_CAP 8
+
+/** operandToVn entry: raw-byte ValueKey -> value number. */
+typedef struct { ValueKey key; int vn; } OperandVnEntry;
+/** exprToVn entry: raw-byte ExprKey -> value number. */
+typedef struct { ExprKey  key; int vn; } ExprVnEntry;
+/** leaders entry: value number -> its NameList. */
+typedef struct { int vn; NameList list; } LeaderEntry;
 
 /**
- * @brief FNV-1a non-cryptographic hash over raw bytes.
- *
- * @param key     Pointer to the data to hash.
- * @param keySize Size of the data in bytes.
- * @return Hash value.
+ * @brief Small per-scope table: first SVN_SCOPE_INLINE_CAP entries live
+ *        inline (no allocation); beyond that, spills into a heap-growable
+ *        overflow array. Replaces a per-scope Hash_Table so no
+ *        arena_create/ht_create churns per basic block (see svn_scope_init).
  */
-static unsigned long svn_hash(const void *key, size_t keySize) {
-    const unsigned char *bytes = key;
-    unsigned long hashValue = 2166136261UL;
-    for (size_t byteIndex = 0; byteIndex < keySize; byteIndex++) {
-        hashValue ^= bytes[byteIndex];
-        hashValue *= 16777619UL;
-    }
-    return hashValue;
+typedef struct {
+    int             count;         /**< Total entries (inline + overflow). */
+    OperandVnEntry  inlineArr[SVN_SCOPE_INLINE_CAP];
+    OperandVnEntry *overflow;      /**< NULL until count > SVN_SCOPE_INLINE_CAP. */
+    int             overflowCap;
+} OperandVnTable;
+
+typedef struct {
+    int          count;
+    ExprVnEntry  inlineArr[SVN_SCOPE_INLINE_CAP];
+    ExprVnEntry *overflow;
+    int          overflowCap;
+} ExprVnTable;
+
+typedef struct {
+    int          count;
+    LeaderEntry  inlineArr[SVN_SCOPE_INLINE_CAP];
+    LeaderEntry *overflow;
+    int          overflowCap;
+} LeaderTable;
+
+/** @brief Entry at logical index i, whether it lives inline or in overflow. */
+static inline OperandVnEntry *operand_table_at(OperandVnTable *t, int i) {
+    return (i < SVN_SCOPE_INLINE_CAP) ? &t->inlineArr[i] : &t->overflow[i - SVN_SCOPE_INLINE_CAP];
 }
+static inline ExprVnEntry *expr_table_at(ExprVnTable *t, int i) {
+    return (i < SVN_SCOPE_INLINE_CAP) ? &t->inlineArr[i] : &t->overflow[i - SVN_SCOPE_INLINE_CAP];
+}
+static inline LeaderEntry *leader_table_at(LeaderTable *t, int i) {
+    return (i < SVN_SCOPE_INLINE_CAP) ? &t->inlineArr[i] : &t->overflow[i - SVN_SCOPE_INLINE_CAP];
+}
+
+static int operand_table_get(OperandVnTable *t, const ValueKey *key, int *outVn) {
+    for (int i = 0; i < t->count; i++) {
+        OperandVnEntry *e = operand_table_at(t, i);
+        if (memcmp(&e->key, key, sizeof(*key)) == 0) { *outVn = e->vn; return 1; }
+    }
+    return 0;
+}
+
+/** @brief Update in place if key exists in THIS scope, else append (inline, or overflow on spill). */
+static void operand_table_set(OperandVnTable *t, const ValueKey *key, int vn) {
+    for (int i = 0; i < t->count; i++) {
+        OperandVnEntry *e = operand_table_at(t, i);
+        if (memcmp(&e->key, key, sizeof(*key)) == 0) { e->vn = vn; return; }
+    }
+    if (t->count >= SVN_SCOPE_INLINE_CAP) {
+        int idx = t->count - SVN_SCOPE_INLINE_CAP;
+        if (idx >= t->overflowCap) {
+            t->overflowCap = t->overflowCap ? t->overflowCap * 2 : 8;
+            t->overflow = realloc(t->overflow, (size_t)t->overflowCap * sizeof(OperandVnEntry));
+            if (!t->overflow) abort();
+        }
+    }
+    OperandVnEntry *slot = operand_table_at(t, t->count);
+    slot->key = *key;
+    slot->vn  = vn;
+    t->count++;
+}
+
+static int expr_table_get(ExprVnTable *t, const ExprKey *key, int *outVn) {
+    for (int i = 0; i < t->count; i++) {
+        ExprVnEntry *e = expr_table_at(t, i);
+        if (memcmp(&e->key, key, sizeof(*key)) == 0) { *outVn = e->vn; return 1; }
+    }
+    return 0;
+}
+
+static void expr_table_set(ExprVnTable *t, const ExprKey *key, int vn) {
+    for (int i = 0; i < t->count; i++) {
+        ExprVnEntry *e = expr_table_at(t, i);
+        if (memcmp(&e->key, key, sizeof(*key)) == 0) { e->vn = vn; return; }
+    }
+    if (t->count >= SVN_SCOPE_INLINE_CAP) {
+        int idx = t->count - SVN_SCOPE_INLINE_CAP;
+        if (idx >= t->overflowCap) {
+            t->overflowCap = t->overflowCap ? t->overflowCap * 2 : 8;
+            t->overflow = realloc(t->overflow, (size_t)t->overflowCap * sizeof(ExprVnEntry));
+            if (!t->overflow) abort();
+        }
+    }
+    ExprVnEntry *slot = expr_table_at(t, t->count);
+    slot->key = *key;
+    slot->vn  = vn;
+    t->count++;
+}
+
+static int leader_table_get(LeaderTable *t, int vn, NameList *outList) {
+    for (int i = 0; i < t->count; i++) {
+        LeaderEntry *e = leader_table_at(t, i);
+        if (e->vn == vn) { *outList = e->list; return 1; }
+    }
+    return 0;
+}
+
+/** @brief Update in place if vn already has a list in THIS scope, else append. */
+static void leader_table_set(LeaderTable *t, int vn, const NameList *list) {
+    for (int i = 0; i < t->count; i++) {
+        LeaderEntry *e = leader_table_at(t, i);
+        if (e->vn == vn) { e->list = *list; return; }
+    }
+    if (t->count >= SVN_SCOPE_INLINE_CAP) {
+        int idx = t->count - SVN_SCOPE_INLINE_CAP;
+        if (idx >= t->overflowCap) {
+            t->overflowCap = t->overflowCap ? t->overflowCap * 2 : 8;
+            t->overflow = realloc(t->overflow, (size_t)t->overflowCap * sizeof(LeaderEntry));
+            if (!t->overflow) abort();
+        }
+    }
+    LeaderEntry *slot = leader_table_at(t, t->count);
+    slot->vn   = vn;
+    slot->list = *list;
+    t->count++;
+}
+
+/**
+ * @brief Represents a single scope in the sheaf-of-tables hierarchy.
+ * Backed by fixed-inline-capacity tables (see SVN_SCOPE_INLINE_CAP): no
+ * heap allocation for the common case (<=8 distinct entries per category
+ * per scope), only rare overflow blocks spill to malloc/realloc.
+ */
+typedef struct SVNScope {
+    OperandVnTable    operandToVn; /**< Operand identity -> Value Number */
+    ExprVnTable       exprToVn;    /**< Expression shape  -> Value Number */
+    LeaderTable       leaders;     /**< Value Number      -> NameList */
+    struct SVNScope   *parent;     /**< Enclosing parent scope */
+} SVNScope;
 
 /**
  * @brief Constructs a normalized ValueKey for an IR operand.
  *
  * Normalizes VAR, TEMP, CONST_INT, and CONST_FLOAT operands into a
- * compact key suitable for hash table lookups.
+ * compact key suitable for table lookups. memset zeroes padding so
+ * memcmp-based equality is well-defined.
  *
  * @param op Operand to normalize.
  * @return ValueKey structure (kind = -1 for unsupported operands).
@@ -95,7 +208,7 @@ static inline ValueKey svn_build_value_key(const Operand *op) {
         key.data.floatVal  = op->data.floatVal;
         break;
     default:
-        key.kind           = -1;  // Not representable (e.g. NONE, global addr)
+        key.kind           = -1;  /* Not representable (e.g. NONE, global addr) */
         break;
     }
     return key;
@@ -120,33 +233,23 @@ static inline ExprKey svn_build_expr_key(int operation, int valueNumber1, int va
     return key;
 }
 
-
 /**
- * @brief Initialises a new SVN scope.
- *
- * Creates three hash tables: operand->VN, expression->VN, and VN->leaders.
- *
- * @param scope  Scope to initialise.
- * @param parent Parent scope (may be NULL).
+ * @brief Initialises a new SVN scope: zeroes all three tables (no
+ *        allocation happens here — see SVNScope doc).
  */
 static void svn_scope_init(SVNScope *scope, SVNScope *parent) {
-    scope->operandToVnTable = ht_create(SVN_SCOPE_TABLE_CAPACITY, svn_hash);
-    scope->exprToVnTable    = ht_create(SVN_SCOPE_TABLE_CAPACITY, svn_hash);
-    scope->leaders          = ht_create(SVN_SCOPE_TABLE_CAPACITY, svn_hash);
-    scope->parent           = parent;
+    memset(&scope->operandToVn, 0, sizeof(scope->operandToVn));
+    memset(&scope->exprToVn,    0, sizeof(scope->exprToVn));
+    memset(&scope->leaders,     0, sizeof(scope->leaders));
+    scope->parent = parent;
 }
 
-/**
- * @brief Destroys an SVN scope and frees its hash tables.
- *
- * @param scope Scope to destroy.
- */
+/** @brief Frees only the (rare) overflow blocks; inline storage is on-stack. */
 static inline void svn_scope_destroy(SVNScope *scope) {
-    ht_destroy(scope->operandToVnTable, NULL);
-    ht_destroy(scope->exprToVnTable,    NULL);
-    ht_destroy(scope->leaders,          NULL);
+    free(scope->operandToVn.overflow);
+    free(scope->exprToVn.overflow);
+    free(scope->leaders.overflow);
 }
-
 
 /**
  * @brief Adds a name (operand) as a leader for a value number.
@@ -154,29 +257,16 @@ static inline void svn_scope_destroy(SVNScope *scope) {
  * Retrieves the existing NameList from the nearest ancestor scope that
  * contains it, appends the new name, and stores the updated list in the
  * current scope (shadowing ancestors).
- *
- * @param valueNumber Value number to add a leader for.
- * @param name        Operand to add as a leader.
- * @param scope       Current scope (where the list will be stored).
  */
 static void svn_add_leader_for_value(int valueNumber, const Operand *name, SVNScope *scope) {
     NameList list;
     memset(&list, 0, sizeof(list));
 
-    // Search ancestor scopes for an existing NameList.
-    for (SVNScope *currentScope = scope; currentScope; currentScope = currentScope->parent) {
-        if (ht_get(currentScope->leaders, &valueNumber, sizeof(valueNumber), &list, sizeof(list))) {
-            break;  // Found existing list; will update it in current scope.
-        }
-    }
+    for (SVNScope *s = scope; s; s = s->parent)
+        if (leader_table_get(&s->leaders, valueNumber, &list)) break;
 
-    // Append the new name if there is room.
-    if (list.count < SVN_MAX_NAMES) {
-        list.names[list.count++] = *name;
-    }
-
-    // Store (or update) the list in the current scope, shadowing ancestors.
-    ht_set(scope->leaders, &valueNumber, sizeof(valueNumber), &list, sizeof(list));
+    if (list.count < SVN_MAX_NAMES) list.names[list.count++] = *name;
+    leader_table_set(&scope->leaders, valueNumber, &list);
 }
 
 /**
@@ -184,169 +274,96 @@ static void svn_add_leader_for_value(int valueNumber, const Operand *name, SVNSc
  *
  * Binds the operand to its VN in the operand->VN table and adds it as a
  * leader for that VN.
- *
- * @param destination Destination operand.
- * @param valueNumber Value number to bind.
- * @param scope       Current scope.
  */
 static void svn_define_value(const Operand *destination, int valueNumber, SVNScope *scope) {
     if (destination->kind != OPND_VAR && destination->kind != OPND_TEMP) return;
-    
     ValueKey key = svn_build_value_key(destination);
-    ht_set(scope->operandToVnTable, &key, sizeof(key), &valueNumber, sizeof(valueNumber));
+    operand_table_set(&scope->operandToVn, &key, valueNumber);
     svn_add_leader_for_value(valueNumber, destination, scope);
 }
 
 /**
  * @brief Checks if a name (variable) still holds a given value number.
  *
- * Searches the scope chain from innermost to outermost for the variable's
- * most recent binding. If found and it matches the expected VN, the name
- * is still valid. Temporaries are always valid (single definition per path).
- *
- * @param name        Operand to check (must be a variable or temporary).
- * @param valueNumber Expected value number.
- * @param scope       Current scope.
- * @return 1 if the name still holds the VN, 0 otherwise.
+ * Temporaries are always valid (single definition per path).
  */
 static int svn_is_leader_still_valid(const Operand *name, int valueNumber, SVNScope *scope) {
-    // Temps are defined once per path → always valid.
     if (name->kind != OPND_VAR) return 1;
-
     ValueKey key = svn_build_value_key(name);
-    // Search innermost to outermost: most recent definition wins.
-    for (SVNScope *currentScope = scope; currentScope; currentScope = currentScope->parent) {
-        int activeValueNumber;
-        if (ht_get(currentScope->operandToVnTable, &key, sizeof(key), &activeValueNumber, sizeof(activeValueNumber))) {
-            return activeValueNumber == valueNumber;
-        }
+    for (SVNScope *s = scope; s; s = s->parent) {
+        int activeVn;
+        if (operand_table_get(&s->operandToVn, &key, &activeVn))
+            return activeVn == valueNumber;
     }
-    // Not defined in any scope → cannot be a valid leader.
     return 0;
 }
 
 /**
  * @brief Finds a valid leader operand for a value number.
- *
- * Retrieves the NameList from the nearest ancestor scope and scans it for
- * a name that is still valid in the current context.
- *
- * @param valueNumber Value number to find a leader for.
- * @param scope       Current scope.
- * @param outLeader   Output pointer for the found leader operand.
- * @return 1 if a valid leader was found, 0 otherwise.
  */
 static int svn_find_valid_leader(int valueNumber, SVNScope *scope, Operand *outLeader) {
     NameList list;
-    memset(&list, 0, sizeof(list));
-    int listFound = 0;
+    int found = 0;
+    for (SVNScope *s = scope; s; s = s->parent)
+        if (leader_table_get(&s->leaders, valueNumber, &list)) { found = 1; break; }
+    if (!found) return 0;
 
-    // Retrieve NameList from the nearest ancestor scope that has it.
-    for (SVNScope *currentScope = scope; currentScope; currentScope = currentScope->parent) {
-        if (ht_get(currentScope->leaders, &valueNumber, sizeof(valueNumber), &list, sizeof(list))) {
-            listFound = 1;
-            break;
-        }
-    }
-    if (!listFound) return 0;
-
-    // Scan the list and return the first valid name.
-    for (int index = 0; index < list.count; index++) {
-        if (svn_is_leader_still_valid(&list.names[index], valueNumber, scope)) {
-            *outLeader = list.names[index];
+    for (int i = 0; i < list.count; i++)
+        if (svn_is_leader_still_valid(&list.names[i], valueNumber, scope)) {
+            *outLeader = list.names[i];
             return 1;
         }
-    }
     return 0;
 }
 
-
 /**
  * @brief Gets the value number of an operand, assigning a fresh one if unseen.
- *
- * Searches the scope chain for an existing binding. If found, returns it.
- * Otherwise, creates a fresh VN and binds the operand in the current scope.
- *
- * @param op        Operand to number.
- * @param scope     Current scope.
- * @param vnCounter Pointer to the global VN counter (updated when assigning).
- * @return Value number, or -1 for unsupported operand kinds.
  */
 static int svn_value_number_of(Operand op, SVNScope *scope, int *vnCounter) {
     ValueKey key = svn_build_value_key(&op);
-    if (key.kind < 0) return -1;  // Unsupported operand kind.
+    if (key.kind < 0) return -1;
 
-    int valueNumber;
-    // Search ancestor scopes for an existing binding.
-    for (SVNScope *currentScope = scope; currentScope; currentScope = currentScope->parent) {
-        if (ht_get(currentScope->operandToVnTable, &key, sizeof(key), &valueNumber, sizeof(valueNumber))) {
-            return valueNumber;
-        }
-    }
+    int vn;
+    for (SVNScope *s = scope; s; s = s->parent)
+        if (operand_table_get(&s->operandToVn, &key, &vn)) return vn;
 
-    // Not found → create a fresh VN and bind it in the current scope.
-    valueNumber = (*vnCounter)++;
-    ht_set(scope->operandToVnTable, &key, sizeof(key), &valueNumber, sizeof(valueNumber));
-    svn_add_leader_for_value(valueNumber, &op, scope);
-    return valueNumber;
+    vn = (*vnCounter)++;
+    operand_table_set(&scope->operandToVn, &key, vn);
+    svn_add_leader_for_value(vn, &op, scope);
+    return vn;
 }
 
 /**
  * @brief Looks up an expression key and replaces the instruction if possible.
- *
- * Searches ancestor scopes for the expression. If found and a valid leader
- * exists, replaces the instruction with a copy from that leader. Otherwise,
- * assigns a fresh VN and records the expression in the current scope.
- *
- * @param instruction Instruction being processed (may be rewritten).
- * @param exprKey     Expression key to look up.
- * @param scope       Current scope.
- * @param vnCounter   Pointer to the global VN counter.
  */
 static void svn_lookup_or_insert_expr(IRInstr *instruction, const ExprKey *exprKey,
                                        SVNScope *scope, int *vnCounter) {
     int expressionVN;
     int isFound = 0;
-
-    // Check all ancestor scopes for the expression key.
-    for (SVNScope *currentScope = scope; currentScope; currentScope = currentScope->parent) {
-        if (ht_get(currentScope->exprToVnTable, (void *)exprKey, sizeof(*exprKey), &expressionVN, sizeof(expressionVN))) {
-            isFound = 1;
-            break;
-        }
-    }
+    for (SVNScope *s = scope; s; s = s->parent)
+        if (expr_table_get(&s->exprToVn, exprKey, &expressionVN)) { isFound = 1; break; }
 
     Operand leaderOperand;
     if (isFound && svn_find_valid_leader(expressionVN, scope, &leaderOperand)) {
-        // Replace computation with a copy from a valid leader.
         instruction->op   = IR_ASSIGN;
         instruction->src1 = leaderOperand;
         instruction->src2 = (Operand){ .kind = OPND_NONE };
         svn_define_value(&instruction->dst, expressionVN, scope);
     } else {
-        // New expression: assign fresh VN and record in expr table.
         expressionVN = (*vnCounter)++;
-        ht_set(scope->exprToVnTable, (void *)exprKey, sizeof(*exprKey), &expressionVN, sizeof(expressionVN));
+        expr_table_set(&scope->exprToVn, exprKey, expressionVN);
         svn_define_value(&instruction->dst, expressionVN, scope);
     }
 }
 
-
 /**
  * @brief Processes a binary or relational IR instruction.
- *
- * Computes VNs for both operands, normalises commutative operations by
- * sorting VN order, and looks up or inserts the expression.
- *
- * @param instruction Instruction to process.
- * @param scope       Current scope.
- * @param vnCounter   Pointer to the global VN counter.
  */
 static void svn_process_binary(IRInstr *instruction, SVNScope *scope, int *vnCounter) {
     int vn1 = svn_value_number_of(instruction->src1, scope, vnCounter);
     int vn2 = svn_value_number_of(instruction->src2, scope, vnCounter);
 
-    // Normalise commutative operations by sorting VN order.
+    /* Normalise commutative operations by sorting VN order. */
     if (ir_is_commutative(instruction->op) && vn1 > vn2) {
         int swapTemp = vn1;
         vn1 = vn2;
@@ -359,12 +376,6 @@ static void svn_process_binary(IRInstr *instruction, SVNScope *scope, int *vnCou
 
 /**
  * @brief Processes a unary IR instruction.
- *
- * Computes VN for the operand and looks up or inserts the expression.
- *
- * @param instruction Instruction to process.
- * @param scope       Current scope.
- * @param vnCounter   Pointer to the global VN counter.
  */
 static void svn_process_unary(IRInstr *instruction, SVNScope *scope, int *vnCounter) {
     int vn1 = svn_value_number_of(instruction->src1, scope, vnCounter);
@@ -374,36 +385,24 @@ static void svn_process_unary(IRInstr *instruction, SVNScope *scope, int *vnCoun
 
 /**
  * @brief Master instruction dispatcher for SVN processing.
- *
- * Routes each instruction to the appropriate handler based on its opcode.
- * Instructions without a destination or those that cannot be value-numbered
- * are simply skipped.
- *
- * @param instruction Instruction to process.
- * @param scope       Current scope.
- * @param vnCounter   Pointer to the global VN counter.
  */
 static void svn_process_instr(IRInstr *instruction, SVNScope *scope, int *vnCounter) {
     switch (instruction->op) {
-    // Binary arithmetic and relational ops.
     case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
     case IR_LT:  case IR_LE:  case IR_GT:  case IR_GE:  case IR_EQ: case IR_NE:
         svn_process_binary(instruction, scope, vnCounter);
         break;
 
-    // Unary ops.
     case IR_NEG: case IR_NOT: case IR_ITOF:
         svn_process_unary(instruction, scope, vnCounter);
         break;
 
-    // Assignment: propagate source VN to destination.
     case IR_ASSIGN: {
         int sourceVN = svn_value_number_of(instruction->src1, scope, vnCounter);
         svn_define_value(&instruction->dst, sourceVN, scope);
         break;
     }
 
-    // Operations that produce fresh values (cannot be safely value-numbered).
     case IR_LOAD_ARR:
     case IR_CALL: {
         int freshVN = (*vnCounter)++;
@@ -411,15 +410,12 @@ static void svn_process_instr(IRInstr *instruction, SVNScope *scope, int *vnCoun
         break;
     }
 
-    // Global address is a constant expression.
     case IR_GLOBAL_ADDR: {
-        // Key uses global offset as a pseudo-operand.
         ExprKey exprKey = svn_build_expr_key((int)instruction->op, instruction->src1.data.globalOffset, -1);
         svn_lookup_or_insert_expr(instruction, &exprKey, scope, vnCounter);
         break;
     }
 
-    // Instructions with no destination, or side-effect ops not value-numbered.
     case IR_STORE_ARR:
     case IR_PARAM:
     case IR_RETURN:
@@ -430,35 +426,21 @@ static void svn_process_instr(IRInstr *instruction, SVNScope *scope, int *vnCoun
     }
 }
 
-
 /**
  * @brief Recursively processes an Extended Basic Block (EBB).
- *
- * Traverses a maximal sequence of blocks where each block has exactly one
- * predecessor, sharing value numbering information within the EBB.
- *
- * @param irFunction    IR function being processed.
- * @param blockIndex    Current block index.
- * @param parentScope   Parent scope (inherited from previous blocks).
- * @param vnCounter     Pointer to the global VN counter.
- * @param visitedBlocks Array marking which blocks have been visited.
  */
 static void svn_process_ebb(IRFunction *irFunction, int blockIndex, SVNScope *parentScope,
                             int *vnCounter, int *visitedBlocks) {
-    // Mark block as visited.
     visitedBlocks[blockIndex] = 1;
 
-    // Create a new scope for this block, inheriting from parent.
     SVNScope currentScope;
     svn_scope_init(&currentScope, parentScope);
 
-    // Process all instructions in the block.
     for (int instructionIndex = irFunction->blocks[blockIndex].bb.range.start;
          instructionIndex < irFunction->blocks[blockIndex].bb.range.end; instructionIndex++) {
         svn_process_instr(&irFunction->instrs[instructionIndex], &currentScope, vnCounter);
     }
 
-    // Recurse into successors that have only one predecessor (EBB condition).
     for (int successorIndex = 0; successorIndex < 2; successorIndex++) {
         int targetBlock = irFunction->blocks[blockIndex].bb.succ[successorIndex];
         if (targetBlock >= 0 && !visitedBlocks[targetBlock] && irFunction->blocks[targetBlock].predCount == 1) {
@@ -466,19 +448,11 @@ static void svn_process_ebb(IRFunction *irFunction, int blockIndex, SVNScope *pa
         }
     }
 
-    // Destroy the scope after processing all children.
     svn_scope_destroy(&currentScope);
 }
 
-
 /**
  * @brief Public entry point for the Superlocal Value Numbering pass.
- *
- * Identifies equivalent computations within Extended Basic Blocks and
- * replaces them with copies from existing leaders. This reduces redundant
- * computations and enables further optimizations.
- *
- * @param irFunction IR function to optimize.
  */
 void svn_optimize(IRFunction *irFunction) {
     if (!irFunction || irFunction->blockCount == 0) return;
@@ -486,7 +460,6 @@ void svn_optimize(IRFunction *irFunction) {
     int vnCounter = 0;
     int *visitedBlocks = calloc((size_t)irFunction->blockCount, sizeof(int));
 
-    // Start a new EBB at every block that is either the entry or has >1 predecessors.
     for (int blockIndex = 0; blockIndex < irFunction->blockCount; blockIndex++) {
         if (!visitedBlocks[blockIndex] && (blockIndex == 0 || irFunction->blocks[blockIndex].predCount != 1)) {
             svn_process_ebb(irFunction, blockIndex, NULL, &vnCounter, visitedBlocks);
@@ -495,3 +468,4 @@ void svn_optimize(IRFunction *irFunction) {
 
     free(visitedBlocks);
 }
+
