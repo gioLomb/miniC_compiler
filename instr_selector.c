@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include "instr_selector.h"
 #include "varmap.h"
 #include "parser/errorCollector.h"
@@ -372,32 +373,114 @@ static void isel_select_goto(MachFunction *f, const IRInstr *in) {
  *        on an ordinary 0/1-valued vreg.
  */
 /**
- * @brief True if @p tempId (comparison result) is used by any IR instruction
- *        after index @p afterIdx other than the current IF_FALSE at @p ifIdx.
- *        When true, CMP+Jcc fusion must not skip materialising the 0/1 value.
+ * @brief Per-function index: for every temp id read as a source operand
+ *        (src1/src2) anywhere in the function, how many times it is read
+ *        and the earliest instruction index of such a read.
+ *
+ * Replaces the previous isel_cmp_result_used_later() linear rescan
+ * (O(n) per call, O(n^2) worst case across an if-chain-heavy function,
+ * e.g. the scFn* examples in stress_test.c) with a single O(n) build
+ * shared by every comparison in the function, then O(1) queries.
+ * Direct-address map keyed by tempId (offset by the minimum tempId
+ * seen), same pattern as cp.c's build_label_to_instr().
+ *
+ * NOTE: the replaced function also matched tempId against an
+ * instruction's dst operand (a defensive "redefinition" check). Every
+ * temp id in this front-end is allocated once (ir_alloc_temp_id() /
+ * nextTemp++) and written by exactly one instruction, so a second dst
+ * match for the same tempId can never occur; that branch was dead code
+ * and is intentionally dropped here.
  */
-static int isel_cmp_result_used_later(const IRFunction *irf, int tempId, int afterIdx, int ifIdx) {
-    if (tempId < 0 || !irf) return 1; /* conservative */
-    for (int i = afterIdx + 1; i < irf->count; i++) {
-        if (i == ifIdx) continue;
-        const IRInstr *ins = &irf->instrs[i];
-        if (ins->src1.kind == OPND_TEMP && ins->src1.data.tempId == tempId) return 1;
-        if (ins->src2.kind == OPND_TEMP && ins->src2.data.tempId == tempId) return 1;
-        if (ins->dst.kind  == OPND_TEMP && ins->dst.data.tempId  == tempId) return 1;
+typedef struct {
+    int  minTemp;    /**< Smallest tempId seen as a source operand, or 0 if none. */
+    int  size;       /**< Number of slots (0 if the function reads no temps). */
+    int *useCount;   /**< useCount[tempId - minTemp]: read-use count.       */
+    int *firstUse;   /**< firstUse[tempId - minTemp]: earliest read index, or -1. */
+} TempUseIndex;
+
+static void isel_index_temp_src(const Operand *op, int minT, int maxT,
+                                int instrIdx, int *useCount, int *firstUse) {
+    if (op->kind != OPND_TEMP) return;
+    int t = op->data.tempId;
+    if (t < minT || t > maxT) return; /* defensive; range already covers every src temp */
+    int slot = t - minT;
+    useCount[slot]++;
+    if (firstUse[slot] < 0) firstUse[slot] = instrIdx;
+}
+
+/**
+ * @brief Build the source-use index for @p irf (see TempUseIndex doc).
+ *
+ * Two linear passes: first finds the [minT, maxT] range of temp ids ever
+ * read as src1/src2, then fills useCount[]/firstUse[] over that range.
+ * Caller releases the arrays with isel_free_temp_use_index().
+ */
+static TempUseIndex isel_build_temp_use_index(const IRFunction *irf) {
+    TempUseIndex idx = { 0, 0, NULL, NULL };
+    int minT = INT_MAX, maxT = INT_MIN;
+
+    // first pass: find the [minT, maxT] range of temp ids used as sources
+    for (int i = 0; i < irf->count; i++) {
+        const IRInstr *in = &irf->instrs[i];
+        if (in->src1.kind == OPND_TEMP) {
+            if (in->src1.data.tempId < minT) minT = in->src1.data.tempId;
+            if (in->src1.data.tempId > maxT) maxT = in->src1.data.tempId;
+        }
+        if (in->src2.kind == OPND_TEMP) {
+            if (in->src2.data.tempId < minT) minT = in->src2.data.tempId;
+            if (in->src2.data.tempId > maxT) maxT = in->src2.data.tempId;
+        }
     }
-    return 0;
+    if (minT > maxT) return idx; // no temp ever read as a source: empty index
+
+    idx.minTemp  = minT;
+    idx.size     = maxT - minT + 1;
+    idx.useCount = malloc((size_t)idx.size * sizeof(int));
+    idx.firstUse = malloc((size_t)idx.size * sizeof(int));
+    memset(idx.useCount, 0,    (size_t)idx.size * sizeof(int));
+    memset(idx.firstUse, 0xFF, (size_t)idx.size * sizeof(int)); // -1 sentinel (two's complement)
+
+    // second pass: fill counts/first-use indices for every source occurrence
+    for (int i = 0; i < irf->count; i++) {
+        const IRInstr *in = &irf->instrs[i];
+        isel_index_temp_src(&in->src1, minT, maxT, i, idx.useCount, idx.firstUse);
+        isel_index_temp_src(&in->src2, minT, maxT, i, idx.useCount, idx.firstUse);
+    }
+    return idx;
+}
+
+/** @brief Release the arrays owned by a TempUseIndex built via isel_build_temp_use_index(). */
+static inline void isel_free_temp_use_index(TempUseIndex *idx) {
+    free(idx->useCount);
+    free(idx->firstUse);
+    idx->useCount = idx->firstUse = NULL;
+}
+
+/**
+ * @brief O(1) replacement for the old isel_cmp_result_used_later() scan:
+ *        true if @p tempId is read anywhere in the function other than
+ *        at instruction @p excludeIdx (the fusing IF_FALSE).
+ */
+static inline int isel_temp_used_elsewhere(const TempUseIndex *idx, int tempId, int excludeIdx) {
+    if (tempId < 0) return 1; /* conservative, mirrors original tempId<0 case */
+    int slot = tempId - idx->minTemp;
+    if (idx->size == 0 || slot < 0 || slot >= idx->size) return 0; // never read as a source
+    int cnt = idx->useCount[slot];
+    if (cnt == 0) return 0;
+    if (cnt >= 2) return 1;
+    return idx->firstUse[slot] != excludeIdx; // single read: elsewhere iff not the excluded one
 }
 
 static void isel_select_if_false(VarMap *operandToVreg, FloatVregMap *fvm, MachFunction *f, PendingCmp *pcmp,
-                             const IRInstr *in, const IRFunction *irf, int ifIdx) {
+                             const IRInstr *in, const IRFunction *irf, int ifIdx,
+                             const TempUseIndex *tempUses) {
     int cond_vreg = varmap_operand_id(operandToVreg, in->src1);
     int lbl       = in->dst.data.labelId;
 
     /* Only fuse when the boolean is not needed after the branch. */
     int canFuse = pcmp->active && cond_vreg == pcmp->dstVreg;
     if (canFuse && pcmp->instr && pcmp->instr->dst.kind == OPND_TEMP) {
-        int cmpIdx = (int)(pcmp->instr - irf->instrs);
-        if (isel_cmp_result_used_later(irf, pcmp->instr->dst.data.tempId, cmpIdx, ifIdx))
+        if (isel_temp_used_elsewhere(tempUses, pcmp->instr->dst.data.tempId, ifIdx))
             canFuse = 0;
     }
 
@@ -772,6 +855,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
 
     PendingArgs args = { .count = 0 };
     PendingCmp  pcmp = { .active = 0 };
+    TempUseIndex tempUses = isel_build_temp_use_index(irf);
 
     for (int i = 0; i < irf->count; i++) {
         const IRInstr *in = &irf->instrs[i];
@@ -785,8 +869,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
                 varmap_operand_id(operandToVreg, in->src1) == pcmp.dstVreg) {
                 must_materialize = 0;
                 if (pcmp.instr && pcmp.instr->dst.kind == OPND_TEMP) {
-                    int cmpIdx = (int)(pcmp.instr - irf->instrs);
-                    if (isel_cmp_result_used_later(irf, pcmp.instr->dst.data.tempId, cmpIdx, i))
+                    if (isel_temp_used_elsewhere(&tempUses, pcmp.instr->dst.data.tempId, i))
                         must_materialize = 1;
                 }
             }
@@ -797,7 +880,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         switch (in->op) {
         case IR_LABEL:       isel_select_label(f, in); break;
         case IR_GOTO:        isel_select_goto(f, in); break;
-        case IR_IF_FALSE:    isel_select_if_false(operandToVreg, &fvm, f, &pcmp, in, irf, i); break;
+        case IR_IF_FALSE:    isel_select_if_false(operandToVreg, &fvm, f, &pcmp, in, irf, i, &tempUses); break;
         case IR_ASSIGN:      isel_select_assign(operandToVreg, &fvm, f, in); break;
         case IR_ITOF: {
             int srcVreg = isel_load_operand(&in->src1, operandToVreg, f);
@@ -825,6 +908,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
 
 
     isel_flush_pending_cmp(&pcmp, operandToVreg, &fvm, f);
+    isel_free_temp_use_index(&tempUses);
     fvmap_free(&fvm);
     varmap_destroy(operandToVreg);
     return f;
@@ -846,4 +930,3 @@ MachProgram *isel_select(const IRProgram *ir) {
                                                        ir);
     return mp;
 }
-
