@@ -5,6 +5,7 @@
 #include "ra_color.h"
 #include "ra_coalesce.h"
 #include "instr_selector.h"
+#include "arena.h"
 
 /**
  * Scans active, non-bucketed nodes to find the best optimistic spill candidate.
@@ -65,7 +66,9 @@ static inline void ra_update_neighbor_degrees(IGraph *g, int chosen, int nextVre
 int ra_simplify(IGraph *g, int classVregCount, int k, int **outStack)
 {
     int stackCap = (classVregCount > 0) ? classVregCount : 1;
-    *outStack = malloc((size_t)stackCap * sizeof(int));
+    *outStack = g->arena
+        ? arena_alloc(g->arena, (size_t)stackCap * sizeof(int))
+        : malloc((size_t)stackCap * sizeof(int));
 
     int stackLen   = 0;
     Buckets *buckets = buckets_create(classVregCount, k);
@@ -130,27 +133,41 @@ typedef struct {
  * @param n   Total node count (== IGraph.n), sizes the start[] array.
  * @return    Heap-allocated PartnerIndex; release with partner_index_free().
  */
-static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
+static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n, Arena *arena) {
     PartnerIndex idx = { NULL, NULL };
     if (!pl || pl->count == 0 || n <= 0) return idx;
 
-    // count how many pairs touch each node
-    int *count = calloc((size_t)n, sizeof(int));
+    int *count;
+    if (arena) {
+        count = arena_alloc(arena, (size_t)n * sizeof(int));
+        memset(count, 0, (size_t)n * sizeof(int));
+    } else {
+        count = calloc((size_t)n, sizeof(int));
+    }
     for (int i = 0; i < pl->count; i++) {
         int aVregId = pl->pairs[i].vregId, aPartnerId = pl->pairs[i].partnerId;
         if (aVregId >= 0 && aVregId < n) count[aVregId]++;
         if (aPartnerId >= 0 && aPartnerId < n) count[aPartnerId]++;
     }
 
-    // prefix sum -> offsets
-    idx.start = malloc((size_t)(n + 1) * sizeof(int));
+    if (arena)
+        idx.start = arena_alloc(arena, (size_t)(n + 1) * sizeof(int));
+    else
+        idx.start = malloc((size_t)(n + 1) * sizeof(int));
     int total = 0;
     for (int i = 0; i < n; i++) { idx.start[i] = total; total += count[i]; }
     idx.start[n] = total;
 
-    // scatter, using a write cursor seeded from start[]
-    idx.data = malloc((size_t)(total > 0 ? total : 1) * sizeof(int));
-    int *cursor = malloc((size_t)n * sizeof(int));
+    size_t dataN = (size_t)(total > 0 ? total : 1);
+    if (arena)
+        idx.data = arena_alloc(arena, dataN * sizeof(int));
+    else
+        idx.data = malloc(dataN * sizeof(int));
+    int *cursor;
+    if (arena)
+        cursor = arena_alloc(arena, (size_t)n * sizeof(int));
+    else
+        cursor = malloc((size_t)n * sizeof(int));
     memcpy(cursor, idx.start, (size_t)n * sizeof(int));
 
     for (int i = 0; i < pl->count; i++) {
@@ -161,8 +178,10 @@ static PartnerIndex ra_build_partner_index(const PartnerList *pl, int n) {
         }
     }
 
-    free(cursor);
-    free(count);
+    if (!arena) {
+        free(cursor);
+        free(count);
+    }
     return idx;
 }
 
@@ -235,7 +254,7 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen, int k, int callerSaved
     int nSpilled = 0;
     const uint32_t valid_mask = (k >= 32) ? ~0u : ((1u << k) - 1u);
 
-    PartnerIndex pidx = ra_build_partner_index(pl, g->n);
+    PartnerIndex pidx = ra_build_partner_index(pl, g->n, g->arena);
 
     for (int si = stackLen - 1; si >= 0; si--) {
         int v = stack[si];
@@ -254,6 +273,6 @@ int ra_select_colors(IGraph *g, int *stack, int stackLen, int k, int callerSaved
         }
     }
 
-    partner_index_free(&pidx);
+    if (!g->arena) partner_index_free(&pidx);
     return nSpilled;
 }

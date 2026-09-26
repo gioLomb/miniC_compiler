@@ -60,10 +60,8 @@ static void ig_add_edge(IGraph *g, int i, int j) {
 }
 
 void ig_free(IGraph *g) {
-    if (!g || !g->adj) return;
-    // only the IntVector backing arrays are heap-allocated; fixed-size arrays
-    // are in the caller's arena and must not be freed individually
-    for (int i = 0; i < g->n; i++) int_vector_free(&g->adj[i]);
+    (void)g;
+    /* adj lists and fixed-size arrays are arena-owned */
 }
 
 
@@ -78,19 +76,17 @@ void ig_free(IGraph *g) {
  */
 static void ig_alloc_storage(IGraph *g, int totalNodes, Arena *arena) {
     g->n = totalNodes;
+    g->arena = arena;
 
-    // triangular bit matrix: n*(n-1)/2 bits, +1 word safety margin
     long   nbits       = (long)totalNodes * (totalNodes - 1) / 2;
     size_t matrixWords = (size_t)((nbits + 63) / 64 + 1);
     g->matrix = arena_alloc(arena, matrixWords * sizeof(uint64_t));
     memset(g->matrix, 0, matrixWords * sizeof(uint64_t));
 
-    // adjacency list headers (arena); backing arrays heap-allocated by IntVector
     g->adj = arena_alloc(arena, (size_t)totalNodes * sizeof(AdjList));
     for (int i = 0; i < totalNodes; i++)
-        int_vector_init(&g->adj[i], IG_ADJ_INITIAL_CAPACITY);
+        int_vector_init_arena(&g->adj[i], IG_ADJ_INITIAL_CAPACITY, arena);
 
-    // parallel metadata arrays
     g->degree       = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
     g->color        = arena_alloc(arena, (size_t)totalNodes * sizeof(int));
     g->active       = arena_alloc(arena, (size_t)totalNodes * sizeof(bool));
@@ -105,9 +101,7 @@ static void ig_alloc_storage(IGraph *g, int totalNodes, Arena *arena) {
     memset(g->crossesCall,  0, (size_t)totalNodes * sizeof(char));
     memset(g->isReloadTemp, 0, (size_t)totalNodes * sizeof(char));
 
-    // color = -1 (uncoloured): 0xFF fills every byte, which is -1 in two's complement
     memset(g->color,  0xFF, (size_t)totalNodes * sizeof(int));
-    // active = true: sizeof(bool)==1, so memset with 1 is correct
     memset(g->active, 1,    (size_t)totalNodes * sizeof(bool));
 }
 

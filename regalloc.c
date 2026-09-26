@@ -117,14 +117,30 @@ static void regalloc_wire_block_successors(BasicBlock *blocks, int count, const 
     }
 }
 
+static int regalloc_count_blocks(const MachFunction *f)
+{
+    int count = 0, start = 0;
+    for (int i = 0; i < f->count; i++) {
+        MachOpCode op = f->instrs[i].op;
+        int isLabelSplit = (op == MACH_LABEL && i > start);
+        int isCtrlSplit  = instr_is_ctrl_transfer(op);
+        if (!isLabelSplit && !isCtrlSplit) continue;
+        count++;
+        start = isLabelSplit ? i : i + 1;
+    }
+    if (start < f->count) count++;
+    return count;
+}
+
 /**
  * @brief Build the machine-code CFG for @p f.
  */
 static BasicBlock *regalloc_build_cfg(const MachFunction *f, Arena *arena, int *outCount)
 {
-    int cap = INITIAL_BLOCK_CAPACITY;
+    int cap = regalloc_count_blocks(f);
+    if (cap <= 0) cap = 1;
+    BasicBlock *blocks = arena_alloc(arena, (size_t)cap * sizeof(BasicBlock));
     int count = 0;
-    BasicBlock *blocks = malloc((size_t)cap * sizeof(BasicBlock));
     int start = 0;
 
     for (int i = 0; i < f->count; i++) {
@@ -133,21 +149,13 @@ static BasicBlock *regalloc_build_cfg(const MachFunction *f, Arena *arena, int *
         int isCtrlSplit  = instr_is_ctrl_transfer(op);
         if (!isLabelSplit && !isCtrlSplit) continue;
 
-        if (count == cap) {
-            cap *= 2;
-            blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock));
-        }
-        // control-transfer closes [start, i+1) (branch stays IN the block);
-        // label closes [start, i) and the label opens the next block
         int end = isLabelSplit ? i : i + 1;
         blocks[count++] = (BasicBlock){ .range = { start, end }, .succ = {-1, -1} };
         start = end;
     }
 
-    if (start < f->count) {
-        if (count == cap) { cap *= 2; blocks = realloc(blocks, (size_t)cap * sizeof(BasicBlock)); }
+    if (start < f->count)
         blocks[count++] = (BasicBlock){ .range = { start, f->count }, .succ = {-1, -1} };
-    }
 
     int minId, mapSize;
     int *labelMap = regalloc_build_label_to_block(f, blocks, count, arena, &minId, &mapSize);
@@ -377,25 +385,16 @@ static void regalloc_finalize_float(MachFunction *f, const int *fcolor) {
  * @return 1 on success (no spills), 0 if spill code was inserted.
  */
 static int regalloc_try_round(MachFunction *f, RegClass cls, int *pVregCount,
-                              int firstSpillVreg, int *frameOff) {
-    // Snapshot *pVregCount at round entry: this is the vreg universe size to
-    // build liveness/interference/coloring against for THIS round. If this
-    // round fails and spills, ra_spill_insert bumps *pVregCount in place
-    // (spill_fresh_temp -> (*vreg_counter_of(f, cls))++, same f->nextVreg /
-    // f->fNextVreg cell pVregCount points at). The NEXT call to
-    // regalloc_try_round re-reads through the pointer here and picks up the
-    // grown count -> graph/bitsets always sized to match the vregs actually
-    // referenced by instructions, no more stale snapshot -> no more OOB write
-    // in ig_add_edge / liveness bitsets.
+                              int firstSpillVreg, int *frameOff, Arena *arena) {
     int classVregCount = *pVregCount;
 
-    Arena *livArena = arena_create(0);
+    arena_reset(arena);
     int nBlocks;
-    BasicBlock *blocks = regalloc_build_cfg(f, livArena, &nBlocks);
+    BasicBlock *blocks = regalloc_build_cfg(f, arena, &nBlocks);
 
-    LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, cls, classVregCount, livArena);
+    LivenessResult liv = liveness_computeMach(f, blocks, nBlocks, cls, classVregCount, arena);
     IGraph g = ig_build(f, blocks, nBlocks, cls, classVregCount, liv.liveAfter,
-                        firstSpillVreg, livArena);
+                        firstSpillVreg, arena);
 
     PartnerList pl = ra_collect_partners(f, &g, cls, classVregCount);
 
@@ -403,7 +402,7 @@ static int regalloc_try_round(MachFunction *f, RegClass cls, int *pVregCount,
     const RegClassInfo *ci = reg_class_info(cls);
     int stackLen = ra_simplify(&g, classVregCount, ci->allocatable, &stack);
 
-    int *spilled = malloc((size_t)(classVregCount > 0 ? classVregCount : 1) * sizeof(int));
+    int *spilled = arena_alloc(arena, (size_t)(classVregCount > 0 ? classVregCount : 1) * sizeof(int));
     int nSpilled = ra_select_colors(&g, stack, stackLen, ci->allocatable,
                                     ci->callerSavedCount, spilled, &pl);
     partnerlist_free(&pl);
@@ -413,24 +412,19 @@ static int regalloc_try_round(MachFunction *f, RegClass cls, int *pVregCount,
         if (cls == RC_INT) regalloc_finalize_int(f, g.color);
         else               regalloc_finalize_float(f, g.color);
     } else {
-        ra_spill_insert(f, cls, spilled, nSpilled, frameOff); // bumps *pVregCount in place for next round
+        ra_spill_insert(f, cls, spilled, nSpilled, frameOff);
     }
 
-    free(stack);
-    free(spilled);
-    ig_free(&g);
-    arena_destroy(livArena);
-    free(blocks);
     return done;
 }
 
 static int regalloc_class(MachFunction *f, RegClass cls,
-                          int *pVregCount, int *frameOff) {
+                          int *pVregCount, int *frameOff, Arena *arena) {
 
     int firstSpillVreg = *pVregCount;
 
     for (int round = 0; round < REGALLOC_MAX_ROUNDS; round++) {
-        if (regalloc_try_round(f, cls, pVregCount, firstSpillVreg, frameOff))
+        if (regalloc_try_round(f, cls, pVregCount, firstSpillVreg, frameOff, arena))
             return 1;
     }
     return 0;
@@ -438,11 +432,14 @@ static int regalloc_class(MachFunction *f, RegClass cls,
 
 static void regalloc_function(MachFunction *f) {
     int frameOff = 0;
+    Arena *arena = arena_create(0);
 
-    if (!regalloc_class(f, RC_INT,   &f->nextVreg,  &frameOff))
+    if (!regalloc_class(f, RC_INT,   &f->nextVreg,  &frameOff, arena))
         ec_report("regalloc: impossibile colorare i registri interi in '%s'\n", f->name);
-    if (!regalloc_class(f, RC_FLOAT, &f->fNextVreg, &frameOff))
+    if (!regalloc_class(f, RC_FLOAT, &f->fNextVreg, &frameOff, arena))
         ec_report("regalloc: impossibile colorare i registri float in '%s'\n", f->name);
+
+    arena_destroy(arena);
 
     regalloc_save_restore_callee(f); /* no XMM is callee-saved */
 

@@ -48,8 +48,8 @@ typedef enum {
 /**
  * @brief Interference graph for a single machine function.
  *
- * All pointer fields except @c adj[i].data point into the caller's arena.
- * @c adj[i].data is heap-allocated by IntVector; release with @c ig_free().
+ * All pointer fields including @c adj[i].data point into the caller's arena.
+ * @c ig_free() is a no-op on the adj lists (arena-owned).
  */
 typedef struct {
     int       n;             /**< Total nodes: nextVreg + PHYS_ALLOCATABLE ([0,nextVreg)=virtual, rest=physical). */
@@ -63,6 +63,7 @@ typedef struct {
     char     *crossesCall;   /**< 1 if live across a CALL; prefer callee-saved to cut push/pop. */
     char     *isReloadTemp;  /**< 1 if a reload/spill temp from a prior ra_spill_insert() round;
                               *   lets ra_simplify() avoid respilling short-lived temps first. */
+    Arena    *arena;         /**< Arena that owns adj-list backing arrays (growth too). */
 } IGraph;
 
 /**
@@ -122,23 +123,18 @@ int ig_has_edge(const IGraph *g, int i, int j);
  *        that same fixed value on every subsequent round, so temps
  *        introduced in round 1 stay correctly flagged in round 2, 3, etc.
  * @param arena      Arena for all IGraph fixed-size arrays.
- * @return           Fully initialised IGraph; call @c ig_free() when done.
+ * @return           Fully initialised IGraph; adj lists are arena-owned.
  */
 IGraph ig_build(const MachFunction *f, const BasicBlock *blocks, int nBlocks,
                 RegClass cls, int classVregCount, const LiveSet *liveAfter,
                 int firstSpillVreg, Arena *arena);
 
 /**
- * @brief Free the heap-allocated adjacency-list data of every node.
+ * @brief No-op for arena-backed adjacency lists (kept for call-site stability).
  *
- * Only @c adj[i].data (owned by IntVector / malloc) is released here.
- * The fixed-size arrays (matrix, degree, color, etc.) are arena-allocated
- * and reclaimed when the caller destroys its arena — do not free them here.
+ * Fixed-size arrays and adj backing all live in the caller's arena.
  *
- * Always call this before @c arena_destroy() to avoid leaking the adjacency
- * list backing arrays, which live outside the arena.
- *
- * @param g  IGraph whose adjacency lists are to be released.
+ * @param g  IGraph (unused).
  */
 void ig_free(IGraph *g);
 
