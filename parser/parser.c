@@ -39,6 +39,19 @@ static ASTNode *parse_while_statement(Parser *p);
 static ASTNode *parse_return_statement(Parser *p);
 static ASTNode *parse_expression_statement(Parser *p);
 
+static DataType type_from_keyword(const char *type) {
+    return (type && type[0] == 'f') ? T_FLOAT : T_INT;
+}
+
+/** Stamp parse-time decl fields so semantic/IR never re-parse node->text. */
+static void stamp_decl(Arena *arena, ASTNode *n, const char *type, const char *name,
+                       int isArray, int arraySize) {
+    n->ident     = arena_strdup(arena, name);
+    n->dataType  = type_from_keyword(type);
+    n->isArray   = isArray;
+    n->arraySize = arraySize;
+}
+
 static ASTNode *parse_expr(Parser *p);
 static ASTNode *parse_assign(Parser *p);
 static ASTNode *parse_logic_or(Parser *p);
@@ -253,6 +266,7 @@ static ASTNode *parse_declaration(Parser *p) {
 static ASTNode *parse_variable_declaration(Parser *p, const char *type, const char *name) {
     char *decl_text = arena_sprintf(p->ast_arena, "%s %s", type, name);
     ASTNode *var_node = newNode(p->ast_arena, ND_VAR_DECL, decl_text);
+    stamp_decl(p->ast_arena, var_node, type, name, 0, 0);
 
     // Optional initializer.
     if (p->current_token == TOK_OP_ASSIGN) {
@@ -279,6 +293,7 @@ static ASTNode *parse_array_declaration(Parser *p, const char *type, const char 
 
     char *decl_text = arena_sprintf(p->ast_arena, "%s %s[%s]", type, name, size);
     ASTNode *arr_node = newNode(p->ast_arena, ND_VAR_DECL, decl_text);
+    stamp_decl(p->ast_arena, arr_node, type, name, 1, atoi(size));
 
     // Parse optional initializer list: = { expr, ... }
     if (p->current_token == TOK_OP_ASSIGN) {
@@ -311,6 +326,7 @@ static ASTNode *parse_array_declaration(Parser *p, const char *type, const char 
 static ASTNode *parse_function_declaration(Parser *p, const char *type, const char *name) {
     char *decl_text = arena_sprintf(p->ast_arena, "%s %s", type, name);
     ASTNode *func_node = newNode(p->ast_arena, ND_FUNC_DECL, decl_text);
+    stamp_decl(p->ast_arena, func_node, type, name, 0, 0);
 
     match(p, TOK_DEL_LPAREN);
     parse_parameter_list(p, func_node);
@@ -336,7 +352,9 @@ static void parse_parameter_list(Parser *p, ASTNode *func_node) {
         match(p, TOK_ID);
 
         char *param_text = arena_sprintf(p->ast_arena, "%s %s", type, name);
-        addChild(p->ast_arena, func_node, newNode(p->ast_arena, ND_PARAM, param_text));
+        ASTNode *param = newNode(p->ast_arena, ND_PARAM, param_text);
+        stamp_decl(p->ast_arena, param, type, name, 0, 0);
+        addChild(p->ast_arena, func_node, param);
 
         // Continue if there's a comma, otherwise stop.
         if (p->current_token == TOK_DEL_COMMA)

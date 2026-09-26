@@ -69,6 +69,12 @@ typedef struct ASTNode {
     DataType dataType;          /**< Resolved type of this expression/decl node,
                                   *   stamped during semantic analysis; drives
                                   *   int-vs-float codegen in instr_selector.c. */
+
+    /* Declaration fields stamped ONCE at parse time. Semantic/IR read these
+     * instead of re-parsing decl->text ("int foo" / "int foo[10]"). */
+    char *ident;                /**< Identifier for VAR_DECL / FUNC_DECL / PARAM. */
+    int   isArray;              /**< 1 if this declaration is an array. */
+    int   arraySize;            /**< Element count when isArray is set. */
 } ASTNode;
 
 /**

@@ -1,7 +1,6 @@
 #ifndef ARENA_H
 #define ARENA_H
 
-
 /**
  * @file arena.h
  * @brief Fast arena (bump/region) memory allocator interface.
@@ -14,14 +13,18 @@
 
 #include <stddef.h>
 
-#define ARENA_DEFAULT_BLOCK_SIZE 4096
+/** Compiler-lifetime arenas (AST, IR, RA): one megabyte, not 4 KB. */
+#define ARENA_DEFAULT_BLOCK_SIZE (1 << 20)
+
+/** Tiny tables (SVN hash, etc.): keep a 4 KB first block. */
+#define ARENA_SMALL_BLOCK_SIZE 4096
 
 typedef struct Arena Arena;
 
 /**
  * @brief Creates a new arena allocator instance.
  *
- * @param blockSize Default size in bytes for internal memory blocks (pass 0 for default 4096 bytes).
+ * @param blockSize Default size in bytes for internal memory blocks (pass 0 for default).
  * @return Pointer to the newly initialized Arena instance.
  */
 Arena *arena_create(size_t blockSize);
