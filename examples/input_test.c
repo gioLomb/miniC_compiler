@@ -7,11 +7,10 @@
 int main() {
     int x;
     x = 1;
-    if (x == 1)
-    {
-        x = 2;
-        x = 3;
-        x = 4;
+    if(0){
+        x = 5;
     }
+    
+    
     return x;
 }

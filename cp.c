@@ -306,20 +306,6 @@ static void collect_referenced_labels(const IRFunction *f,
         if (at >= 0)
             referenced[at] = 1;
     }
-
-    /* Pass 2: if any copy of a labelId is live, mark every copy live. */
-    for (int i = 0; i < f->count; i++) {
-        if (f->instrs[i].op != IR_LABEL)
-            continue;
-
-        int idx = label_map_index(f, f->instrs[i].dst.data.labelId, mapCap);
-        if (idx < 0)
-            continue;
-
-        int at = labelToInstr[idx];
-        if (at >= 0 && referenced[at])
-            referenced[i] = 1;
-    }
 }
 
 static int mark_unreferenced_labels(const IRFunction *f, const char *referenced, char *eliminate) {
