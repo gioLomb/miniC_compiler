@@ -101,20 +101,11 @@ typedef IntVector UsedByList;
 /**
  * @brief Free the dynamic arrays of all @p numVars UsedByList entries.
  */
-static void free_used_by(UsedByList *usedBy, int numVars) {
-    for (int i = 0; i < numVars; i++)
-        int_vector_free(&usedBy[i]);
-}
-
-/**
- * @brief Allocate and zero-initialize a usedBy[] array of length numVars.
- *
- * usedBy[id] = list of instruction indices (in the loop) that read operand id.
- */
-static UsedByList *alloc_used_by(int numVars) {
-    UsedByList *usedBy = calloc((size_t)numVars, sizeof(UsedByList));
-    if (!usedBy) abort();
-    for (int id = 0; id < numVars; id++) int_vector_init(&usedBy[id], 0);
+static UsedByList *alloc_used_by(int numVars, Arena *arena) {
+    UsedByList *usedBy = arena_alloc(arena, (size_t)numVars * sizeof(UsedByList));
+    memset(usedBy, 0, (size_t)numVars * sizeof(UsedByList));
+    for (int id = 0; id < numVars; id++)
+        int_vector_init_arena(&usedBy[id], 0, arena);
     return usedBy;
 }
 
@@ -230,14 +221,11 @@ static void find_invariants(IRFunction *f, Loop *L, VarMap *vm,
                             int numVars, const int *defCount, const int *defInstrIdx,
                             char *invariant, Arena *arena) {
     int n = f->count;
-    UsedByList *usedBy = alloc_used_by(numVars);
+    UsedByList *usedBy = alloc_used_by(numVars, arena);
     int *worklist = arena_alloc(arena, (size_t)n * sizeof(int));
 
     int wTail = licm_seed_worklist(f, L, vm, usedBy, worklist);
     propagate_worklist(f, defCount, defInstrIdx, vm, usedBy, worklist, wTail, invariant);
-
-    free_used_by(usedBy, numVars);
-    free(usedBy);
 }
 
 
@@ -480,30 +468,26 @@ static void licm_remap_block_ranges(IRFunction *f, const int *oldToNew, const ch
 static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
                            const char *invariant, const int *defCount,
                            const int *defInstrIdx, VarMap *vm,
-                           LivenessResult *liv) {
+                           LivenessResult *liv, Arena *arena) {
     int nInstrs = f->count, nBlocks = f->blockCount;
     int header  = L->header, phIdx = L->preHeader;
 
-    Arena *localArena = arena_create(0);
-
-    char *doMove = arena_alloc(localArena, (size_t)nInstrs);
-    char *inBody = arena_alloc(localArena, (size_t)nBlocks);
+    char *doMove = arena_alloc(arena, (size_t)nInstrs);
+    char *inBody = arena_alloc(arena, (size_t)nBlocks);
     memset(doMove, 0, (size_t)nInstrs);
     memset(inBody, 0, (size_t)nBlocks);
 
     for (int i = 0; i < L->bodyCount; i++) inBody[L->body[i]] = 1;
 
-    // precomputed once per loop instead of per-instruction linear scan
-    int *instrToBlock = build_instr_to_block(f, localArena);
+    int *instrToBlock = build_instr_to_block(f, arena);
 
     int moved = licm_mark_hoistable(f, L, Dom, invariant, defCount, defInstrIdx,
                                 vm, liv, header, inBody, instrToBlock, doMove);
-    if (!moved) { arena_destroy(localArena); return 0; }
+    if (!moved) return 0;
 
-    // hoisted instructions are placed in the pre-header just before it
     int insertAt = f->blocks[header].bb.range.start;
 
-    int *oldToNew = arena_alloc(localArena, (size_t)nInstrs * sizeof(int));
+    int *oldToNew = arena_alloc(arena, (size_t)nInstrs * sizeof(int));
 
     HoistLayout layout = licm_compact_and_hoist(f, doMove, moved, insertAt, oldToNew);
 
@@ -515,56 +499,40 @@ static int licm_move_invariants(IRFunction *f, Loop *L, LiveSet *Dom,
     licm_remap_block_ranges(f, oldToNew, doMove, phIdx, layout.preHeaderMovedStart, layout.preHeaderMovedEnd);
 
     f->curBlockStart = 0;
-    arena_destroy(localArena);
     return moved;
 }
 
 
-int licm_optimize(IRFunction *f, Arena *arenaScratch) {
+int licm_optimize(IRFunction *f, Arena *arenaScratch, VarMap *sharedVm) {
     if (!f || f->blockCount == 0 || f->count == 0) return 0;
 
     int nBlocks = f->blockCount;
     int words   = (nBlocks + 63) / 64;
-    // Outer scratch (dominators, loop descriptors, invariant flags): caller-owned.
     arena_reset(arenaScratch);
 
-    // compute dominators and find natural loops
     LiveSet *Dom    = loop_compute_dominators(f, words, arenaScratch);
     Loop    *loops  = arena_alloc(arenaScratch, MAX_LOOPS * sizeof(Loop));
     int      nLoops = loop_find(f, Dom, loops, arenaScratch);
     if (nLoops == 0) return 0;
 
-
-    Arena         *livArena = arena_create(0);
-    LivenessResult  liv     = liveness_computeIr(f, NULL, NULL, livArena);
+    Arena *livArena = arena_create(0);
+    LivenessResult liv = liveness_computeIr(f, NULL, sharedVm, livArena);
     int totalMoved = 0;
+    int ownsVm = (sharedVm == NULL);
 
     for (int l = 0; l < nLoops; l++) {
         Loop *L = &loops[l];
 
-        // insert the synthetic pre-header; returns 0 iff entry↔preheader swap
         int phRet = loop_build_pre_header(f, L, loops, nLoops);
 
-        /*
-         * Only the entry-header swap invalidates Dom/liv:
-         *   - block indices are remapped (0 ↔ phIdx)
-         *   - Dom is too short and would OOB on the new header index
-         *   - LiveIn[] is indexed by the post-swap header
-         *
-         * Without swap the preheader is only appended: body/exit indices and
-         * Dom[0..oldN) stay valid (hoist queries never touch the new block),
-         * and LiveIn[header] still refers to the same block index.  Matching
-         * the pre-fix behaviour for that common case avoids O(L) full rebuilds.
-         */
         if (phRet == 0) {
             nBlocks = f->blockCount;
             words   = (nBlocks + 63) / 64;
             Dom     = loop_compute_dominators(f, words, arenaScratch);
 
-            varmap_destroy(liv.varMap);
-            arena_destroy(livArena);
-            livArena = arena_create(0);
-            liv      = liveness_computeIr(f, NULL, NULL, livArena);
+            if (ownsVm) varmap_destroy(liv.varMap);
+            arena_reset(livArena);
+            liv = liveness_computeIr(f, NULL, sharedVm, livArena);
         }
 
         VarMap *vm  = liv.varMap;
@@ -577,20 +545,17 @@ int licm_optimize(IRFunction *f, Arena *arenaScratch) {
         memset(invariant, 0, (size_t)f->count);
         find_invariants(f, L, vm, numVars, defCount, defInstrIdx, invariant, arenaScratch);
 
-        // phase 3: move safe invariants to the pre-header
-        int moved = licm_move_invariants(f, L, Dom, invariant, defCount, defInstrIdx, vm, &liv);
+        int moved = licm_move_invariants(f, L, Dom, invariant, defCount, defInstrIdx, vm, &liv, arenaScratch);
         totalMoved += moved;
 
         if (moved) {
-            // liveness is stale after motion: recompute before the next loop
-            varmap_destroy(liv.varMap);
-            arena_destroy(livArena);
-            livArena = arena_create(0);
-            liv = liveness_computeIr(f, NULL, NULL, livArena);
+            if (ownsVm) varmap_destroy(liv.varMap);
+            arena_reset(livArena);
+            liv = liveness_computeIr(f, NULL, sharedVm, livArena);
         }
     }
 
-    varmap_destroy(liv.varMap);
+    if (ownsVm) varmap_destroy(liv.varMap);
     arena_destroy(livArena);
     return totalMoved > 0;
 }

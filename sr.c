@@ -408,42 +408,37 @@ static int sr_apply_strength_reduction(IRFunction *irFunction, Loop *targetLoop,
 }
 
 
-int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
+int sr_optimize(IRFunction *irFunction, Arena *arenaScratch, VarMap *sharedVm) {
     if (!irFunction || irFunction->blockCount == 0 || irFunction->count == 0) return 0;
 
     int totalBlocks = irFunction->blockCount;
     int bitsetWords = (totalBlocks + BITS_PER_WORD - 1) / BITS_PER_WORD;
     arena_reset(arenaScratch);
 
-    // Loop detection needs dominator info first (natural loops = back-edge + dominance).
     BitSet  *dominatorTree = loop_compute_dominators(irFunction, bitsetWords, arenaScratch);
     Loop    *detectedLoops = arena_alloc(arenaScratch, MAX_LOOPS * sizeof(Loop));
     int      totalLoops    = loop_find(irFunction, dominatorTree, detectedLoops, arenaScratch);
     if (totalLoops == 0) return 0;
 
-    // VarMap (from liveness analysis) gives a dense variable-id space used
-    // throughout to count/track definitions per variable.
     Arena         *livenessArena  = arena_create(0);
-    LivenessResult livenessResult = liveness_computeIr(irFunction, NULL, NULL, livenessArena);
+    LivenessResult livenessResult = liveness_computeIr(irFunction, NULL, sharedVm, livenessArena);
     VarMap        *variableMap    = livenessResult.varMap;
+    int            ownsVm         = (sharedVm == NULL);
 
     int nextTempId = ir_alloc_temp_id();
 
     int totalTransformationsApplied = 0;
     for (int loopIdx = 0; loopIdx < totalLoops; loopIdx++) {
         Loop *targetLoop = &detectedLoops[loopIdx];
-        // Pre-header is required as the landing spot for "t_sr = i * mult" inits.
         if (targetLoop->preHeader < 0)
             loop_build_pre_header(irFunction, targetLoop, detectedLoops, totalLoops);
 
         InductionBase   baseVars[MAX_IVARS];
         InductionDerived derivedVars[MAX_DERIVED];
 
-        // No basic IV -> nothing to derive strength reduction from, skip loop.
         int baseVarCount = sr_find_induction_base(irFunction, targetLoop, variableMap, baseVars, arenaScratch);
         if (baseVarCount == 0) continue;
 
-        // No derived IV -> no mul to replace, skip loop.
         int derivedVarCount = sr_find_derived_induction_vars(irFunction, targetLoop, variableMap, baseVars, 
                                                baseVarCount, derivedVars, &nextTempId);
         if (derivedVarCount == 0) continue;
@@ -452,7 +447,7 @@ int sr_optimize(IRFunction *irFunction, Arena *arenaScratch) {
                                                               derivedVars, derivedVarCount, arenaScratch);
     }
 
-    varmap_destroy(livenessResult.varMap);
+    if (ownsVm) varmap_destroy(livenessResult.varMap);
     arena_destroy(livenessArena);
     return totalTransformationsApplied > 0;
 }

@@ -12,6 +12,8 @@
  */
 
 #include "ir.h"
+#include "arena.h"
+#include "varmap.h"
 
 /**
  * @brief Run Loop-Invariant Code Motion on every natural loop of @p f.
@@ -35,8 +37,10 @@
  *       SR (sr.c) may share the inserted pre-header blocks.
  *
  * @param f  IR function to optimise (modified in place).
+ * @param arenaScratch Scratch arena for dominators / loop descriptors.
+ * @param sharedVm Optional shared VarMap (NULL → private, destroyed on return).
  * @return   1 if at least one instruction was moved, 0 if the IR is unchanged.
  */
-int licm_optimize(IRFunction *f,Arena *arenaScratch);
+int licm_optimize(IRFunction *f, Arena *arenaScratch, VarMap *sharedVm);
 
 #endif /* LICM_H */

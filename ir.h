@@ -21,6 +21,10 @@
 
 #define IR_INITIAL_CAPACITY 64  /**< Initial instrs[] capacity for a fresh IRFunction. */
 
+/** Skip LICM+SR when the function has fewer instructions than this.
+ *  Dominators+liveness dwarf the useful work on tiny loop bodies. */
+#define IR_LOOP_OPT_MIN_INSTRS 40
+
 // packs up to 2 operator characters into one 16-bit key for O(1) switch
 // dispatch instead of strcmp chains
 #define KEY_AND 0x2626

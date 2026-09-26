@@ -10,6 +10,7 @@
 #include "sr.h"
 #include "sched.h"
 #include "arena.h"
+#include "varmap.h"
 
 
 
@@ -44,7 +45,7 @@ static inline Operand ir_mk_var(const ASTNode *node) {
     return (Operand){ .kind = OPND_VAR, .isFloat = isF,
                       .data.varLevel = node->scopeLevel,
                       .data.varOffset = node->offset,
-                      .data.sourceName = node->text };
+                      .data.sourceName = node->ident ? node->ident : node->text };
 }
 
 /* Set while building a function body; used by ND_RETURN to know if int→float
@@ -633,11 +634,9 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
  * Function compilation
  * ========================================================================= */
 
-/* decl->text is "returnType funcName"; true when the return type is float. */
+/* Return type is stamped on the FUNC_DECL node at parse time. */
 static int ir_func_returns_float(const ASTNode *decl) {
-    if (!decl || !decl->text) return 0;
-    return strncmp(decl->text, "float", 5) == 0 &&
-           (decl->text[5] == ' ' || decl->text[5] == '\0');
+    return decl && decl->dataType == T_FLOAT;
 }
 
 /* Fall-through guard: emit return 0 / 0.0 so control cannot run into the next
@@ -651,15 +650,14 @@ static void ir_emit_implicit_return(IRFunction *f, const ASTNode *decl) {
 }
 
 static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
-    // decl->text is "returnType funcName"; the name is everything after the last space
-    const char *space = strrchr(decl->text, ' ');
-    const char *name  = space ? space + 1 : decl->text;
+    const char *name = decl->ident ? decl->ident : decl->text;
 
     IRFunction *f = calloc(1, sizeof(IRFunction));
     f->name          = strdup(name);
-    f->labelBase     = nextLabel; // labels for this function start where the last one left off
+    f->labelBase     = nextLabel; // labels stay globally unique (asm .L%d)
     f->curBlockStart = 0;
     currentLoopDepth = 0;
+    nextTemp = 0; /* dense 0..n-1 per function: VarMap.tempToId stays small */
     g_func_returns_float = ir_func_returns_float(decl);
 
     int paramCount = decl->nchildren - 1;
@@ -678,7 +676,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
 
     svn_optimize(f);
 
-    // Single VarMap shared by every cp_optimize/dce_optimize call
+    // Single VarMap shared by every cp_optimize/dce_optimize/licm/sr call
     VarMap *sharedVarMap = varmap_create();
 
     dce_optimize(f, sharedVarMap, arena);
@@ -689,14 +687,18 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
         changed |= dce_optimize(f, sharedVarMap, arena);
     } while (changed);
 
-    changed  = licm_optimize(f,arena);
-    changed |= sr_optimize(f,arena);
+    /* Tiny functions: LICM+SR pay a full dominator+liveness tax for ~0
+     * useful work (601 × 15-instr while loops). Skip below the threshold. */
+    if (f->count >= IR_LOOP_OPT_MIN_INSTRS) {
+        changed  = licm_optimize(f, arena, sharedVarMap);
+        changed |= sr_optimize(f, arena, sharedVarMap);
 
-    if (changed) {
-        do {
-            changed  = cp_optimize(f, sharedVarMap, arena);
-            changed |= dce_optimize(f, sharedVarMap, arena);
-        } while (changed);
+        if (changed) {
+            do {
+                changed  = cp_optimize(f, sharedVarMap, arena);
+                changed |= dce_optimize(f, sharedVarMap, arena);
+            } while (changed);
+        }
     }
 
     varmap_destroy(sharedVarMap);

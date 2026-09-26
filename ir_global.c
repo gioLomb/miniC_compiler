@@ -12,56 +12,6 @@
 #include <string.h>
 
 /**
- * @brief Parsed view of a global declaration's textual encoding.
- *
- * tyName/name point into the caller-owned mutable buffer passed to
- * ir_parse_global_decl_text, so they stay valid only as long as that
- * buffer does.
- */
-typedef struct {
-    char *tyName;
-    char *name;
-    int   isArray;
-    int   arraySize;
-} GlobalDeclInfo;
-
-/**
- * @brief Parse buf ("type name" or "type name[size]") in place into its
- *        type/name/array-size components (same convention as ast_to_symtab.c).
- *
- * @param buf  Mutable copy of decl->text; NUL bytes are inserted at the
- *             type/name and name/'[' boundaries, so out->tyName/out->name
- *             end up pointing into it.
- * @return 1 on success, 0 if the text is malformed (no space separator).
- */
-static int ir_parse_global_decl_text(char *buf, GlobalDeclInfo *out) {
-    char *space = strchr(buf, ' ');
-    if (!space) return 0; // malformed text: caller skips defensively
-    *space      = '\0';
-    out->tyName = buf;
-    char *rest  = space + 1;
-
-    out->isArray   = 0;
-    out->arraySize = 0;
-    char *bracket = strchr(rest, '[');
-    if (bracket) {
-        *bracket       = '\0';
-        out->name      = rest;
-        out->isArray   = 1;
-        out->arraySize = atoi(bracket + 1);
-    } else {
-        out->name = rest;
-    }
-    return 1;
-}
-
-static inline DataType ir_global_data_type(const char *tyName) {
-    if      (tyName[0] == 'i') return T_INT;
-    else if (tyName[0] == 'f') return T_FLOAT;
-    return T_VOID;
-}
-
-/**
  * @brief Grow prog->globals if needed (standard doubling growth) and
  *        return a pointer to the freshly appended slot.
  */
@@ -120,24 +70,19 @@ static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
 static void ir_add_global(IRProgram *prog, ASTNode *decl, int symOffset) {
     if (!decl || decl->kind != ND_VAR_DECL) return;
 
-    // decl->text encodes "type name" or "type name[size]"; parse it
-    // in-place on a mutable copy (same convention as ast_to_symtab.c)
-    char *buf = strdup(decl->text);
-    GlobalDeclInfo info;
-    if (!ir_parse_global_decl_text(buf, &info)) { free(buf); return; } // malformed text: skip defensively
+    const char *name = decl->ident ? decl->ident : decl->text;
+    if (!name) return;
 
     IRGlobalVar *gv = ir_globals_append_slot(prog);
-    gv->name        = strdup(info.name);
-    gv->dataType    = ir_global_data_type(info.tyName);
-    gv->isArray     = info.isArray;
-    gv->arraySize   = info.arraySize;
+    gv->name        = strdup(name);
+    gv->dataType    = decl->dataType;
+    gv->isArray     = decl->isArray;
+    gv->arraySize   = decl->arraySize;
     gv->symOffset   = symOffset;
     gv->initVals    = NULL;
     gv->initCount   = 0;
 
     ir_build_global_init_vals(decl, gv);
-
-    free(buf);
 }
 
 
