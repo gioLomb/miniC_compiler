@@ -757,18 +757,36 @@ static void isel_select_param(const IRInstr *in, PendingArgs *args) {
     if (args->count < MAX_PARAMS) args->ops[args->count++] = in->src1;
 }
 
-/** @brief Emit the full call sequence (stack args, register args, CALL, cleanup). */
-static const IRFunction *isel_find_function(const IRProgram *prog, const char *name) {
-    if (!prog || !name) return NULL;
-    for (int i = 0; i < prog->count; i++)
-        if (prog->functions[i] && prog->functions[i]->name &&
-            strcmp(prog->functions[i]->name, name) == 0)
-            return prog->functions[i];
-    return NULL;
+/**
+ * Sorted name → IRFunction table built once in isel_select().
+ * Avoids O(calls × functions) linear scans at every IR_CALL.
+ */
+typedef struct {
+    const char       *name;
+    const IRFunction *fn;
+} ISelFuncEntry;
+
+static int isel_func_entry_cmp(const void *a, const void *b) {
+    const char *ka = ((const ISelFuncEntry *)a)->name;
+    const char *kb = ((const ISelFuncEntry *)b)->name;
+    if (!ka) return kb ? -1 : 0;
+    if (!kb) return 1;
+    return strcmp(ka, kb);
+}
+
+/** @brief Binary search in a name-sorted ISelFuncEntry array. */
+static const IRFunction *isel_find_function(const ISelFuncEntry *tab, int n,
+                                           const char *name) {
+    if (!tab || n <= 0 || !name) return NULL;
+    ISelFuncEntry key = { .name = name, .fn = NULL };
+    const ISelFuncEntry *hit = bsearch(&key, tab, (size_t)n, sizeof(ISelFuncEntry),
+                                       isel_func_entry_cmp);
+    return hit ? hit->fn : NULL;
 }
 
 static void isel_select_call(VarMap *ov, FloatVregMap *fvm, MachFunction *f,
-                         const IRInstr *in, PendingArgs *args, const IRProgram *prog) {
+                         const IRInstr *in, PendingArgs *args,
+                         const ISelFuncEntry *funcTab, int funcCount) {
     int staged = args->count;
     int arity  = in->src2.kind == OPND_CONST_INT ? (int)in->src2.data.intVal : staged;
     if (arity < 0) arity = 0;
@@ -776,7 +794,8 @@ static void isel_select_call(VarMap *ov, FloatVregMap *fvm, MachFunction *f,
     int base = staged - arity;
     int intCursor = 0, floatCursor = 0;
 
-    const IRFunction *callee = isel_find_function(prog, in->src1.data.funcName);
+    const IRFunction *callee = isel_find_function(funcTab, funcCount,
+                                                 in->src1.data.funcName);
 
     for (int k = 0; k < arity; k++) {
         Operand *op = &args->ops[base + k];
@@ -840,7 +859,8 @@ static void isel_select_return(VarMap *ov, FloatVregMap *fvm, MachFunction *f, c
 static MachFunction *isel_select_function(const IRFunction *irf,
                                       const IRGlobalVar *globals,
                                       int globalCount,
-                                      const IRProgram *prog) {
+                                      const ISelFuncEntry *funcTab,
+                                      int funcCount) {
     MachFunction *f = mfunc_create(irf->name);
     g_curLoopDepth = 0; /* per-function reset */
 
@@ -901,7 +921,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
         case IR_LOAD_ARR:     isel_select_load_arr(operandToVreg, &fvm, f, in); break;
         case IR_STORE_ARR:    isel_select_store_arr(operandToVreg, &fvm, f, in); break;
         case IR_PARAM:        isel_select_param(in, &args); break;
-        case IR_CALL:         isel_select_call(operandToVreg, &fvm, f, in, &args, prog); break;
+        case IR_CALL:         isel_select_call(operandToVreg, &fvm, f, in, &args, funcTab, funcCount); break;
         case IR_RETURN:       isel_select_return(operandToVreg, &fvm, f, in); break;
         }
     }
@@ -923,10 +943,25 @@ MachProgram *isel_select(const IRProgram *ir) {
     MachProgram *mp = calloc(1, sizeof(MachProgram));
     mp->capacity    = ir->count ? ir->count : 1;
     mp->functions   = malloc((size_t)mp->capacity * sizeof(MachFunction *));
+
+    /* One sorted name→function table for the whole program; every CALL
+     * does bsearch instead of a linear scan over prog->functions. */
+    ISelFuncEntry *funcTab = NULL;
+    int funcCount = ir->count;
+    if (funcCount > 0) {
+        funcTab = malloc((size_t)funcCount * sizeof(ISelFuncEntry));
+        for (int i = 0; i < funcCount; i++) {
+            funcTab[i].name = ir->functions[i] ? ir->functions[i]->name : NULL;
+            funcTab[i].fn   = ir->functions[i];
+        }
+        qsort(funcTab, (size_t)funcCount, sizeof(ISelFuncEntry), isel_func_entry_cmp);
+    }
+
     for (int i = 0; i < ir->count; i++)
         mp->functions[mp->count++] = isel_select_function(ir->functions[i],
                                                        ir->globals,
                                                        ir->globalCount,
-                                                       ir);
+                                                       funcTab, funcCount);
+    free(funcTab);
     return mp;
 }
