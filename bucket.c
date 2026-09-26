@@ -20,7 +20,7 @@ Buckets *buckets_create(int nextVreg, int nBuckets) {
         arena_destroy(sArena);
         sArena = NULL;
     }
-    sArena = arena_create(0);
+    sArena = arena_create(ARENA_SMALL_BLOCK_SIZE * 4);
 
     Buckets *b = arena_alloc(sArena, sizeof(Buckets));
     b->nBuckets = nBuckets;

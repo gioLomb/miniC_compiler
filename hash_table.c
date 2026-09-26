@@ -69,7 +69,7 @@ Hash_Table *ht_create(size_t initialCapacity, hash_func hashFunction) {
         return NULL;
     }
 
-    table->arena = arena_create(0);  // tied to the table's own lifetime
+    table->arena = arena_create(ARENA_SMALL_BLOCK_SIZE);  // tiny tables; 1 MB default would explode SVN
     table->hashFunction = hashFunction;
     return table;
 }
