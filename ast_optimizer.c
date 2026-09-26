@@ -42,13 +42,13 @@ static int has_side_effect(ASTNode *expr) {
     if (!expr) return 0;
 
     switch (expr->kind) {
-        /* Function calls, assignments, and array accesses modify state or may trap */
+        // Function calls, assignments, and array accesses modify state or may trap
         case ND_CALL:
         case ND_ASSIGN:
         case ND_ARRAY_ACCESS:
             return 1;
 
-        /* Division and modulo operations can trigger runtime division-by-zero exceptions */
+        // Division and modulo operations can trigger runtime division-by-zero exceptions
         case ND_BINOP:
             if (expr->text[0] == '/' || expr->text[0] == '%') return 1;
             break;
@@ -188,7 +188,7 @@ static ASTNode *build_balanced_tree(Arena *arena, ASTNode **leaves, int count, c
 static ASTNode *balance_assoc_chain(Arena *arena, ASTNode *expr) {
     if (expr->text[0] != '+' && expr->text[0] != '*') return expr;
     if (expr->text[1] != '\0') return expr;
-    /* float '+'/'*' is not associative (IEEE 754); dataType is stamped by semantic analysis */
+    // float '+'/'*' is not associative (IEEE 754); dataType is stamped by semantic analysis
     if (expr->dataType == T_FLOAT) return expr;
 
     char opChar = expr->text[0];
@@ -224,20 +224,20 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
 
     switch (key) {
         case OP_KEY('+', 0):
-            /* int only: -0.0 + 0.0 is +0.0 in IEEE; keeping sx would preserve -0.0 */
-            if (!isFloat && literal_int_equals(dx, 0)) return sx; /* x + 0 -> x */
-            if (!isFloat && literal_int_equals(sx, 0)) return dx; /* 0 + x -> x */
+            // int only: -0.0 + 0.0 is +0.0 in IEEE; keeping sx would preserve -0.0
+            if (!isFloat && literal_int_equals(dx, 0)) return sx; // x + 0 -> x
+            if (!isFloat && literal_int_equals(sx, 0)) return dx; // 0 + x -> x
             break;
 
         case OP_KEY('-', 0):
-            if (!isFloat && literal_int_equals(dx, 0)) return sx; /* x - 0 -> x */
+            if (!isFloat && literal_int_equals(dx, 0)) return sx; // x - 0 -> x
             break;
 
         case OP_KEY('*', 0):
-            if (literal_int_equals(dx, 1)) return sx; /* x * 1 -> x */
-            if (literal_int_equals(sx, 1)) return dx; /* 1 * x -> x */
+            if (literal_int_equals(dx, 1)) return sx; // x * 1 -> x
+            if (literal_int_equals(sx, 1)) return dx; // 1 * x -> x
 
-            /* int only: NaN*0 and Inf*0 must stay NaN/NaN under IEEE 754 */
+            // int only: NaN*0 and Inf*0 must stay NaN/NaN under IEEE 754
             if (!isFloat && literal_int_equals(dx, 0) && !has_side_effect(sx)) {
                 return newNode(arena, ND_NUM_INT, "0");
             }
@@ -247,9 +247,9 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
             break;
 
         case OP_KEY('&','&'):
-            if (literal_int_equals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); /* 0 && x -> 0 */
+            if (literal_int_equals(sx, 0)) return newNode(arena, ND_NUM_INT, "0"); // 0 && x -> 0
             if (literal_int_equals(sx, 1)) {
-                /* 1 && x -> (x != 0): C requires boolean 0/1, not x itself */
+                // 1 && x -> (x != 0): C requires boolean 0/1, not x itself
                 ASTNode *zero = newNode(arena, ND_NUM_INT, "0");
                 ASTNode *ne = newNode(arena, ND_BINOP, "!=");
                 addChild(arena, ne, dx);
@@ -259,9 +259,9 @@ static ASTNode *simplify_algebraic_identity(Arena *arena, unsigned short key,
             break;
 
         case OP_KEY('|','|'):
-            if (literal_int_equals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); /* 1 || x -> 1 */
+            if (literal_int_equals(sx, 1)) return newNode(arena, ND_NUM_INT, "1"); // 1 || x -> 1
             if (literal_int_equals(sx, 0)) {
-                /* 0 || x -> (x != 0) */
+                // 0 || x -> (x != 0)
                 ASTNode *zero = newNode(arena, ND_NUM_INT, "0");
                 ASTNode *ne = newNode(arena, ND_BINOP, "!=");
                 addChild(arena, ne, dx);
@@ -364,7 +364,7 @@ static ASTNode *rewrite_expr(Arena *arena, ASTNode *expr) {
 static ASTNode *rewrite_stmt(Arena *arena, ASTNode *stmt) {
     if (!stmt) return NULL;
 
-    /* Function: rewrite the body only (last child). Params stay as declarations. */
+    // Function: rewrite the body only (last child). Params stay as declarations.
     if (stmt->kind == ND_FUNC_DECL && stmt->nchildren > 0) {
         int last = stmt->nchildren - 1;
         stmt->children[last] = rewrite_stmt(arena, stmt->children[last]);

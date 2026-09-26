@@ -12,7 +12,7 @@
 #include <string.h>
 
 int ir_is_terminator(IROp op) {
-    /* Terminators always end a basic block. */
+    // Terminators always end a basic block.
     const unsigned int mask =
         (1U << IR_GOTO) | (1U << IR_IF_FALSE) | (1U << IR_RETURN);
     return (mask & (1U << op)) != 0;
@@ -34,7 +34,7 @@ int ir_is_pure(IROp op) {
 }
 
 int ir_defines_dst(IROp op) {
-    /* Opcodes that write a value into dst; used by liveness/DCE/CP. */
+    // Opcodes that write a value into dst; used by liveness/DCE/CP.
     static const uint32_t DEFINES_DST_MASK =
         (1u << IR_ADD)         | (1u << IR_SUB)  | (1u << IR_MUL)  |
         (1u << IR_DIV)         | (1u << IR_MOD)  | (1u << IR_NEG)  |
@@ -61,7 +61,7 @@ int ir_is_comparison(IROp op) {
 }
 
 int ir_is_binary_op(IROp op) {
-    /* Arithmetic + relational binary ops (same set CP used for transfer). */
+    // Arithmetic + relational binary ops (same set CP used for transfer).
     static const unsigned int mask =
         (1U << IR_ADD) | (1U << IR_SUB) | (1U << IR_MUL) |
         (1U << IR_DIV) | (1U << IR_MOD) |

@@ -22,7 +22,7 @@ typedef struct Parser {
     Arena      *scratch_arena;    /**< Temporary arena for string duplications */
 } Parser;
 
-/* Forward declarations of internal parsing functions */
+// Forward declarations of internal parsing functions
 static void advance(Parser *p);
 static void match(Parser *p, int expected);
 static void synchronize(Parser *p);
@@ -200,7 +200,7 @@ static ASTNode *parse_statement(Parser *p) {
  * @return ND_BLOCK node.
  */
 static ASTNode *parse_block(Parser *p) {
-    int startLine = lexer_current_line(); /* line of '{' */
+    int startLine = lexer_current_line(); // line of '{'
     match(p, TOK_DEL_LBRACE);
     ASTNode *block_node = NEW_NODE(p, ND_BLOCK, NULL);
     block_node->line = startLine;
@@ -231,7 +231,7 @@ static ASTNode *parse_block(Parser *p) {
  * @return ND_VAR_DECL, ND_FUNC_DECL, or ND_VAR_DECL (for array).
  */
 static ASTNode *parse_declaration(Parser *p) {
-    int startLine = lexer_current_line(); /* line of type keyword */
+    int startLine = lexer_current_line(); // line of type keyword
 
     // Read type and identifier name.
     char *type = arena_strdup(p->scratch_arena, p->current_lexeme);
@@ -375,7 +375,7 @@ static void parse_parameter_list(Parser *p, ASTNode *func_node) {
  * @return ND_IF node.
  */
 static ASTNode *parse_if_statement(Parser *p) {
-    int startLine = lexer_current_line(); /* line of 'if' */
+    int startLine = lexer_current_line(); // line of 'if'
     match(p, TOK_KW_IF);
     match(p, TOK_DEL_LPAREN);
     ASTNode *cond = parse_expr(p);
@@ -402,7 +402,7 @@ static ASTNode *parse_if_statement(Parser *p) {
  * @return ND_WHILE node.
  */
 static ASTNode *parse_while_statement(Parser *p) {
-    int startLine = lexer_current_line(); /* line of 'while' */
+    int startLine = lexer_current_line(); // line of 'while'
     match(p, TOK_KW_WHILE);
     match(p, TOK_DEL_LPAREN);
     ASTNode *cond = parse_expr(p);
@@ -423,7 +423,7 @@ static ASTNode *parse_while_statement(Parser *p) {
  * @return ND_RETURN node.
  */
 static ASTNode *parse_return_statement(Parser *p) {
-    int startLine = lexer_current_line(); /* line of 'return' */
+    int startLine = lexer_current_line(); // line of 'return'
     match(p, TOK_KW_RETURN);
     ASTNode *expr = parse_expr(p);
     match(p, TOK_DEL_SEMICOLON);
@@ -466,7 +466,7 @@ static ASTNode *parse_assign(Parser *p) {
         match(p, TOK_OP_ASSIGN);
         ASTNode *right = parse_assign(p);
         ASTNode *node = NEW_NODE(p, ND_ASSIGN, "=");
-        node->line = left->line; /* start of LHS */
+        node->line = left->line; // start of LHS
         addChild(p->ast_arena, node, left);
         addChild(p->ast_arena, node, right);
         return node;

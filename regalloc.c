@@ -318,7 +318,7 @@ static void regalloc_save_restore_callee(MachFunction *f)
  *                        0 if a spill round was performed (caller must retry).
  */
 static void regalloc_finalize_int(MachFunction *f, const int *color) {
-    /* Rewrite MO_VREG -> MO_PHYS; rewrite MO_MEM bases (always int). */
+    // Rewrite MO_VREG -> MO_PHYS; rewrite MO_MEM bases (always int).
     const int count = f->count;
     MachInstr *instrs = f->instrs;
     int newCount = 0;
@@ -441,7 +441,7 @@ static void regalloc_function(MachFunction *f) {
 
     arena_destroy(arena);
 
-    regalloc_save_restore_callee(f); /* no XMM is callee-saved */
+    regalloc_save_restore_callee(f); // no XMM is callee-saved
 
     int retCount = 0;
     uint32_t usedMask = collect_used_callee_saved(f, &retCount);

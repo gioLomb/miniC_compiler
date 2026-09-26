@@ -369,7 +369,7 @@ int loop_build_pre_header(IRFunction *f, Loop *L, Loop *allLoops, int nLoops) {
         for (int i = 0; i < L->exitCount; i++)
             L->exits[i] = remap_after_entry_swap(L->exits[i], phIdx);
 
-        /* Other loops in the same function still hold pre-swap indices. */
+        // Other loops in the same function still hold pre-swap indices.
         if (allLoops) {
             for (int li = 0; li < nLoops; li++) {
                 Loop *O = &allLoops[li];

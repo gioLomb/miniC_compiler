@@ -28,12 +28,12 @@ static RenameTracker tracker_create(int vregCount, int physCount, int n, Arena *
     int *lastReader  = arena_alloc(arena, (size_t)universe * sizeof(int));
     int *lastWriter  = arena_alloc(arena, (size_t)cap * sizeof(int));
 
-    /* Identity mapping: generation id == architectural register id. */
+    // Identity mapping: generation id == architectural register id.
     for (int r = 0; r < universe; r++) {
         currentName[r] = r;
     }
 
-    /* -1 means "no previous reader/writer". */
+    // -1 means "no previous reader/writer".
     memset(lastReader, -1, (size_t)universe * sizeof(int));
     memset(lastWriter, -1, (size_t)cap * sizeof(int));
 
@@ -178,13 +178,13 @@ static void dag_pin_fusion_pairs(const MachFunction *f, BlockRange blk,
 static void track_call_abi_global(RenameTracker *rt, DAGNode *nodes, Arena *arena,
                                   int j, int nextVreg, int fNextVreg) {
     int base = nextVreg + fNextVreg;
-    /* Integer caller-saved (arg regs + clobbers) */
+    // Integer caller-saved (arg regs + clobbers)
     for (int p = 0; p < PHYS_CALLER_SAVED_COUNT; p++) {
         int id = base + p;
         track_read(rt, nodes, arena, j, id);
         track_write(rt, nodes, arena, j, id);
     }
-    /* XMM0–7: float args / return / clobbers (SysV: all caller-saved) */
+    // XMM0–7: float args / return / clobbers (SysV: all caller-saved)
     for (int k = 0; k < PHYS_XMM_COUNT; k++) {
         int id = base + PHYS_XMM0 + k;
         track_read(rt, nodes, arena, j, id);
@@ -274,7 +274,7 @@ void dag_build(const MachFunction *f, BlockRange blk, DAGNode *nodes,
                Arena *arena) {
     int n = blk.end - blk.start;
 
-    /* Universe covers int + float vregs and all phys regs (GPR + XMM). */
+    // Universe covers int + float vregs and all phys regs (GPR + XMM).
     RenameTracker rt = tracker_create(f->nextVreg + f->fNextVreg, PHYS_COUNT, n, arena);
 
     dag_init_nodes(f, blk, nodes, n, arena);

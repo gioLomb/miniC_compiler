@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include "errorCollector.h"
 
-static int pendingFlag = 0;  /* cascade window: one printed diagnostic until clear */
-static int totalCount  = 0;  /* grand total, all phases, never reset */
+static int pendingFlag = 0; // cascade window: one printed diagnostic until clear
+static int totalCount  = 0; // grand total, all phases, never reset
 
 void ec_report_cascadingv(int line, const char *fmt, va_list args) {
     if (pendingFlag) return;
@@ -10,7 +10,7 @@ void ec_report_cascadingv(int line, const char *fmt, va_list args) {
     if (line >= 0)
         fprintf(stderr, "Errore di sintassi (linea %d): ", line);
     vfprintf(stderr, fmt, args);
-    /* Parser msgs omit trailing \\n; semantic msgs already include it. */
+    // Parser msgs omit trailing \\n; semantic msgs already include it.
     if (line >= 0)
         fprintf(stderr, "\n");
 
@@ -26,7 +26,7 @@ void ec_report_cascading(int line, const char *fmt, ...) {
 }
 
 void ec_reportv(const char *fmt, va_list args) {
-    /* Unconditional path: no cascade check (pass1 duplicates, etc.). */
+    // Unconditional path: no cascade check (pass1 duplicates, etc.).
     vfprintf(stderr, fmt, args);
     totalCount++;
 }

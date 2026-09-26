@@ -280,7 +280,7 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors) {
     case ND_ID:
         return resolve_name_use(expr, scope, 0, NULL, errors);
 
-    /* ---- Array element access: arr[idx] --------------------------------- */
+    // ---- Array element access: arr[idx] ---------------------------------
     case ND_ARRAY_ACCESS: {
         ASTNode *idx = expr->children[0];
         DataType idxType = check_expr_type(idx, scope, errors);
@@ -301,7 +301,7 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors) {
         return elemType;
     }
 
-    /* ---- Function call: f(arg0, arg1, ...) ------------------------------ */
+    // ---- Function call: f(arg0, arg1, ...) ------------------------------
     case ND_CALL: {
         Symbol sym;
         int found = sym_resolve(scope, expr->text, &sym);
@@ -324,7 +324,7 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors) {
         return found ? sym.dataType : T_VOID;
     }
 
-    /* ---- Assignment: lhs = rhs ------------------------------------------ */
+    // ---- Assignment: lhs = rhs ------------------------------------------
     case ND_ASSIGN: {
         ASTNode *lvalue = expr->children[0];
         ASTNode *rvalue = expr->children[1];
@@ -349,7 +349,7 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors) {
         return lt; // assignment expression has the type of the lhs
     }
 
-    /* ---- Binary operators ------------------------------------------------ */
+    // ---- Binary operators ------------------------------------------------
     case ND_BINOP: {
         DataType lt = check_expr_type(expr->children[0], scope, errors);
         DataType rt = check_expr_type(expr->children[1], scope, errors);
@@ -375,7 +375,7 @@ static DataType check_expr_type_impl(ASTNode *expr, Scope *scope, int *errors) {
         return T_INT;
     }
 
-    /* ---- Unary operators ------------------------------------------------- */
+    // ---- Unary operators -------------------------------------------------
     case ND_UNARY:
         // '!' always yields int (boolean); unary '-' preserves operand type.
         if (expr->text[0] == '!' && expr->text[1] == '\0') {
@@ -418,7 +418,7 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
                        Arena *arena, int *errors) {
     if (!stmt) return;
 
-    /* New statement → open a fresh cascade window. */
+    // New statement → open a fresh cascade window.
     ec_clear_pending();
 
     switch (stmt->kind) {
@@ -481,7 +481,7 @@ static void check_stmt(ASTNode *stmt, Scope *scope, DataType returnType,
         break;
     }
 
-    /* ---- Expression statement: call(), assignment as statement, etc. ----- */
+    // ---- Expression statement: call(), assignment as statement, etc. -----
     case ND_EXPR_STMT:
         check_expr_type(stmt->children[0], scope, errors);
         break;
@@ -611,7 +611,7 @@ int semantic_check(ASTNode *program, Scope *global) {
 
     for (int i = 0; i < nchildren; i++) {
         ASTNode *decl = children[i];
-        ec_clear_pending(); /* one cascade window per top-level declaration */
+        ec_clear_pending(); // one cascade window per top-level declaration
 
         if (decl->kind == ND_FUNC_DECL) {
             check_function_body(decl, global, arena, &errors);

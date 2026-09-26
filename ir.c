@@ -71,9 +71,9 @@ static Operand ir_ensure_float(Operand v, IRFunction *out) {
 }
 
 
-/* ir_is_terminator / ir_is_pure / … live in ir_op_info.c */
+// ir_is_terminator / ir_is_pure / … live in ir_op_info.c
 
-/* ir_compact_block removed: ir_sweep now compacts in instruction order. */
+// ir_compact_block removed: ir_sweep now compacts in instruction order.
 int ir_sweep(IRFunction *f, char *eliminate, int nBlocks) {
     int nInstrs = f->count;
     // Map every old instruction index (and the exclusive-end sentinel
@@ -484,7 +484,7 @@ static Operand ir_emit_expr_into(ASTNode *expr, IRFunction *out, Operand dest) {
         Operand idx  = ir_emit_expr(expr->children[0], out);
         Operand base = ir_mk_var(expr);
         if (dest.isFloat && expr->dataType != T_FLOAT) {
-            /* Load as int then widen (array element is int, dest is float). */
+            // Load as int then widen (array element is int, dest is float).
             Operand tmp = (Operand){ .kind = OPND_TEMP, .isFloat = 0, .data.tempId = nextTemp++ };
             ir_emit_instr(out, IR_LOAD_ARR, tmp, base, idx);
             Operand widened = ir_ensure_float(tmp, out);
@@ -634,7 +634,7 @@ static void ir_emit_stmt(ASTNode *stmt, IRFunction *out) {
  * Function compilation
  * ========================================================================= */
 
-/* Return type is stamped on the FUNC_DECL node at parse time. */
+// Return type is stamped on the FUNC_DECL node at parse time.
 static int ir_func_returns_float(const ASTNode *decl) {
     return decl && decl->dataType == T_FLOAT;
 }
@@ -657,7 +657,7 @@ static IRFunction *ir_build_function(ASTNode *decl,Arena *arena) {
     f->labelBase     = nextLabel; // labels stay globally unique (asm .L%d)
     f->curBlockStart = 0;
     currentLoopDepth = 0;
-    nextTemp = 0; /* dense 0..n-1 per function: VarMap.tempToId stays small */
+    nextTemp = 0; // dense 0..n-1 per function: VarMap.tempToId stays small
     g_func_returns_float = ir_func_returns_float(decl);
 
     int paramCount = decl->nchildren - 1;

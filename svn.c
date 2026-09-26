@@ -47,7 +47,7 @@ typedef struct SVNScope {
     struct SVNScope  *parent;
 } SVNScope;
 
-/* ---- hash of raw bytes (FNV-1a 32-bit extended to unsigned long) -------- */
+// ---- hash of raw bytes (FNV-1a 32-bit extended to unsigned long) --------
 
 static unsigned long svn_hash_bytes(const void *key, size_t keySize) {
     const unsigned char *p = (const unsigned char *)key;
@@ -59,7 +59,7 @@ static unsigned long svn_hash_bytes(const void *key, size_t keySize) {
     return h;
 }
 
-/* ---- key builders ------------------------------------------------------ */
+// ---- key builders ------------------------------------------------------
 
 static inline ValueKey svn_build_value_key(const Operand *op) {
     ValueKey key;
@@ -98,7 +98,7 @@ static inline ExprKey svn_build_expr_key(int operation, int valueNumber1, int va
     return key;
 }
 
-/* ---- table wrappers (ht_get/ht_set with typed keys) -------------------- */
+// ---- table wrappers (ht_get/ht_set with typed keys) --------------------
 
 static int operand_table_get(Hash_Table *t, const ValueKey *key, int *outVn) {
     return ht_get(t, (void *)key, sizeof(*key), outVn, sizeof(*outVn));
@@ -124,7 +124,7 @@ static void leader_table_set(Hash_Table *t, int vn, const NameList *list) {
     ht_set(t, &vn, sizeof(vn), (void *)list, sizeof(*list));
 }
 
-/* ---- scope lifecycle --------------------------------------------------- */
+// ---- scope lifecycle ---------------------------------------------------
 
 /** Small initial capacity: most EBB scopes hold few distinct values. */
 #define SVN_HT_INIT_CAP 16
@@ -143,7 +143,7 @@ static void svn_scope_destroy(SVNScope *scope) {
     scope->operandToVn = scope->exprToVn = scope->leaders = NULL;
 }
 
-/* ---- core SVN helpers -------------------------------------------------- */
+// ---- core SVN helpers --------------------------------------------------
 
 /**
  * @brief Adds a name as a leader for a value number.

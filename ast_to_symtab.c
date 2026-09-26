@@ -20,7 +20,7 @@ DataType st_resolve_type(const char *type_name) {
 void st_elaborate_decl(Arena *arena, const char *text,
                        char **outTypeName, char **outName,
                        int *isArray, int *arraySize) {
-    /* Kept for source compatibility / debug; hot path uses ASTNode.ident. */
+    // Kept for source compatibility / debug; hot path uses ASTNode.ident.
     *isArray   = 0;
     *arraySize = 0;
     *outTypeName = NULL;

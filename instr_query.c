@@ -45,12 +45,12 @@ int instr_def(const MachInstr *in, int classVregCount, RegClass cls) {
     case MACH_JB:  case MACH_JBE: case MACH_JA: case MACH_JAE:
     case MACH_CALL: case MACH_RET:
     case MACH_PUSH: case MACH_STORE:
-    case MACH_IDIV:   /* dst is the divisor (use), not a definition */
+    case MACH_IDIV: // dst is the divisor (use), not a definition
     case MACH_CQO:
     case MACH_LABEL: case MACH_FUNC_BEGIN: case MACH_FUNC_END:
         return -1;
     default:
-        /* Memory destinations (e.g. MOVSS mem, xmm) define memory, not the base reg. */
+        // Memory destinations (e.g. MOVSS mem, xmm) define memory, not the base reg.
         if (in->dst.kind == MO_MEM)
             return -1;
         return mach_operand_reg_c(&in->dst, classVregCount, cls);
@@ -71,7 +71,7 @@ void instr_uses(const MachInstr *in, int classVregCount, RegClass cls, int out[]
         push_operand_regs_c(out, n, &in->dst, classVregCount, cls);
         break;
     case MACH_MOVSS:
-        /* MOVSS mem, xmm stores: base/index of dst are uses (like STORE). */
+        // MOVSS mem, xmm stores: base/index of dst are uses (like STORE).
         if (in->dst.kind == MO_MEM)
             push_operand_regs_c(out, n, &in->dst, classVregCount, cls);
         break;
@@ -127,7 +127,7 @@ void instr_implicit_uses(const MachInstr *in, int classVregCount, RegClass cls, 
             // float args already explicit MOVSS uses emitted by isel
             break;
         case MACH_RET:
-            out[(*n)++] = classVregCount; /* XMM0 local color 0 */
+            out[(*n)++] = classVregCount; // XMM0 local color 0
             break;
         default: break;
         }

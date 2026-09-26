@@ -6,7 +6,7 @@
 #include "arena.h"
 #include "bitset.h"
 
-/* ---- class helpers ------------------------------------------------------ */
+// ---- class helpers ------------------------------------------------------
 
 static inline int *vreg_counter_of(MachFunction *f, RegClass cls) {
     return (cls == RC_FLOAT) ? &f->fNextVreg : &f->nextVreg;
@@ -20,7 +20,7 @@ static inline MachOperandKind vreg_kind_of(RegClass cls) {
     return (cls == RC_FLOAT) ? MO_VREG_F : MO_VREG;
 }
 
-/* ---- spill rewrite context ---------------------------------------------- */
+// ---- spill rewrite context ----------------------------------------------
 
 /**
  * @brief Shared state for one ra_spill_insert() invocation.
@@ -60,7 +60,7 @@ static inline int is_spilled(const SpillCtx *ctx, int vreg_id) {
             bitset_test(&ctx->ss, vreg_id));
 }
 
-/* ---- setup phase -------------------------------------------------------- */
+// ---- setup phase --------------------------------------------------------
 
 static void allocate_spill_slots(const int *spilled, int n_spilled, int *slot,
                                  int *frame_off, BitSet *ss) {
@@ -96,7 +96,7 @@ static void spill_setup(SpillCtx *ctx, MachFunction *f, RegClass cls,
     ctx->newInstrs = malloc((size_t)ctx->maxNew * sizeof(MachInstr));
 }
 
-/* ---- reload helpers ----------------------------------------------------- */
+// ---- reload helpers -----------------------------------------------------
 
 /**
  * @brief Ensure @p o is a register holding the spilled value of @p origVreg.
@@ -157,23 +157,23 @@ static void reload_sources(SpillCtx *ctx, MachInstr *in) {
     reload_operand_if_spilled(ctx, &in->src1);
     reload_operand_if_spilled(ctx, &in->src2);
 
-    /* MEM bases/indices are GPRs — only handled in the integer spill round. */
+    // MEM bases/indices are GPRs — only handled in the integer spill round.
     if (ctx->cls == RC_INT) {
         MachOperand *memHolder = isStore ? &in->dst : &in->src1;
         reload_address_operands(ctx, memHolder);
     }
 
-    /* CMP / TEST / UCOMISS also read dst; IDIV's dst is the divisor (use). */
+    // CMP / TEST / UCOMISS also read dst; IDIV's dst is the divisor (use).
     if (in->op == MACH_CMP || in->op == MACH_TEST || in->op == MACH_UCOMISS ||
         in->op == MACH_IDIV)
         reload_operand_if_spilled(ctx, &in->dst);
 
-    /* MOVSS to memory: reload base/index of the address. */
+    // MOVSS to memory: reload base/index of the address.
     if (ctx->cls == RC_INT && in->op == MACH_MOVSS && in->dst.kind == MO_MEM)
         reload_address_operands(ctx, &in->dst);
 }
 
-/* ---- destination rewrite ------------------------------------------------ */
+// ---- destination rewrite ------------------------------------------------
 
 static int dst_is_spilled(const SpillCtx *ctx, const MachInstr *in) {
     if (in->op == MACH_STORE) return 0;
@@ -224,14 +224,14 @@ static void emit_spilled_destination(SpillCtx *ctx, MachInstr in) {
     ctx->cache[orig] = tmp;
 }
 
-/* ---- rewrite phase ------------------------------------------------------ */
+// ---- rewrite phase ------------------------------------------------------
 
 static void spill_rewrite(SpillCtx *ctx) {
     const MachFunction *f = ctx->f;
     for (int i = 0; i < f->count; i++) {
         MachInstr in = f->instrs[i];
 
-        /* Cache must not persist across instructions: a store can kill the slot. */
+        // Cache must not persist across instructions: a store can kill the slot.
         invalidate_cache(ctx);
 
         reload_sources(ctx, &in);
@@ -243,7 +243,7 @@ static void spill_rewrite(SpillCtx *ctx) {
     }
 }
 
-/* ---- commit phase ------------------------------------------------------- */
+// ---- commit phase -------------------------------------------------------
 
 static void spill_commit(SpillCtx *ctx) {
     MachFunction *f = ctx->f;
@@ -258,7 +258,7 @@ static void spill_commit(SpillCtx *ctx) {
     arena_destroy(ctx->arena);
 }
 
-/* ---- public entry ------------------------------------------------------- */
+// ---- public entry -------------------------------------------------------
 
 void ra_spill_insert(MachFunction *f, RegClass cls, const int *spilled, int nSpilled,
                      int *frameOff) {

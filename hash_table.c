@@ -19,7 +19,7 @@ struct Hash_Table {
                         no malloc/free per insert (see profiling) */
 };
 
-/* ── Forward declarations ───────────────────────────────────────────────── */
+// ── Forward declarations ─────────────────────────────────────────────────
 
 static Entry *create_entry(Arena *arena, void *key, size_t keySize,
                             void *value, size_t valueSize,
@@ -52,7 +52,7 @@ static inline size_t round_pow2(size_t n) {
     return n + 1;
 }
 
-/* ── API implementation ──────────────────────────────────────────────── */
+// ── API implementation ────────────────────────────────────────────────
 
 Hash_Table *ht_create(size_t initialCapacity, hash_func hashFunction) {
     Hash_Table *table = malloc(sizeof(Hash_Table));
@@ -282,7 +282,7 @@ size_t ht_size(const Hash_Table *table) {
     return table->size;
 }
 
-/* ── Static helpers ──────────────────────────────────────────────────── */
+// ── Static helpers ────────────────────────────────────────────────────
 
 // writes one entry as: keySize, key bytes, valueSize, value bytes
 // (read back by the loop in ht_load)

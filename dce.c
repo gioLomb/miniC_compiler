@@ -22,27 +22,28 @@ static void dce_mark_reachable_blocks(IRFunction *f, char *reachable, Arena *are
     if (f->blockCount == 0) return;
 
     // worst case: every block on the stack once → blockCount entries suffice
+    // Worst case: every block once on the stack.
     int *stack = arena_alloc(arena, (size_t)f->blockCount * sizeof(int));
     int top = 0;
 
-    // seed the DFS from the function entry block
+    // Seed DFS from entry; mark before push to avoid duplicates.
     stack[top++] = 0;
-    reachable[0] = 1; // mark before push so we never push the same block twice
+    reachable[0] = 1;
 
     while (top > 0) {
         int b = stack[--top];
-        for (int k = 0; k < 2; k++) { // each block has at most 2 successors (succ[0], succ[1])
+        for (int k = 0; k < 2; k++) { // at most two successors
             int s = f->blocks[b].bb.succ[k];
-            // bounds check guards against sentinel -1 and stale succ values
+            // Guard against sentinel -1 and out-of-range values.
             if (s >= 0 && s < f->blockCount && !reachable[s]) {
-                reachable[s] = 1; // mark before push: prevents re-enqueuing in cyclic CFGs
+                reachable[s] = 1; // mark before push (cyclic CFGs)
                 stack[top++] = s;
             }
         }
     }
 }
 
-/* Mark: backward liveness scan */
+// Mark: backward liveness scan
 /**
  * @brief Mark @p op's bit as live if it is a storage operand.
  *
@@ -105,7 +106,7 @@ static void dce_mark(IRFunction *f, const char *reachable, LivenessResult *liv,
         BitSet live = bitset_new(arena, words);
         bitset_copy(&live, &liv->blockSets.LiveOut[b]);
 
-        // reverse scan: liveness is a backward dataflow
+        // Reverse scan: liveness is a backward dataflow problem.
         for (int i = f->blocks[b].bb.range.end - 1; i >= f->blocks[b].bb.range.start; i--)
             dce_process_instr(&f->instrs[i], i, &live, liv->varMap, eliminate);
     }

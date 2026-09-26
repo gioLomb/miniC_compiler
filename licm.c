@@ -290,7 +290,7 @@ static int licm_sources_ok_to_hoist(IRFunction *f, int j, const int *defCount,
     for (int s = 0; s < 2; s++) {
         if (!ir_operand_is_storage(srcs[s].kind)) continue;
         int id = varmap_operand_id(vm, srcs[s]);
-        if (id < 0 || defCount[id] == 0) continue; /* outside loop or none */
+        if (id < 0 || defCount[id] == 0) continue; // outside loop or none
         if (defCount[id] != 1) return 0;
         int defJ = defInstrIdx[id];
         if (defJ < 0 || !doMove[defJ]) return 0;

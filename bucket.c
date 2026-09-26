@@ -2,7 +2,7 @@
 #include "arena.h"
 #include <string.h>
 
-/* Module-level arena */
+// Module-level arena
 static Arena *sArena = NULL;
 
 struct Buckets {
@@ -26,7 +26,7 @@ Buckets *buckets_create(int nextVreg, int nBuckets) {
     b->nBuckets = nBuckets;
     b->nonempty = 0;
 
-    int nodesNum = (nextVreg > 0) ? nextVreg : 1;   // guard against zero-size allocation
+    int nodesNum = (nextVreg > 0) ? nextVreg : 1; // guard against zero-size allocation
 
     b->head = arena_alloc(sArena, (size_t)nBuckets * sizeof(int));
     memset(b->head, -1, (size_t)nBuckets * sizeof(int));   // -1 = empty sentinel for each bucket

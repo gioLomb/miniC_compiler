@@ -47,19 +47,19 @@ static void ir_build_global_init_vals(ASTNode *decl, IRGlobalVar *gv) {
     for (int j = 0; j < cnt; j++) {
         ASTNode *ch = decl->children[j];
         if (gv->dataType == T_FLOAT) {
-            /* Always store IEEE-754 bit pattern for float globals. */
+            // Always store IEEE-754 bit pattern for float globals.
             float fv = 0.0f;
             if (ch->kind == ND_NUM_FLOAT)
                 fv = (float)atof(ch->text);
             else if (ch->kind == ND_NUM_INT)
-                fv = (float)atol(ch->text); /* int → float widening */
+                fv = (float)atol(ch->text); // int → float widening
             long lv = 0;
             memcpy(&lv, &fv, sizeof fv);
             gv->initVals[j] = lv;
         } else if (ch->kind == ND_NUM_INT) {
             gv->initVals[j] = atol(ch->text);
         } else if (ch->kind == ND_NUM_FLOAT) {
-            /* float literal into int global: truncate (semantic should reject) */
+            // float literal into int global: truncate (semantic should reject)
             gv->initVals[j] = (long)(float)atof(ch->text);
         } else {
             gv->initVals[j] = 0; // non-literal: semantic error; defensive default

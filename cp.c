@@ -6,7 +6,7 @@
 #include "constmap.h"
 
 
-/* Binary / comparison classification: ir_is_binary_op / ir_is_comparison (ir_op_info.c). */
+// Binary / comparison classification: ir_is_binary_op / ir_is_comparison (ir_op_info.c).
 
 
 
@@ -292,7 +292,7 @@ static int label_map_index(const IRFunction *f, int labelId, int mapCap) {
 static void collect_referenced_labels(const IRFunction *f,
                                       const int *labelToInstr, int mapCap,
                                       char *referenced) {
-    /* Pass 1: mark the canonical (last) copy of each branch target. */
+    // Pass 1: mark the canonical (last) copy of each branch target.
     for (int i = 0; i < f->count; i++) {
         const IRInstr *in = &f->instrs[i];
         if (in->op != IR_GOTO && in->op != IR_IF_FALSE)

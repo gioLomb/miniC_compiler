@@ -20,7 +20,7 @@ static inline int ra_is_valid_coalesce_candidate(const IGraph *g, int aVregId, i
                                                  int max_node_id, int classVregCount) {
     if (aVregId < 0 || aPartnerId < 0) return 0;
     if (aVregId >= max_node_id || aPartnerId >= max_node_id) return 0;
-    if (aVregId >= classVregCount && aPartnerId >= classVregCount) return 0; /* phys↔phys */
+    if (aVregId >= classVregCount && aPartnerId >= classVregCount) return 0; // phys↔phys
     if (ig_has_edge(g, aVregId, aPartnerId)) return 0;
     return 1;
 }

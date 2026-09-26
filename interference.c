@@ -61,7 +61,7 @@ static void ig_add_edge(IGraph *g, int i, int j) {
 
 void ig_free(IGraph *g) {
     (void)g;
-    /* adj lists and fixed-size arrays are arena-owned */
+    // adj lists and fixed-size arrays are arena-owned
 }
 
 

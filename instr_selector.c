@@ -7,7 +7,7 @@
 #include "parser/errorCollector.h"
 
 
-/* Selection only — assembly printing lives in isel_emit.c */
+// Selection only — assembly printing lives in isel_emit.c
 
 // System V AMD64 ABI: first 6 integer/pointer arguments go in these
 // registers, in this exact order; anything beyond NUM_ARG_REGS is spilled
@@ -102,7 +102,7 @@ static int isel_load_operand(const Operand *op, VarMap *operandToVreg, MachFunct
         return dst;
     }
     case OPND_CONST_FLOAT: {
-        /* Materialise float bits as an integer immediate (bit pattern, not value). */
+        // Materialise float bits as an integer immediate (bit pattern, not value).
         int dst = mfunc_new_vreg(f);
         union { float fl; int i; } u; u.fl = op->data.floatVal;
         mfunc_emit(f, MACH_MOV, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_IMM, .imm = u.i }, (MachOperand){ .kind = MO_NONE });
@@ -174,7 +174,7 @@ static inline MachOpCode isel_comparison_to_setcc(IROp cmpOp) {
     }
 }
 
-/* UCOMISS sets CF/ZF (not SF/OF); use unsigned SETcc for float compares. */
+// UCOMISS sets CF/ZF (not SF/OF); use unsigned SETcc for float compares.
 static inline MachOpCode isel_comparison_to_setcc_unsigned(IROp cmpOp) {
     switch (cmpOp) {
     case IR_LT: return MACH_SETB;  case IR_LE: return MACH_SETBE;
@@ -227,7 +227,7 @@ static int isel_load_float_bits(const Operand *op, MachFunction *f) {
 static MachOperand isel_float_operand(const Operand *op, VarMap *ov, FloatVregMap *fvm,
                                       MachFunction *f) {
     if (op->kind == OPND_CONST_FLOAT) {
-        int bits = isel_load_float_bits(op, f); /* int scratch with raw bits */
+        int bits = isel_load_float_bits(op, f); // int scratch with raw bits
         int fv   = mfunc_new_freg(f);
         mfunc_emit(f, MACH_MOVQ_TO_XMM,
                    (MachOperand){ .kind = MO_VREG_F, .vregId = fv },
@@ -402,7 +402,7 @@ static void isel_index_temp_src(const Operand *op, int minT, int maxT,
                                 int instrIdx, int *useCount, int *firstUse) {
     if (op->kind != OPND_TEMP) return;
     int t = op->data.tempId;
-    if (t < minT || t > maxT) return; /* defensive; range already covers every src temp */
+    if (t < minT || t > maxT) return; // defensive; range already covers every src temp
     int slot = t - minT;
     useCount[slot]++;
     if (firstUse[slot] < 0) firstUse[slot] = instrIdx;
@@ -462,7 +462,7 @@ static inline void isel_free_temp_use_index(TempUseIndex *idx) {
  *        at instruction @p excludeIdx (the fusing IF_FALSE).
  */
 static inline int isel_temp_used_elsewhere(const TempUseIndex *idx, int tempId, int excludeIdx) {
-    if (tempId < 0) return 1; /* conservative, mirrors original tempId<0 case */
+    if (tempId < 0) return 1; // conservative, mirrors original tempId<0 case
     int slot = tempId - idx->minTemp;
     if (idx->size == 0 || slot < 0 || slot >= idx->size) return 0; // never read as a source
     int cnt = idx->useCount[slot];
@@ -477,7 +477,7 @@ static void isel_select_if_false(VarMap *operandToVreg, FloatVregMap *fvm, MachF
     int cond_vreg = varmap_operand_id(operandToVreg, in->src1);
     int lbl       = in->dst.data.labelId;
 
-    /* Only fuse when the boolean is not needed after the branch. */
+    // Only fuse when the boolean is not needed after the branch.
     int canFuse = pcmp->active && cond_vreg == pcmp->dstVreg;
     if (canFuse && pcmp->instr && pcmp->instr->dst.kind == OPND_TEMP) {
         if (isel_temp_used_elsewhere(tempUses, pcmp->instr->dst.data.tempId, ifIdx))
@@ -485,7 +485,7 @@ static void isel_select_if_false(VarMap *operandToVreg, FloatVregMap *fvm, MachF
     }
 
     if (canFuse) {
-        /* CMP + Jcc fusion: skip SETcc/MOVSX entirely. */
+        // CMP + Jcc fusion: skip SETcc/MOVSX entirely.
         const IRInstr *comparisonInstr = pcmp->instr;
 
         if (comparisonInstr->src1.isFloat) {
@@ -564,7 +564,7 @@ static void isel_select_global_addr(VarMap *operandToVreg, MachFunction *f, cons
                                 const IRGlobalVar *globals, int globalCount) {
     int dst = varmap_operand_id(operandToVreg, in->dst);
     int idx = isel_find_global_idx(in->src1.data.globalOffset, globals, globalCount);
-    /* idx >= 0 guaranteed: lowering only emits IR_GLOBAL_ADDR for valid globals. */
+    // idx >= 0 guaranteed: lowering only emits IR_GLOBAL_ADDR for valid globals.
     mfunc_emit(f, MACH_LEA, (MachOperand){ .kind = MO_VREG, .vregId = dst }, (MachOperand){ .kind = MO_GLOBAL, .globalName = globals[idx].name }, (MachOperand){ .kind = MO_NONE });
 }
 
@@ -862,7 +862,7 @@ static MachFunction *isel_select_function(const IRFunction *irf,
                                       const ISelFuncEntry *funcTab,
                                       int funcCount) {
     MachFunction *f = mfunc_create(irf->name);
-    g_curLoopDepth = 0; /* per-function reset */
+    g_curLoopDepth = 0; // per-function reset
 
     VarMap *operandToVreg = varmap_create();
     isel_select_prescan(irf, operandToVreg, f);

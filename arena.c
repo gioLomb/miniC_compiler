@@ -36,6 +36,7 @@ static inline size_t align_up(size_t n) {
     return (n + a - 1) & ~(a - 1);
 }
 
+// Point the hot-path cursor at the free region of `block`.
 static inline void arena_set_cursor(Arena *arena, ArenaBlock *block) {
     arena->current = block;
     arena->bump    = block->data + block->used;
@@ -71,15 +72,17 @@ Arena *arena_create(size_t blockSize) {
     return arena;
 }
 
+// Slow path: reuse next block or allocate a new one large enough for `aligned`.
 static void *arena_alloc_slow(Arena *arena, size_t aligned) {
     while (arena->current->capacity - arena->current->used < aligned) {
         if (arena->current->next) {
+            // Reuse a previously allocated block that still has free space.
             arena_set_cursor(arena, arena->current->next);
             continue;
         }
 
         size_t newCapacity = arena->defaultBlockSize;
-        if (aligned > newCapacity) newCapacity = aligned;
+        if (aligned > newCapacity) newCapacity = aligned; // single oversized request
 
         ArenaBlock *block = block_create(newCapacity);
         arena->current->next = block;
@@ -95,6 +98,7 @@ static void *arena_alloc_slow(Arena *arena, size_t aligned) {
 void *arena_alloc(Arena *arena, size_t size) {
     size_t aligned = align_up(size);
     char *p = arena->bump;
+    // Fast path: enough room in the current block.
     if (p + aligned <= arena->end) {
         arena->bump = p + aligned;
         arena->current->used += aligned;
@@ -127,6 +131,7 @@ char *arena_sprintf(Arena *arena, const char *fmt, ...) {
     va_start(args, fmt);
     va_copy(argsCopy, args);
 
+    // First pass: measure required length without writing.
     int needed = vsnprintf(NULL, 0, fmt, argsCopy);
     va_end(argsCopy);
     if (needed < 0) {
@@ -142,6 +147,7 @@ char *arena_sprintf(Arena *arena, const char *fmt, ...) {
 }
 
 void arena_reset(Arena *arena) {
+    // Keep physical blocks; only rewind used counters and cursor.
     for (ArenaBlock *b = arena->head; b != NULL; b = b->next) {
         b->used = 0;
     }

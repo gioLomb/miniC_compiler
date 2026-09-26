@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     }
     if (!src_path) { usage(argv[0]); return 1; }
 
-    /* ---- Parsing ---- */
+    // ---- Parsing ----
     lexer_open(src_path);
     Arena   *astArena = arena_create(0);
     ASTNode *root     = ParseProgram(astArena);
@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
     }
     if (!emit_asm) printf("\nParsing completato con successo.\n");
 
-    /* ---- Analisi semantica ---- */
+    // ---- Analisi semantica ----
     Scope *global    = sym_scopeCreate(NULL);
     int pass1Errors  = st_resolve_global_namespace(root, global);
     int semErrors    = semantic_check(root, global);
@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
          arena_destroy(astArena); return 1;
     }
 
-    /* ---- Ottimizzazioni AST + generazione IR ---- */
+    // ---- Ottimizzazioni AST + generazione IR ----
     optimize_ast(root, astArena);
     IRProgram *ir = ir_generate(root);
 
@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* ---- Backend: isel → sched → regalloc → emit ---- */
+    // ---- Backend: isel → sched → regalloc → emit ----
     FILE *out = stdout;
     if (out_path) {
         out = fopen(out_path, "w");
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     }
     if (debug) fprintf(out, "# === POST-REGALLOC ===\n");
 
-    /* Pass ir so isel_emit_asm can emit .bss/.data sections. */
+    // Pass ir so isel_emit_asm can emit .bss/.data sections.
     isel_emit_asm(mp, ir, out);
 
     mach_free(mp);

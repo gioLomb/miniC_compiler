@@ -14,11 +14,11 @@
 struct VarMap {
     int nextId;
 
-    /* TEMP: index by tempId → dense id, or -1 if unseen */
+    // TEMP: index by tempId → dense id, or -1 if unseen
     int *tempToId;
     int  tempCap;
 
-    /* VAR: parallel arrays (level, offset) → dense id; linear scan (few locals) */
+    // VAR: parallel arrays (level, offset) → dense id; linear scan (few locals)
     int *varLevel;
     int *varOffset;
     int *varId;
@@ -32,6 +32,7 @@ static int ensure_temp_cap(VarMap *m, int needIndex) {
     while (newCap <= needIndex) newCap *= 2;
     int *p = realloc(m->tempToId, (size_t)newCap * sizeof(int));
     if (!p) return 0;
+    // Fill new slots with -1 (unmapped).
     for (int i = m->tempCap; i < newCap; i++)
         p[i] = -1;
     m->tempToId = p;
@@ -58,10 +59,10 @@ static int ensure_var_cap(VarMap *m) {
 
 int varmap_mapToIndex(VarMap *m, int kind, int a, int b) {
     if (kind == 1) {
-        /* TEMP: a = tempId, b unused */
+        // TEMP: a = tempId, b unused
         if (a < 0) a = 0;
         if (!ensure_temp_cap(m, a))
-            return 0; /* allocation failure: degrade to id 0 */
+            return 0; // allocation failure: degrade to id 0
         if (m->tempToId[a] >= 0)
             return m->tempToId[a];
         int id = m->nextId++;
@@ -69,7 +70,7 @@ int varmap_mapToIndex(VarMap *m, int kind, int a, int b) {
         return id;
     }
 
-    /* VAR: linear search then append */
+    // VAR: linear search then append
     for (int i = 0; i < m->varN; i++) {
         if (m->varLevel[i] == a && m->varOffset[i] == b)
             return m->varId[i];
@@ -89,7 +90,7 @@ int varmap_operand_id(VarMap *m, Operand op) {
         return varmap_mapToIndex(m, 0, op.data.varLevel, op.data.varOffset);
     if (op.kind == OPND_TEMP)
         return varmap_mapToIndex(m, 1, op.data.tempId, 0);
-    return -1;
+    return -1; // constants, labels, etc. have no storage id
 }
 
 VarMap *varmap_create(void) {
